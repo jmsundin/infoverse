@@ -11,11 +11,17 @@ const { exec } = require('child_process');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const USERS_FILE = path.join(__dirname, 'users.json');
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
 
 // Ensure users file exists
 if (!fs.existsSync(USERS_FILE)) {
-    fs.writeFileSync(USERS_FILE, JSON.stringify([]));
+    try {
+        fs.writeFileSync(USERS_FILE, JSON.stringify([]));
+    } catch (err) {
+        console.error('Could not write users file (likely read-only filesystem):', err);
+        // In-memory fallback could go here, or just let it fail gracefully later
+    }
 }
 
 // Helper to read/write users
