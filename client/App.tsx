@@ -4,7 +4,6 @@ import { SidePanel, WebContent } from "./components/SidePanel";
 import { GraphNodeComponent } from "./components/GraphNode";
 import { SearchBar } from "./components/SearchBar";
 import { NodeListDrawer } from "./components/NodeListDrawer";
-import { AuthPage } from "./components/AuthPage";
 import {
   GraphEdge,
   GraphNode,
@@ -19,9 +18,7 @@ import {
   saveNodeToFile,
   deleteNodeFile,
   saveEdgesToFile,
-  verifyPermission,
 } from "./services/storageService";
-import * as api from "./services/apiStorageService";
 import {
   expandNodeTopic,
   sendChatMessage,
@@ -188,38 +185,9 @@ const App: React.FC = () => {
   );
   const [dirName, setDirName] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  const [user, setUser] = useState<{
-    id: string;
-    username: string;
-    storagePath?: string;
-  } | null>(null);
 
   const prevNodesRef = useRef<GraphNode[]>(nodes);
   const prevEdgesRef = useRef<GraphEdge[]>(edges);
-
-  // Auth State
-  const [showAuth, setShowAuth] = useState(false);
-  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
-
-  // --- Auth Check & Initial Load ---
-  useEffect(() => {
-    api.checkAuth().then(async (data) => {
-      if (data.isAuthenticated && data.user) {
-        setUser(data.user);
-        // Load Graph from API
-        try {
-          const { nodes: loadedNodes, edges: loadedEdges } =
-            await api.loadGraphFromApi();
-          if (loadedNodes.length > 0) {
-            setNodes(loadedNodes);
-            setEdges(loadedEdges);
-          }
-        } catch (e) {
-          console.error("Failed to load graph from API", e);
-        }
-      }
-    });
-  }, []);
 
   // --- Automatic Connection Discovery ---
   useEffect(() => {
@@ -297,39 +265,41 @@ const App: React.FC = () => {
     selectedNodeId,
   ]);
 
-  // --- Backend Sync Effects ---
-  // We hook into specific operations instead of watching the whole state to avoid excessive writes,
-  // except for Edges which are currently bulk saved.
+  // --- File System Sync Effects ---
 
   useEffect(() => {
-    if (!user) return;
+    if (!dirHandle) return;
+
     // Save all edges when they change
     const timeout = setTimeout(() => {
-      api
-        .saveEdgesToApi(edges)
-        .catch((e) => console.error("Failed to sync edges", e));
+      setIsSaving(true);
+      saveEdgesToFile(dirHandle, edges)
+        .catch((e) => console.error("Failed to sync edges to disk", e))
+        .finally(() => setIsSaving(false));
     }, 2000);
     return () => clearTimeout(timeout);
-  }, [edges, user]);
+  }, [edges, dirHandle]);
 
-  const saveNodeToBackend = useCallback(
+  const saveNodeToDisk = useCallback(
     (node: GraphNode) => {
-      if (!user) return;
-      api
-        .saveNodeToApi(node)
-        .catch((e) => console.error("Failed to save node", node.id, e));
+      if (!dirHandle) return;
+      setIsSaving(true);
+      saveNodeToFile(dirHandle, node)
+        .catch((e) => console.error("Failed to save node to disk", node.id, e))
+        .finally(() => setIsSaving(false));
     },
-    [user]
+    [dirHandle]
   );
 
-  const deleteNodeFromBackend = useCallback(
+  const deleteNodeFromDisk = useCallback(
     (id: string) => {
-      if (!user) return;
-      api
-        .deleteNodeFromApi(id)
-        .catch((e) => console.error("Failed to delete node", id, e));
+      if (!dirHandle) return;
+      setIsSaving(true);
+      deleteNodeFile(dirHandle, id)
+        .catch((e) => console.error("Failed to delete node from disk", id, e))
+        .finally(() => setIsSaving(false));
     },
-    [user]
+    [dirHandle]
   );
 
   // --- Initial Center on Selected Node ---
@@ -365,15 +335,15 @@ const App: React.FC = () => {
         prev.map((n) => {
           if (n.id === id) {
             const updated = { ...n, ...updates };
-            // Sync to backend if logged in
-            if (user) saveNodeToBackend(updated);
+            // Sync to disk if folder open
+            if (dirHandle) saveNodeToDisk(updated);
             return updated;
           }
           return n;
         })
       );
     },
-    [user, saveNodeToBackend]
+    [dirHandle, saveNodeToDisk]
   );
 
   const handleDeleteNode = useCallback(
@@ -383,14 +353,14 @@ const App: React.FC = () => {
         prev.filter((e) => e.source !== id && e.target !== id)
       );
 
-      if (user) deleteNodeFromBackend(id);
+      if (dirHandle) deleteNodeFromDisk(id);
 
       if (activeSidePane?.type === "node" && activeSidePane.data === id) {
         setActiveSidePane(null);
       }
       if (selectedNodeId === id) setSelectedNodeId(null);
     },
-    [activeSidePane, selectedNodeId, user, deleteNodeFromBackend]
+    [activeSidePane, selectedNodeId, dirHandle, deleteNodeFromDisk]
   );
 
   const handleExpandNode = useCallback(
@@ -633,9 +603,9 @@ const App: React.FC = () => {
         setNodes((prev) => [...prev, ...nodesToAdd]);
         setEdges((prev) => [...prev, ...edgesToAdd]);
 
-        // Sync new nodes/edges to backend
-        if (user) {
-          nodesToAdd.forEach((n) => saveNodeToBackend(n));
+        // Sync new nodes/edges to disk
+        if (dirHandle) {
+          nodesToAdd.forEach((n) => saveNodeToDisk(n));
           // Edges are handled by the useEffect hook
         }
 
@@ -690,7 +660,7 @@ const App: React.FC = () => {
         setExpandingNodeIds((prev) => prev.filter((nId) => nId !== id));
       }
     },
-    [nodes, currentScopeId]
+    [nodes, currentScopeId, dirHandle, saveNodeToDisk]
   );
 
   const handleMaximizeNode = useCallback(
@@ -813,7 +783,7 @@ const App: React.FC = () => {
 
       setNodes((prev) => [...prev, newNode]);
 
-      if (user) saveNodeToBackend(newNode);
+      if (dirHandle) saveNodeToDisk(newNode);
 
       if (shouldExpand) {
         handleExpandNode(newNodeId, topic, newNode);
@@ -847,13 +817,21 @@ const App: React.FC = () => {
         })
           .then((result) => {
             updateNodeMessage(result.text);
+            // Save final state
+            const updatedNode = { ...newNode };
+            if (updatedNode.messages) {
+              const lastMsg =
+                updatedNode.messages[updatedNode.messages.length - 1];
+              if (lastMsg.role === "model") lastMsg.text = result.text;
+            }
+            if (dirHandle) saveNodeToDisk(updatedNode);
           })
           .catch((err) => {
             updateNodeMessage("Error generating content.");
           });
       }
     },
-    [viewTransform, handleExpandNode, currentScopeId]
+    [viewTransform, handleExpandNode, currentScopeId, dirHandle, saveNodeToDisk]
   );
 
   const handleNavigateDown = useCallback((nodeId: string) => {
@@ -990,31 +968,21 @@ const App: React.FC = () => {
   const filteredEdges = edges.filter((e) => e.parentId == currentScopeId);
 
   const handleOpenStorage = async () => {
-    if (user) {
-      // Backend Mode: Maybe open settings to pick path?
-      // For now, let's just re-load graph
-      try {
-        const { nodes: loadedNodes, edges: loadedEdges } =
-          await api.loadGraphFromApi();
-        setNodes(loadedNodes);
-        setEdges(loadedEdges);
-        alert("Graph synced from server.");
-      } catch (e) {
-        alert("Failed to sync.");
-      }
-      return;
-    }
-
     // Local Mode
     const handle = await pickDirectory();
     if (handle) {
       setDirHandle(handle);
       setDirName(handle.name);
-      const { nodes: loadedNodes, edges: loadedEdges } =
-        await loadGraphFromDirectory(handle);
-      if (loadedNodes.length > 0) {
-        setNodes(loadedNodes);
-        setEdges(loadedEdges);
+      try {
+        const { nodes: loadedNodes, edges: loadedEdges } =
+          await loadGraphFromDirectory(handle);
+        if (loadedNodes.length > 0) {
+          setNodes(loadedNodes);
+          setEdges(loadedEdges);
+        }
+      } catch (e) {
+        console.error("Error loading from directory", e);
+        alert("Failed to load graph from directory.");
       }
     }
   };
@@ -1027,75 +995,52 @@ const App: React.FC = () => {
   return (
     <div className="flex w-screen h-screen overflow-hidden bg-slate-900 text-slate-200 font-sans">
       <div className="flex-1 relative min-w-0 flex flex-col">
-        {/* Auth Buttons */}
+        {/* Auth/Folder Buttons */}
         <div className="absolute top-4 right-4 z-50 flex gap-3">
-          {user ? (
+          {dirHandle ? (
             <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-sky-600 flex items-center justify-center text-white font-bold shadow-lg cursor-default">
-                {user.username.charAt(0).toUpperCase()}
+              <div className="px-3 py-1 bg-green-900/50 border border-green-700 text-green-200 text-xs rounded flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                {dirName}
+                {isSaving && (
+                  <span className="text-xs opacity-50 ml-1">(saving...)</span>
+                )}
               </div>
               <button
                 onClick={() => {
-                  api.logout().then(() => setUser(null));
-                  setNodes([]); // Clear graph on logout? Or keep local? Let's keep local for now or clear.
+                  setDirHandle(null);
+                  setDirName(null);
+                  setNodes([]); // Clear?
                   setEdges([]);
-                  window.location.reload(); // Simple reload to clear state
+                  window.location.reload();
                 }}
                 className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded border border-slate-700"
               >
-                Logout
+                Close Folder
               </button>
             </div>
           ) : (
-            <>
-              <button
-                onClick={() => {
-                  setAuthMode("login");
-                  setShowAuth(true);
-                }}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-sky-400 text-sm font-bold rounded-lg border border-slate-700 shadow-lg transition-all"
+            <button
+              onClick={handleOpenStorage}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-sky-400 text-sm font-bold rounded-lg border border-slate-700 shadow-lg transition-all flex items-center gap-2"
+            >
+              <svg
+                className="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
               >
-                Login
-              </button>
-              <button
-                onClick={() => {
-                  setAuthMode("signup");
-                  setShowAuth(true);
-                }}
-                className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-sm font-bold rounded-lg shadow-lg shadow-sky-500/20 transition-all"
-              >
-                Sign Up
-              </button>
-            </>
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+                ></path>
+              </svg>
+              Open Local Folder
+            </button>
           )}
         </div>
-
-        {/* Auth Page Overlay */}
-        {showAuth && (
-          <div className="fixed inset-0 z-[100] bg-slate-900/80 backdrop-blur-sm flex items-center justify-center">
-            <div className="w-full h-full overflow-y-auto flex items-center justify-center">
-              <AuthPage
-                initialMode={authMode}
-                onLogin={async (loggedInUser) => {
-                  setUser(loggedInUser);
-                  setShowAuth(false);
-                  // Load data
-                  try {
-                    const { nodes: loadedNodes, edges: loadedEdges } =
-                      await api.loadGraphFromApi();
-                    if (loadedNodes.length > 0) {
-                      setNodes(loadedNodes);
-                      setEdges(loadedEdges);
-                    }
-                  } catch (e) {
-                    console.error("Failed to load initial graph", e);
-                  }
-                }}
-                onCancel={() => setShowAuth(false)}
-              />
-            </div>
-          </div>
-        )}
 
         {/* Breadcrumbs */}
         <div className="absolute top-16 left-4 md:left-20 z-40 flex items-center gap-2 text-sm pointer-events-none flex-wrap">
@@ -1153,8 +1098,8 @@ const App: React.FC = () => {
           viewTransform={viewTransform}
           onViewTransformChange={setViewTransform}
           onOpenStorage={handleOpenStorage}
-          storageConnected={!!dirHandle || !!user}
-          storageDirName={user ? "Cloud" : dirName}
+          storageConnected={!!dirHandle}
+          storageDirName={dirName}
           isSaving={isSaving}
           onOpenLink={handleOpenLink}
           onMaximizeNode={handleMaximizeNode}
