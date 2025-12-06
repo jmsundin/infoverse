@@ -1,0 +1,5 @@
+{
+  "name": "infoverse",
+  "description": "An infinite canvas for exploring hierarchical knowledge using Gemini, Wikidata, and Wikipedia.",
+  "requestFramePermissions": []
+}
