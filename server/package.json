@@ -1,0 +1,23 @@
+{
+  "name": "infoverse-server",
+  "version": "1.0.0",
+  "description": "Backend for Infoverse",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^4.18.2",
+    "express-session": "^1.17.3",
+    "js-yaml": "^4.1.1",
+    "passport": "^0.7.0",
+    "passport-local": "^1.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
