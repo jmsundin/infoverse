@@ -204,7 +204,9 @@ const App: React.FC = () => {
     const checkAuth = async () => {
       try {
         const apiBase = (import.meta as any).env.VITE_API_URL || "";
-        const res = await fetch(`${apiBase}/api/auth/check`);
+        const res = await fetch(`${apiBase}/api/auth/check`, {
+          credentials: "include",
+        });
         const data = await res.json();
         if (data.isAuthenticated) {
           setUser(data.user);
@@ -232,7 +234,10 @@ const App: React.FC = () => {
   const handleLogout = async () => {
     try {
       const apiBase = (import.meta as any).env.VITE_API_URL || "";
-      await fetch(`${apiBase}/api/auth/logout`, { method: "POST" });
+      await fetch(`${apiBase}/api/auth/logout`, {
+        method: "POST",
+        credentials: "include",
+      });
       setUser(null);
       setDirHandle(null);
       setDirName(null);

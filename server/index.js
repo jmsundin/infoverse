@@ -67,26 +67,42 @@ passport.deserializeUser(async (id, done) => {
 });
 
 // Middleware
+const allowedOrigins = [
+  'http://localhost:3000',
+  'https://infoverse.ai',
+  'https://www.infoverse.ai',
+  'https://app.infoverse.ai'
+];
+
+if (process.env.CORS_ORIGIN) {
+    // Add env var origins, trimming whitespace
+    const envOrigins = process.env.CORS_ORIGIN.split(',').map(o => o.trim());
+    allowedOrigins.push(...envOrigins);
+}
+
 app.use(cors({
     origin: (origin, callback) => {
-        const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000').split(',');
         // Allow requests with no origin (like mobile apps or curl requests)
         if (!origin) return callback(null, true);
+        
         if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*')) {
             callback(null, true);
         } else {
-            // Log failed origin for debugging
             console.log('Blocked by CORS:', origin);
+            // Don't throw error to avoid 500, just return false/error object handled by middleware
+            // But standard CORS middleware expects an error for blockage or false.
+            // If we pass an error, it goes to error handler.
             callback(new Error('Not allowed by CORS'));
         }
     },
-    credentials: true
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 // Handle OPTIONS preflight for all routes
 app.options('*', cors({
     origin: (origin, callback) => {
-        const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000').split(',');
         if (!origin) return callback(null, true);
         if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*')) {
             callback(null, true);
@@ -94,8 +110,25 @@ app.options('*', cors({
             callback(new Error('Not allowed by CORS'));
         }
     },
-    credentials: true
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
+// Fallback: Manually handle OPTIONS if middleware fails/skipped (Vercel specific)
+app.use((req, res, next) => {
+  if (req.method === 'OPTIONS') {
+    const origin = req.headers.origin;
+    if (allowedOrigins.includes(origin)) {
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.header('Access-Control-Allow-Credentials', 'true');
+      return res.sendStatus(200);
+    }
+  }
+  next();
+});
 
 app.use(express.json({ limit: '50mb' })); // Increase limit for large updates
 app.use(express.urlencoded({ extended: false }));
