@@ -8,77 +8,51 @@ const path = require('path');
 const cors = require('cors');
 const yaml = require('js-yaml');
 const { exec } = require('child_process');
+const db = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const DATA_DIR = process.env.DATA_DIR || __dirname;
-const USERS_FILE = path.join(DATA_DIR, 'users.json');
 
-// Ensure users file exists
-if (!fs.existsSync(USERS_FILE)) {
-    try {
-        fs.writeFileSync(USERS_FILE, JSON.stringify([]));
-    } catch (err) {
-        console.error('Could not write users file (likely read-only filesystem):', err);
-        // In-memory fallback could go here, or just let it fail gracefully later
-    }
-}
-
-// Helper to read/write users
-const getUsers = () => {
-    try {
-        const data = fs.readFileSync(USERS_FILE);
-        return JSON.parse(data);
-    } catch (e) {
-        return [];
-    }
-};
-
-const addUser = (user) => {
-    const users = getUsers();
-    users.push(user);
-    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-};
-
-const updateUser = (id, updates) => {
-    let users = getUsers();
-    users = users.map(u => u.id === id ? { ...u, ...updates } : u);
-    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-    return users.find(u => u.id === id);
-};
-
-const findUserByUsername = (username) => {
-    const users = getUsers();
-    return users.find(u => u.username === username);
-};
-
-const findUserById = (id) => {
-    const users = getUsers();
-    return users.find(u => u.id === id);
-};
+// Initialize Database
+db.initDb();
 
 // Passport Config
-passport.use(new LocalStrategy((username, password, done) => {
-    const user = findUserByUsername(username);
-    if (!user) {
-        return done(null, false, { message: 'Incorrect username.' });
-    }
-    bcrypt.compare(password, user.password, (err, res) => {
-        if (res) {
+passport.use(new LocalStrategy(async (username, password, done) => {
+    try {
+        const result = await db.query('SELECT * FROM users WHERE username = $1', [username]);
+        const user = result.rows[0];
+
+        if (!user) {
+            return done(null, false, { message: 'Incorrect username.' });
+        }
+        
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (isMatch) {
+            user.storagePath = user.storage_path;
             return done(null, user);
         } else {
             return done(null, false, { message: 'Incorrect password.' });
         }
-    });
+    } catch (err) {
+        return done(err);
+    }
 }));
 
 passport.serializeUser((user, done) => {
     done(null, user.id);
 });
 
-passport.deserializeUser((id, done) => {
-    const user = findUserById(id);
-    done(null, user);
+passport.deserializeUser(async (id, done) => {
+    try {
+        const result = await db.query('SELECT * FROM users WHERE id = $1', [id]);
+        const user = result.rows[0];
+        if (user) {
+            user.storagePath = user.storage_path;
+        }
+        done(null, user);
+    } catch (err) {
+        done(err);
+    }
 });
 
 // Middleware
@@ -93,7 +67,7 @@ app.use(session({
     resave: false,
     saveUninitialized: false,
     cookie: { 
-        secure: false, // Set true if using https
+        secure: process.env.NODE_ENV === 'production', // Set true if using https
         maxAge: 24 * 60 * 60 * 1000 // 24 hours
     } 
 }));
@@ -183,25 +157,36 @@ app.post('/api/auth/signup', async (req, res) => {
     if (!username || !password) {
         return res.status(400).json({ message: 'Username and password required' });
     }
-    if (findUserByUsername(username)) {
-        return res.status(409).json({ message: 'Username already exists' });
-    }
 
-    // Storage Path is optional now, set via Settings later
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = {
-        id: Date.now().toString(),
-        username,
-        password: hashedPassword,
-        storagePath: '' // Initialize empty
-    };
-    addUser(newUser);
-    
-    // Auto login after signup
-    req.login(newUser, (err) => {
-        if (err) return res.status(500).json({ message: 'Login failed after signup' });
-        return res.json({ user: { id: newUser.id, username: newUser.username, storagePath: newUser.storagePath } });
-    });
+    try {
+        // Check if user exists
+        const userCheck = await db.query('SELECT * FROM users WHERE username = $1', [username]);
+        if (userCheck.rows.length > 0) {
+            return res.status(409).json({ message: 'Username already exists' });
+        }
+
+        // Hash password
+        const hashedPassword = await bcrypt.hash(password, 10);
+        
+        // Insert user
+        const result = await db.query(
+            'INSERT INTO users (username, password, storage_path) VALUES ($1, $2, $3) RETURNING *',
+            [username, hashedPassword, '']
+        );
+        
+        const newUser = result.rows[0];
+        newUser.storagePath = newUser.storage_path;
+        
+        // Auto login after signup
+        req.login(newUser, (err) => {
+            if (err) return res.status(500).json({ message: 'Login failed after signup' });
+            return res.json({ user: { id: newUser.id.toString(), username: newUser.username, storagePath: newUser.storagePath } });
+        });
+
+    } catch (err) {
+        console.error('Signup error:', err);
+        res.status(500).json({ message: 'Error creating user' });
+    }
 });
 
 app.get('/api/system/pick-path', (req, res) => {
@@ -209,7 +194,7 @@ app.get('/api/system/pick-path', (req, res) => {
     openDirectoryPicker(res);
 });
 
-app.post('/api/user/settings', (req, res) => {
+app.post('/api/user/settings', async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
 
     const { storagePath } = req.body;
@@ -219,12 +204,18 @@ app.post('/api/user/settings', (req, res) => {
             ensureDir(storagePath);
         }
         
-        const updatedUser = updateUser(req.user.id, { storagePath });
+        const result = await db.query(
+            'UPDATE users SET storage_path = $1 WHERE id = $2 RETURNING *',
+            [storagePath, req.user.id]
+        );
+        
+        const updatedUser = result.rows[0];
+        updatedUser.storagePath = updatedUser.storage_path;
         
         // Update session user
         req.login(updatedUser, (err) => {
             if (err) return res.status(500).json({ message: 'Failed to update session' });
-            res.json({ user: { id: updatedUser.id, username: updatedUser.username, storagePath: updatedUser.storagePath } });
+            res.json({ user: { id: updatedUser.id.toString(), username: updatedUser.username, storagePath: updatedUser.storagePath } });
         });
 
     } catch (err) {
@@ -239,7 +230,7 @@ app.post('/api/auth/login', (req, res, next) => {
         if (!user) return res.status(401).json({ message: info.message });
         req.login(user, (err) => {
             if (err) return next(err);
-            return res.json({ user: { id: user.id, username: user.username, storagePath: user.storagePath } });
+            return res.json({ user: { id: user.id.toString(), username: user.username, storagePath: user.storagePath } });
         });
     })(req, res, next);
 });
@@ -253,7 +244,7 @@ app.post('/api/auth/logout', (req, res) => {
 
 app.get('/api/auth/check', (req, res) => {
     if (req.isAuthenticated()) {
-        res.json({ isAuthenticated: true, user: { id: req.user.id, username: req.user.username, storagePath: req.user.storagePath } });
+        res.json({ isAuthenticated: true, user: { id: req.user.id.toString(), username: req.user.username, storagePath: req.user.storagePath } });
     } else {
         res.json({ isAuthenticated: false });
     }
@@ -278,21 +269,9 @@ const parseMarkdownNode = (filePath) => {
         const metadata = yaml.load(parts[1]);
         const content = parts.slice(2).join('---').trim(); // Rejoin rest in case content has ---
         
-        // Map metadata + content back to GraphNode structure
-        // Note: content in GraphNode is the text, which we stored in body.
-        // But wait, GraphNode has 'content' property. 
-        // Let's adhere to plan: metadata contains props, body contains text.
-        // If type is CHAT, we might store messages in metadata or body?
-        // Plan said: "Node Content Title" in body.
-        // Let's reconstruct.
-        
         return {
             ...metadata,
             content: metadata.content || content // Prefer metadata content if exists, else body
-            // We will refine this in POST. 
-            // Actually, 'content' in GraphNode is often the title/short text.
-            // Let's treat the markdown body as the description/long text or just keep it simple.
-            // For now, simple mapping.
         };
     } catch (e) {
         console.error('Error parsing node:', filePath, e);
@@ -377,7 +356,6 @@ app.post('/api/nodes', (req, res) => {
             const fullPath = path.join(storagePath, file);
             try {
                 // Read file to check ID
-                // Optimization: We could cache this map, but for now direct read
                 const content = fs.readFileSync(fullPath, 'utf8');
                 if (content.includes(`id: "${node.id}"`) || content.includes(`id: ${node.id}`)) {
                     oldFilePath = fullPath;
