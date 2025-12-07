@@ -16,9 +16,6 @@ const PORT = process.env.PORT || 3001;
 // Initialize Database
 db.initDb().catch(err => console.error('DB Init Failed:', err));
 
-// Gemini Routes
-app.use('/api/gemini', require('./geminiRoutes'));
-
 // Passport Config
 passport.use(new LocalStrategy(async (username, password, done) => {
     try {
@@ -147,6 +144,9 @@ app.use(session({
 }));
 app.use(passport.initialize());
 app.use(passport.session());
+
+// Gemini Routes
+app.use('/api/gemini', require('./geminiRoutes'));
 
 // Helper to ensure directory exists
 const ensureDir = (dirPath) => {

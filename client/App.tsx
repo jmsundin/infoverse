@@ -5,6 +5,7 @@ import { GraphNodeComponent } from "./components/GraphNode";
 import { SearchBar } from "./components/SearchBar";
 import { NodeListDrawer } from "./components/NodeListDrawer";
 import { AuthPage } from "./components/AuthPage";
+import { LimitModal } from "./components/LimitModal";
 import {
   GraphEdge,
   GraphNode,
@@ -20,6 +21,14 @@ import {
   deleteNodeFile,
   saveEdgesToFile,
 } from "./services/storageService";
+import {
+  pickServerDirectory,
+  updateUserSettings,
+  loadGraphFromApi,
+  saveNodeToApi,
+  deleteNodeFromApi,
+  saveEdgesToApi,
+} from "./services/apiStorageService";
 import {
   expandNodeTopic,
   sendChatMessage,
@@ -186,6 +195,7 @@ const App: React.FC = () => {
   );
   const [dirName, setDirName] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isGraphLoaded, setIsGraphLoaded] = useState(false);
 
   // --- Auth State ---
   const [user, setUser] = useState<{
@@ -195,6 +205,7 @@ const App: React.FC = () => {
   } | null>(null);
   const [showAuth, setShowAuth] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+  const [showLimitModal, setShowLimitModal] = useState(false);
 
   const prevNodesRef = useRef<GraphNode[]>(nodes);
   const prevEdgesRef = useRef<GraphEdge[]>(edges);
@@ -211,6 +222,21 @@ const App: React.FC = () => {
         if (data.isAuthenticated) {
           setUser(data.user);
 
+          if (data.user.storagePath) {
+            setDirName(data.user.storagePath);
+            try {
+              const { nodes: loadedNodes, edges: loadedEdges } =
+                await loadGraphFromApi();
+              if (loadedNodes && loadedNodes.length > 0) {
+                setNodes(loadedNodes);
+                setEdges(loadedEdges);
+              }
+            } catch (e) {
+              console.error("Failed to load graph from API", e);
+            }
+          }
+          setIsGraphLoaded(true);
+
           // Redirect to app.infoverse.ai if on root domain
           if (
             window.location.hostname === "infoverse.ai" &&
@@ -219,6 +245,7 @@ const App: React.FC = () => {
             window.location.href = `https://app.infoverse.ai${window.location.pathname}`;
           }
         } else {
+          setIsGraphLoaded(true);
           // Redirect to infoverse.ai if on app subdomain and NOT authenticated
           if (window.location.hostname === "app.infoverse.ai") {
             window.location.href = `https://infoverse.ai${window.location.pathname}`;
@@ -226,6 +253,7 @@ const App: React.FC = () => {
         }
       } catch (err) {
         console.error("Auth check failed", err);
+        setIsGraphLoaded(true);
       }
     };
     checkAuth();
@@ -267,33 +295,44 @@ const App: React.FC = () => {
       .slice(-10);
 
     const discoverConnections = async () => {
-      const relationships = await findRelationships(
-        { id: newNode.id, content: newNode.content },
-        potentialTargets.map((n) => ({ id: n.id, content: n.content }))
-      );
+      try {
+        const relationships = await findRelationships(
+          { id: newNode.id, content: newNode.content },
+          potentialTargets.map((n) => ({ id: n.id, content: n.content }))
+        );
 
-      if (relationships.length > 0) {
-        setEdges((prev) => {
-          const newEdges = [...prev];
-          relationships.forEach((rel) => {
-            const exists = newEdges.some(
-              (e) =>
-                (e.source === newNode.id && e.target === rel.targetId) ||
-                (e.source === rel.targetId && e.target === newNode.id)
-            );
+        if (relationships.length > 0) {
+          setEdges((prev) => {
+            const newEdges = [...prev];
+            relationships.forEach((rel) => {
+              const exists = newEdges.some(
+                (e) =>
+                  (e.source === newNode.id && e.target === rel.targetId) ||
+                  (e.source === rel.targetId && e.target === newNode.id)
+              );
 
-            if (!exists) {
-              newEdges.push({
-                id: crypto.randomUUID(),
-                source: newNode.id,
-                target: rel.targetId,
-                label: rel.relationship,
-                parentId: currentScopeId || undefined,
-              });
-            }
+              if (!exists) {
+                newEdges.push({
+                  id: crypto.randomUUID(),
+                  source: newNode.id,
+                  target: rel.targetId,
+                  label: rel.relationship,
+                  parentId: currentScopeId || undefined,
+                });
+              }
+            });
+            return newEdges;
           });
-          return newEdges;
-        });
+        }
+      } catch (e: any) {
+        if (e.message === "LIMIT_REACHED") {
+          // Silently fail for background auto-discovery or show modal?
+          // Usually annoying to show modal for background task, but user might want to know
+          // Let's just log it for now to avoid interrupting if they are just typing
+          console.log("Limit reached during background relationship discovery");
+        } else {
+          console.error("Failed to discover connections", e);
+        }
       }
     };
 
@@ -328,38 +367,65 @@ const App: React.FC = () => {
   // --- File System Sync Effects ---
 
   useEffect(() => {
-    if (!dirHandle) return;
+    if (!dirHandle && !user?.storagePath) return;
+    if (!isGraphLoaded) return;
 
     // Save all edges when they change
-    const timeout = setTimeout(() => {
+    const timeout = setTimeout(async () => {
       setIsSaving(true);
-      saveEdgesToFile(dirHandle, edges)
-        .catch((e) => console.error("Failed to sync edges to disk", e))
-        .finally(() => setIsSaving(false));
+      try {
+        if (dirHandle) {
+          await saveEdgesToFile(dirHandle, edges);
+        } else if (user?.storagePath) {
+          await saveEdgesToApi(edges);
+        }
+      } catch (e) {
+        console.error("Failed to sync edges", e);
+      } finally {
+        setIsSaving(false);
+      }
     }, 2000);
     return () => clearTimeout(timeout);
-  }, [edges, dirHandle]);
+  }, [edges, dirHandle, user, isGraphLoaded]);
 
   const saveNodeToDisk = useCallback(
-    (node: GraphNode) => {
-      if (!dirHandle) return;
+    async (node: GraphNode) => {
+      if (!dirHandle && !user?.storagePath) return;
+      if (!isGraphLoaded) return;
       setIsSaving(true);
-      saveNodeToFile(dirHandle, node)
-        .catch((e) => console.error("Failed to save node to disk", node.id, e))
-        .finally(() => setIsSaving(false));
+      try {
+        if (dirHandle) {
+          await saveNodeToFile(dirHandle, node);
+        } else if (user?.storagePath) {
+          await saveNodeToApi(node);
+        }
+      } catch (e) {
+        console.error("Failed to save node", node.id, e);
+      } finally {
+        setIsSaving(false);
+      }
     },
-    [dirHandle]
+    [dirHandle, user]
   );
 
   const deleteNodeFromDisk = useCallback(
-    (id: string) => {
-      if (!dirHandle) return;
+    async (id: string) => {
+      if (!dirHandle && !user?.storagePath) return;
+      if (!isGraphLoaded) return;
       setIsSaving(true);
-      deleteNodeFile(dirHandle, id)
-        .catch((e) => console.error("Failed to delete node from disk", id, e))
-        .finally(() => setIsSaving(false));
+      try {
+        if (dirHandle) {
+          await deleteNodeFile(dirHandle, id);
+        } else if (user?.storagePath) {
+          await deleteNodeFromApi(id);
+        }
+      } catch (e) {
+        console.error("Failed to delete node", id, e);
+      } finally {
+        setIsSaving(false);
+      }
     },
-    [dirHandle]
+    [dirHandle, user]
   );
 
   // --- Initial Center on Selected Node ---
@@ -396,14 +462,14 @@ const App: React.FC = () => {
           if (n.id === id) {
             const updated = { ...n, ...updates };
             // Sync to disk if folder open
-            if (dirHandle) saveNodeToDisk(updated);
+            if (dirHandle || user?.storagePath) saveNodeToDisk(updated);
             return updated;
           }
           return n;
         })
       );
     },
-    [dirHandle, saveNodeToDisk]
+    [dirHandle, user, saveNodeToDisk]
   );
 
   const handleDeleteNode = useCallback(
@@ -413,14 +479,14 @@ const App: React.FC = () => {
         prev.filter((e) => e.source !== id && e.target !== id)
       );
 
-      if (dirHandle) deleteNodeFromDisk(id);
+      if (dirHandle || user?.storagePath) deleteNodeFromDisk(id);
 
       if (activeSidePane?.type === "node" && activeSidePane.data === id) {
         setActiveSidePane(null);
       }
       if (selectedNodeId === id) setSelectedNodeId(null);
     },
-    [activeSidePane, selectedNodeId, dirHandle, deleteNodeFromDisk]
+    [activeSidePane, selectedNodeId, dirHandle, user, deleteNodeFromDisk]
   );
 
   const handleExpandNode = useCallback(
@@ -664,7 +730,7 @@ const App: React.FC = () => {
         setEdges((prev) => [...prev, ...edgesToAdd]);
 
         // Sync new nodes/edges to disk
-        if (dirHandle) {
+        if (dirHandle || user?.storagePath) {
           nodesToAdd.forEach((n) => saveNodeToDisk(n));
           // Edges are handled by the useEffect hook
         }
@@ -714,13 +780,17 @@ const App: React.FC = () => {
             )
           );
         }
-      } catch (e) {
-        console.error("Failed to expand:", e);
+      } catch (e: any) {
+        if (e.message === "LIMIT_REACHED") {
+          setShowLimitModal(true);
+        } else {
+          console.error("Failed to expand:", e);
+        }
       } finally {
         setExpandingNodeIds((prev) => prev.filter((nId) => nId !== id));
       }
     },
-    [nodes, currentScopeId, dirHandle, saveNodeToDisk]
+    [nodes, currentScopeId, dirHandle, user, saveNodeToDisk]
   );
 
   const handleMaximizeNode = useCallback(
@@ -843,7 +913,7 @@ const App: React.FC = () => {
 
       setNodes((prev) => [...prev, newNode]);
 
-      if (dirHandle) saveNodeToDisk(newNode);
+      if (dirHandle || user?.storagePath) saveNodeToDisk(newNode);
 
       if (shouldExpand) {
         handleExpandNode(newNodeId, topic, newNode);
@@ -884,14 +954,26 @@ const App: React.FC = () => {
                 updatedNode.messages[updatedNode.messages.length - 1];
               if (lastMsg.role === "model") lastMsg.text = result.text;
             }
-            if (dirHandle) saveNodeToDisk(updatedNode);
+            if (dirHandle || user?.storagePath) saveNodeToDisk(updatedNode);
           })
-          .catch((err) => {
-            updateNodeMessage("Error generating content.");
+          .catch((err: any) => {
+            if (err.message === "LIMIT_REACHED") {
+              setShowLimitModal(true);
+              updateNodeMessage("Limit reached.");
+            } else {
+              updateNodeMessage("Error generating content.");
+            }
           });
       }
     },
-    [viewTransform, handleExpandNode, currentScopeId, dirHandle, saveNodeToDisk]
+    [
+      viewTransform,
+      handleExpandNode,
+      currentScopeId,
+      dirHandle,
+      user,
+      saveNodeToDisk,
+    ]
   );
 
   const handleNavigateDown = useCallback((nodeId: string) => {
@@ -1028,21 +1110,54 @@ const App: React.FC = () => {
   const filteredEdges = edges.filter((e) => e.parentId == currentScopeId);
 
   const handleOpenStorage = async () => {
-    // Local Mode
-    const handle = await pickDirectory();
-    if (handle) {
-      setDirHandle(handle);
-      setDirName(handle.name);
+    if (user) {
+      // Server Mode
       try {
-        const { nodes: loadedNodes, edges: loadedEdges } =
-          await loadGraphFromDirectory(handle);
-        if (loadedNodes.length > 0) {
-          setNodes(loadedNodes);
-          setEdges(loadedEdges);
+        const { path, cancelled } = await pickServerDirectory();
+        if (cancelled) return;
+
+        if (path) {
+          setIsGraphLoaded(false); // Prevent saving before load
+          await updateUserSettings(path);
+          // Update local user state
+          setUser((prev) => (prev ? { ...prev, storagePath: path } : null));
+          setDirName(path);
+
+          const { nodes: loadedNodes, edges: loadedEdges } =
+            await loadGraphFromApi();
+          if (loadedNodes && loadedNodes.length > 0) {
+            setNodes(loadedNodes);
+            setEdges(loadedEdges);
+          }
+          setIsGraphLoaded(true);
         }
       } catch (e) {
-        console.error("Error loading from directory", e);
-        alert("Failed to load graph from directory.");
+        console.error("Error setting server directory", e);
+        setIsGraphLoaded(true); // Reset on error
+        alert(
+          "Failed to set server directory. Ensure server tools are installed."
+        );
+      }
+    } else {
+      // Local Mode
+      const handle = await pickDirectory();
+      if (handle) {
+        setIsGraphLoaded(false); // Prevent saving before load
+        setDirHandle(handle);
+        setDirName(handle.name);
+        try {
+          const { nodes: loadedNodes, edges: loadedEdges } =
+            await loadGraphFromDirectory(handle);
+          if (loadedNodes.length > 0) {
+            setNodes(loadedNodes);
+            setEdges(loadedEdges);
+          }
+          setIsGraphLoaded(true);
+        } catch (e) {
+          console.error("Error loading from directory", e);
+          setIsGraphLoaded(true); // Reset on error
+          alert("Failed to load graph from directory.");
+        }
       }
     }
   };
@@ -1080,7 +1195,7 @@ const App: React.FC = () => {
             </>
           ) : (
             <>
-              {dirHandle ? (
+              {dirName ? (
                 <div className="flex items-center gap-3">
                   <div className="px-3 py-1 bg-green-900/50 border border-green-700 text-green-200 text-xs rounded flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
@@ -1092,7 +1207,17 @@ const App: React.FC = () => {
                     )}
                   </div>
                   <button
-                    onClick={() => {
+                    onClick={async () => {
+                      if (user?.storagePath) {
+                        try {
+                          await updateUserSettings("");
+                          setUser((prev) =>
+                            prev ? { ...prev, storagePath: undefined } : null
+                          );
+                        } catch (e) {
+                          console.error("Failed to clear user settings", e);
+                        }
+                      }
                       setDirHandle(null);
                       setDirName(null);
                       setNodes([]); // Clear?
@@ -1194,7 +1319,7 @@ const App: React.FC = () => {
           viewTransform={viewTransform}
           onViewTransformChange={setViewTransform}
           onOpenStorage={handleOpenStorage}
-          storageConnected={!!dirHandle}
+          storageConnected={!!dirName}
           storageDirName={dirName}
           isSaving={isSaving}
           onOpenLink={handleOpenLink}
@@ -1249,6 +1374,23 @@ const App: React.FC = () => {
             initialMode={authMode}
             onLogin={(user) => {
               setUser(user);
+              if (user.storagePath) {
+                setDirName(user.storagePath);
+                loadGraphFromApi()
+                  .then(({ nodes, edges }) => {
+                    if (nodes && nodes.length > 0) {
+                      setNodes(nodes);
+                      setEdges(edges);
+                    }
+                    setIsGraphLoaded(true);
+                  })
+                  .catch((e) => {
+                    console.error("Failed to load graph on login", e);
+                    setIsGraphLoaded(true);
+                  });
+              } else {
+                setIsGraphLoaded(true);
+              }
               setShowAuth(false);
               // Redirect to app subdomain upon login
               if (
@@ -1262,6 +1404,21 @@ const App: React.FC = () => {
           />
         </div>
       )}
+
+      <LimitModal
+        isOpen={showLimitModal}
+        onClose={() => setShowLimitModal(false)}
+        onLogin={() => {
+          setShowLimitModal(false);
+          setAuthMode("login");
+          setShowAuth(true);
+        }}
+        onSignup={() => {
+          setShowLimitModal(false);
+          setAuthMode("signup");
+          setShowAuth(true);
+        }}
+      />
     </div>
   );
 };

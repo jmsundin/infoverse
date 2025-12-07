@@ -3,12 +3,17 @@ import { ExpandResponse } from "../types";
 // Helper to make authenticated requests
 const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
   const headers = {
-    'Content-Type': 'application/json',
-    ...(options.headers || {})
+    "Content-Type": "application/json",
+    ...(options.headers || {}),
   };
-  
+
   // Credentials include cookies for session
-  const res = await fetch(url, { ...options, headers, credentials: 'include' });
+  const res = await fetch(url, { ...options, headers, credentials: "include" });
+
+  if (res.status === 429) {
+    throw new Error("LIMIT_REACHED");
+  }
+
   if (!res.ok) {
     throw new Error(`API Error: ${res.statusText}`);
   }
@@ -20,25 +25,24 @@ const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
  * Supports streaming via onToken callback.
  */
 export const sendChatMessage = async (
-  history: { role: 'user' | 'model'; text: string }[],
+  history: { role: "user" | "model"; text: string }[],
   newMessage: string,
   onToken?: (text: string) => void
 ): Promise<{ text: string; sources?: { uri: string; title: string }[] }> => {
-  
   try {
-    const response = await fetchWithAuth('/api/gemini/chat', {
-      method: 'POST',
-      body: JSON.stringify({ history, newMessage })
+    const response = await fetchWithAuth("/api/gemini/chat", {
+      method: "POST",
+      body: JSON.stringify({ history, newMessage }),
     });
 
     if (!response.body) throw new Error("No response body");
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-    let fullText = '';
+    let fullText = "";
     let sources: { uri: string; title: string }[] = [];
 
-    let buffer = '';
+    let buffer = "";
 
     while (true) {
       const { value, done } = await reader.read();
@@ -47,9 +51,9 @@ export const sendChatMessage = async (
       const chunk = decoder.decode(value, { stream: true });
       buffer += chunk;
 
-      const lines = buffer.split('\n');
+      const lines = buffer.split("\n");
       // Keep the last line in the buffer if it's incomplete
-      buffer = lines.pop() || '';
+      buffer = lines.pop() || "";
 
       for (const line of lines) {
         if (!line.trim()) continue;
@@ -70,9 +74,12 @@ export const sendChatMessage = async (
 
     if (!fullText) fullText = "I couldn't generate a response.";
 
-    return { text: fullText, sources: sources.length > 0 ? sources : undefined };
-
-  } catch (error) {
+    return {
+      text: fullText,
+      sources: sources.length > 0 ? sources : undefined,
+    };
+  } catch (error: any) {
+    if (error.message === "LIMIT_REACHED") throw error;
     console.error("Gemini Chat Error:", error);
     return { text: "Error connecting to Gemini." };
   }
@@ -81,15 +88,19 @@ export const sendChatMessage = async (
 /**
  * Generates a concise title for a chat node based on the conversation.
  */
-export const generateTitle = async (userMessage: string, modelResponse: string): Promise<string> => {
+export const generateTitle = async (
+  userMessage: string,
+  modelResponse: string
+): Promise<string> => {
   try {
-    const res = await fetchWithAuth('/api/gemini/title', {
-      method: 'POST',
-      body: JSON.stringify({ userMessage, modelResponse })
+    const res = await fetchWithAuth("/api/gemini/title", {
+      method: "POST",
+      body: JSON.stringify({ userMessage, modelResponse }),
     });
     const data = await res.json();
     return data.title;
-  } catch (e) {
+  } catch (e: any) {
+    if (e.message === "LIMIT_REACHED") throw e;
     console.error("Title generation failed", e);
     return "New Chat";
   }
@@ -99,7 +110,9 @@ export const generateTitle = async (userMessage: string, modelResponse: string):
  * Returns the prompt template for analyzing a topic and suggesting breakdown/connections.
  * Kept on client as it's just a string helper, but not used for API call construction anymore.
  */
-export const getTopicSummaryPrompt = (topic: string) => `Step 1: Whenever I provide a [Topic], output a 50-word executive summary focusing on the core problem it solves and its main value.
+export const getTopicSummaryPrompt = (
+  topic: string
+) => `Step 1: Whenever I provide a [Topic], output a 50-word executive summary focusing on the core problem it solves and its main value.
 
 Step 2: Immediately ask: "Would you like to see the breakdown and connections?"
 
@@ -118,14 +131,18 @@ Topic: ${topic}`;
 /**
  * Expands a node by finding hierarchical relationships using Gemini via backend.
  */
-export const expandNodeTopic = async (topic: string, existingContext: string[] = []): Promise<ExpandResponse> => {
+export const expandNodeTopic = async (
+  topic: string,
+  existingContext: string[] = []
+): Promise<ExpandResponse> => {
   try {
-    const res = await fetchWithAuth('/api/gemini/expand', {
-      method: 'POST',
-      body: JSON.stringify({ topic, existingContext })
+    const res = await fetchWithAuth("/api/gemini/expand", {
+      method: "POST",
+      body: JSON.stringify({ topic, existingContext }),
     });
-    return await res.json() as ExpandResponse;
-  } catch (error) {
+    return (await res.json()) as ExpandResponse;
+  } catch (error: any) {
+    if (error.message === "LIMIT_REACHED") throw error;
     console.error("Gemini Expansion Error:", error);
     return { nodes: [], edges: [] };
   }
@@ -141,12 +158,13 @@ export const findRelationships = async (
   if (targetNodes.length === 0) return [];
 
   try {
-    const res = await fetchWithAuth('/api/gemini/relationships', {
-      method: 'POST',
-      body: JSON.stringify({ sourceNode, targetNodes })
+    const res = await fetchWithAuth("/api/gemini/relationships", {
+      method: "POST",
+      body: JSON.stringify({ sourceNode, targetNodes }),
     });
     return await res.json();
-  } catch (error) {
+  } catch (error: any) {
+    if (error.message === "LIMIT_REACHED") throw error;
     console.error("Relationship discovery failed", error);
     return [];
   }

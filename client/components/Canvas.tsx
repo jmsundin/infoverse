@@ -138,7 +138,7 @@ export const Canvas: React.FC<CanvasProps> = ({
       return pIds;
   }, [edges]);
 
-  const { visibleNodes, bufferedNodes, visibleEdges, lodLevel } = useMemo(() => {
+  const { visibleNodes, bufferedNodes, visibleEdges, lodLevel, nodeMap } = useMemo(() => {
     const k = viewTransform.k || 0.1; 
     const vpX = -viewTransform.x / k;
     const vpY = -viewTransform.y / k;
@@ -183,6 +183,11 @@ export const Canvas: React.FC<CanvasProps> = ({
                 const nW = d.width || DEFAULT_NODE_WIDTH;
                 const nH = d.height || DEFAULT_NODE_HEIGHT;
                 
+                // Validate coordinates to avoid rendering crashes
+                if (typeof d.x !== 'number' || typeof d.y !== 'number' || isNaN(d.x) || isNaN(d.y)) {
+                    return; 
+                }
+
                 // Check intersection
                 const right = d.x + nW;
                 const bottom = d.y + nH;
@@ -198,17 +203,26 @@ export const Canvas: React.FC<CanvasProps> = ({
 
     // In CLUSTER mode, do not render edges/connections
     let visEdges: GraphEdge[] = [];
+    const nodeMap = new Map(nodes.map(n => [n.id, n]));
+    
     if (currentLod !== 'CLUSTER') {
         visEdges = edges.filter(e => {
-            const source = nodes.find(n => n.id === e.source);
-            const target = nodes.find(n => n.id === e.target);
+            const source = nodeMap.get(e.source);
+            const target = nodeMap.get(e.target);
+            // Must have both nodes to render edge
             if (!source || !target) return false;
             
+            // Check for valid coordinates
+            if (typeof source.x !== 'number' || typeof source.y !== 'number' || 
+                typeof target.x !== 'number' || typeof target.y !== 'number') {
+                return false;
+            }
+
             const sW = source.width || DEFAULT_NODE_WIDTH;
             const sH = source.height || DEFAULT_NODE_HEIGHT;
             const tW = target.width || DEFAULT_NODE_WIDTH;
             const tH = target.height || DEFAULT_NODE_HEIGHT;
-
+            
             const left = Math.min(source.x, target.x);
             const right = Math.max(source.x + sW, target.x + tW);
             const top = Math.min(source.y, target.y);
@@ -225,7 +239,8 @@ export const Canvas: React.FC<CanvasProps> = ({
       visibleNodes: visible, 
       bufferedNodes: [], // Deprecated in favor of Quadtree direct query
       visibleEdges: visEdges, 
-      lodLevel: currentLod
+      lodLevel: currentLod,
+      nodeMap
     };
 
   }, [nodes, edges, viewTransform, containerSize, quadtree]); 
@@ -313,9 +328,13 @@ export const Canvas: React.FC<CanvasProps> = ({
             effectiveH: n.height || DEFAULT_NODE_HEIGHT
       }));
 
+      // Filter edges to only those where both source and target exist in the simulation
+      const nodeIds = new Set(simNodes.map(n => n.id));
+      const validEdges = edges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target));
+
       const simulation = d3.forceSimulation(simNodes as any)
         .force("charge", d3.forceManyBody().strength(-2000))
-        .force("link", d3.forceLink(edges).id((d: any) => d.id).distance(500)) 
+        .force("link", d3.forceLink(validEdges.map(e => ({...e}))).id((d: any) => d.id).distance(500)) 
         .force("collide", d3.forceCollide().radius((d: any) => {
              const w = d.effectiveW;
              const h = d.effectiveH;
@@ -695,8 +714,8 @@ export const Canvas: React.FC<CanvasProps> = ({
                <Edge 
                  key={edge.id} 
                  edge={edge} 
-                 sourceNode={nodes.find(n => n.id === edge.source)!} 
-                 targetNode={nodes.find(n => n.id === edge.target)!} 
+                 sourceNode={nodeMap.get(edge.source)!} 
+                 targetNode={nodeMap.get(edge.target)!} 
                  lodLevel={lodLevel}
                  sourceIsParent={parentIds.has(edge.source)}
                  targetIsParent={parentIds.has(edge.target)}

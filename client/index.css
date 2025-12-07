@@ -19,3 +19,10 @@ body, html, #root {
   scrollbar-width: none;
 }
 
+/* Graph Edge Styles */
+.edge-path {
+  marker-end: url(#arrowhead);
+}
+.group:hover .edge-path {
+  marker-end: url(#arrowhead-active);
+}

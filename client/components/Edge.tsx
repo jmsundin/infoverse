@@ -102,6 +102,11 @@ export const Edge: React.FC<EdgeProps> = ({
   const start = getBoxIntersection({ x: sCx, y: sCy }, sW, sH, { x: tCx, y: tCy });
   const end = getBoxIntersection({ x: tCx, y: tCy }, tW, tH, { x: sCx, y: sCy });
 
+  // Safety check for invalid coordinates
+  if (!start || !end || isNaN(start.x) || isNaN(start.y) || isNaN(end.x) || isNaN(end.y)) {
+    return null;
+  }
+
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   
@@ -139,13 +144,7 @@ export const Edge: React.FC<EdgeProps> = ({
     : 0.25 * start.y + 0.5 * cpY + 0.25 * end.y;
 
   return (
-    <g className="group">
-      <style>
-        {`
-          .edge-path { marker-end: url(#arrowhead); }
-          .group:hover .edge-path { marker-end: url(#arrowhead-active); }
-        `}
-      </style>
+    <g className="group pointer-events-auto">
       <path
         d={pathD}
         fill="none"
