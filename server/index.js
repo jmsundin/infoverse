@@ -14,12 +14,16 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Initialize Database
-db.initDb();
+db.initDb().catch(err => console.error('DB Init Failed:', err));
 
 // Passport Config
 passport.use(new LocalStrategy(async (username, password, done) => {
     try {
         const result = await db.query('SELECT * FROM users WHERE username = $1', [username]);
+        if (!result || !result.rows) {
+             console.error('Database query failed or returned no rows property');
+             return done(null, false, { message: 'System error' });
+        }
         const user = result.rows[0];
 
         if (!user) {
@@ -34,6 +38,7 @@ passport.use(new LocalStrategy(async (username, password, done) => {
             return done(null, false, { message: 'Incorrect password.' });
         }
     } catch (err) {
+        console.error('Passport Local Strategy Error:', err);
         return done(err);
     }
 }));
@@ -65,7 +70,25 @@ passport.deserializeUser(async (id, done) => {
 app.use(cors({
     origin: (origin, callback) => {
         const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000').split(',');
-        if (!origin || allowedOrigins.includes(origin)) {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*')) {
+            callback(null, true);
+        } else {
+            // Log failed origin for debugging
+            console.log('Blocked by CORS:', origin);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: true
+}));
+
+// Handle OPTIONS preflight for all routes
+app.options('*', cors({
+    origin: (origin, callback) => {
+        const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000').split(',');
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*')) {
             callback(null, true);
         } else {
             callback(new Error('Not allowed by CORS'));
@@ -73,6 +96,7 @@ app.use(cors({
     },
     credentials: true
 }));
+
 app.use(express.json({ limit: '50mb' })); // Increase limit for large updates
 app.use(express.urlencoded({ extended: false }));
 app.use(session({
