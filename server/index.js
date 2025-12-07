@@ -63,7 +63,14 @@ passport.deserializeUser(async (id, done) => {
 
 // Middleware
 app.use(cors({
-    origin: process.env.CORS_ORIGIN || 'http://localhost:3000', // Vite default port
+    origin: (origin, callback) => {
+        const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000').split(',');
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
     credentials: true
 }));
 app.use(express.json({ limit: '50mb' })); // Increase limit for large updates
@@ -74,7 +81,8 @@ app.use(session({
     saveUninitialized: false,
     cookie: { 
         secure: process.env.NODE_ENV === 'production', // Set true if using https
-        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+        maxAge: 24 * 60 * 60 * 1000, // 24 hours
+        domain: process.env.COOKIE_DOMAIN || undefined // e.g. '.infoverse.ai' to share across subdomains
     } 
 }));
 app.use(passport.initialize());

@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "rewrites": [
+    {
+      "source": "/api/:match*",
+      "destination": "https://infoverse-server.vercel.app/api/:match*"
+    }
+  ]
+}
+

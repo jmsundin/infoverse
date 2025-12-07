@@ -208,6 +208,19 @@ const App: React.FC = () => {
         const data = await res.json();
         if (data.isAuthenticated) {
           setUser(data.user);
+
+          // Redirect to app.infoverse.ai if on root domain
+          if (
+            window.location.hostname === "infoverse.ai" &&
+            !window.location.hostname.startsWith("app.")
+          ) {
+            window.location.href = `https://app.infoverse.ai${window.location.pathname}`;
+          }
+        } else {
+          // Redirect to infoverse.ai if on app subdomain and NOT authenticated
+          if (window.location.hostname === "app.infoverse.ai") {
+            window.location.href = `https://infoverse.ai${window.location.pathname}`;
+          }
         }
       } catch (err) {
         console.error("Auth check failed", err);
@@ -1232,6 +1245,13 @@ const App: React.FC = () => {
             onLogin={(user) => {
               setUser(user);
               setShowAuth(false);
+              // Redirect to app subdomain upon login
+              if (
+                window.location.hostname === "infoverse.ai" &&
+                !window.location.hostname.startsWith("app.")
+              ) {
+                window.location.href = "https://app.infoverse.ai";
+              }
             }}
             onCancel={() => setShowAuth(false)}
           />
