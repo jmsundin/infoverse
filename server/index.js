@@ -132,7 +132,18 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: '50mb' })); // Increase limit for large updates
 app.use(express.urlencoded({ extended: false }));
+
+// Trust Proxy for Vercel/Production
+app.set('trust proxy', 1);
+
+const PgSession = require('connect-pg-simple')(session);
+
 app.use(session({
+    store: new PgSession({
+        pool: db.pool,
+        tableName: 'session',
+        createTableIfMissing: true
+    }),
     secret: process.env.SESSION_SECRET || 'infoverse-secret-key', // In production, use env var
     resave: false,
     saveUninitialized: false,

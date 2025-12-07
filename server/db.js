@@ -61,7 +61,26 @@ const initDb = async () => {
         console.log('Schema migration notice:', e.message);
     }
 
-    console.log('Database initialized: users & rate_limits tables created/verified');
+    // Session table for connect-pg-simple
+    await query(`
+      CREATE TABLE IF NOT EXISTS "session" (
+        "sid" varchar NOT NULL COLLATE "default",
+        "sess" json NOT NULL,
+        "expire" timestamp(6) NOT NULL
+      )
+      WITH (OIDS=FALSE);
+    `);
+    
+    // Add primary key if not exists (catch error if it does)
+    try {
+      await query(`ALTER TABLE "session" ADD CONSTRAINT "session_pkey" PRIMARY KEY ("sid") NOT DEFERRABLE INITIALLY IMMEDIATE`);
+    } catch (e) {
+      // Constraint likely already exists
+    }
+    
+    await query(`CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire")`);
+
+    console.log('Database initialized: users, rate_limits & session tables created/verified');
   } catch (err) {
     console.error('Error initializing database:', err);
     // Don't exit process, might be temporary connection issue or valid in local dev without DB
