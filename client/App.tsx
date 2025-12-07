@@ -4,6 +4,7 @@ import { SidePanel, WebContent } from "./components/SidePanel";
 import { GraphNodeComponent } from "./components/GraphNode";
 import { SearchBar } from "./components/SearchBar";
 import { NodeListDrawer } from "./components/NodeListDrawer";
+import { AuthPage } from "./components/AuthPage";
 import {
   GraphEdge,
   GraphNode,
@@ -186,8 +187,49 @@ const App: React.FC = () => {
   const [dirName, setDirName] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
+  // --- Auth State ---
+  const [user, setUser] = useState<{
+    id: string;
+    username: string;
+    storagePath?: string;
+  } | null>(null);
+  const [showAuth, setShowAuth] = useState(false);
+  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+
   const prevNodesRef = useRef<GraphNode[]>(nodes);
   const prevEdgesRef = useRef<GraphEdge[]>(edges);
+
+  // --- Check Auth on Mount ---
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const apiBase = (import.meta as any).env.VITE_API_URL || "";
+        const res = await fetch(`${apiBase}/api/auth/check`);
+        const data = await res.json();
+        if (data.isAuthenticated) {
+          setUser(data.user);
+        }
+      } catch (err) {
+        console.error("Auth check failed", err);
+      }
+    };
+    checkAuth();
+  }, []);
+
+  const handleLogout = async () => {
+    try {
+      const apiBase = (import.meta as any).env.VITE_API_URL || "";
+      await fetch(`${apiBase}/api/auth/logout`, { method: "POST" });
+      setUser(null);
+      setDirHandle(null);
+      setDirName(null);
+      // Optional: clear graph?
+      // setNodes([]);
+      // setEdges([]);
+    } catch (err) {
+      console.error("Logout failed", err);
+    }
+  };
 
   // --- Automatic Connection Discovery ---
   useEffect(() => {
@@ -996,49 +1038,85 @@ const App: React.FC = () => {
     <div className="flex w-screen h-screen overflow-hidden bg-slate-900 text-slate-200 font-sans">
       <div className="flex-1 relative min-w-0 flex flex-col">
         {/* Auth/Folder Buttons */}
-        <div className="absolute top-4 right-4 z-50 flex gap-3">
-          {dirHandle ? (
-            <div className="flex items-center gap-3">
-              <div className="px-3 py-1 bg-green-900/50 border border-green-700 text-green-200 text-xs rounded flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-                {dirName}
-                {isSaving && (
-                  <span className="text-xs opacity-50 ml-1">(saving...)</span>
-                )}
-              </div>
+        <div className="absolute top-4 right-4 z-50 flex gap-3 items-center">
+          {!user ? (
+            <>
               <button
                 onClick={() => {
-                  setDirHandle(null);
-                  setDirName(null);
-                  setNodes([]); // Clear?
-                  setEdges([]);
-                  window.location.reload();
+                  setAuthMode("login");
+                  setShowAuth(true);
                 }}
-                className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded border border-slate-700"
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-sky-400 text-sm font-bold rounded-lg border border-slate-700 shadow-lg transition-all"
               >
-                Close Folder
+                Log In
               </button>
-            </div>
-          ) : (
-            <button
-              onClick={handleOpenStorage}
-              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-sky-400 text-sm font-bold rounded-lg border border-slate-700 shadow-lg transition-all flex items-center gap-2"
-            >
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
+              <button
+                onClick={() => {
+                  setAuthMode("signup");
+                  setShowAuth(true);
+                }}
+                className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-sm font-bold rounded-lg shadow-lg transition-all"
               >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="2"
-                  d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-                ></path>
-              </svg>
-              Open Local Folder
-            </button>
+                Sign Up
+              </button>
+            </>
+          ) : (
+            <>
+              {dirHandle ? (
+                <div className="flex items-center gap-3">
+                  <div className="px-3 py-1 bg-green-900/50 border border-green-700 text-green-200 text-xs rounded flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                    {dirName}
+                    {isSaving && (
+                      <span className="text-xs opacity-50 ml-1">
+                        (saving...)
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => {
+                      setDirHandle(null);
+                      setDirName(null);
+                      setNodes([]); // Clear?
+                      setEdges([]);
+                      window.location.reload();
+                    }}
+                    className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded border border-slate-700"
+                  >
+                    Close Folder
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={handleOpenStorage}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-sky-400 text-sm font-bold rounded-lg border border-slate-700 shadow-lg transition-all flex items-center gap-2"
+                >
+                  <svg
+                    className="w-4 h-4"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="2"
+                      d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+                    ></path>
+                  </svg>
+                  Open Local Folder
+                </button>
+              )}
+              <div className="flex items-center gap-3 ml-4 border-l border-slate-700 pl-4">
+                <span className="text-slate-400 text-sm">{user.username}</span>
+                <button
+                  onClick={handleLogout}
+                  className="text-xs text-red-400 hover:text-red-300 hover:underline"
+                >
+                  Logout
+                </button>
+              </div>
+            </>
           )}
         </div>
 
@@ -1145,6 +1223,19 @@ const App: React.FC = () => {
             <div className="p-4 text-slate-500">Node not found.</div>
           )}
         </SidePanel>
+      )}
+
+      {showAuth && (
+        <div className="fixed inset-0 z-[100]">
+          <AuthPage
+            initialMode={authMode}
+            onLogin={(user) => {
+              setUser(user);
+              setShowAuth(false);
+            }}
+            onCancel={() => setShowAuth(false)}
+          />
+        </div>
       )}
     </div>
   );

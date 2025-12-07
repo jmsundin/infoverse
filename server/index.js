@@ -48,10 +48,16 @@ passport.deserializeUser(async (id, done) => {
         const user = result.rows[0];
         if (user) {
             user.storagePath = user.storage_path;
+            done(null, user);
+        } else {
+            // User not found in DB (maybe deleted), treat as logged out
+            done(null, false);
         }
-        done(null, user);
     } catch (err) {
-        done(err);
+        console.error('Deserialize error (possibly DB connection):', err);
+        // If DB is down, we can't authenticate, so treat as logged out or error.
+        // Returning done(null, false) clears the session which is safer than crashing.
+        done(null, false);
     }
 });
 
