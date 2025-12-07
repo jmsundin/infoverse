@@ -205,6 +205,44 @@ const App: React.FC = () => {
   } | null>(null);
   const [showAuth, setShowAuth] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+  const [usageNotification, setUsageNotification] = useState<{
+    message: string;
+    visible: boolean;
+  }>({ message: "", visible: false });
+
+  // Usage check function
+  const checkUsage = useCallback((currentCount: number) => {
+    const limit = 100;
+    const percentage = (currentCount / limit) * 100;
+    let message = "";
+
+    if (currentCount >= limit) {
+      message =
+        "100% Storage Used (100/100 nodes). Upgrade to unlimited for $8/mo.";
+    } else if (percentage >= 80) {
+      message = `80% Storage Used (${currentCount}/${limit} nodes). Upgrade for unlimited storage.`;
+    } else if (percentage >= 50 && percentage < 51) {
+      // Show only once around 50
+      message = `50% Storage Used (${currentCount}/${limit} nodes).`;
+    } else if (percentage >= 20 && percentage < 21) {
+      // Show only once around 20
+      message = `20% Storage Used (${currentCount}/${limit} nodes).`;
+    }
+
+    // Simple logic to show notification if we hit thresholds
+    // A better way would be to track 'lastNotifiedPercentage' in state
+    // For now, we will rely on the server response count
+
+    if (message) {
+      setUsageNotification({ message, visible: true });
+      // Auto hide after 5s
+      setTimeout(
+        () => setUsageNotification((prev) => ({ ...prev, visible: false })),
+        5000
+      );
+    }
+  }, []);
+
   const [showLimitModal, setShowLimitModal] = useState(false);
 
   const prevNodesRef = useRef<GraphNode[]>(nodes);
@@ -222,20 +260,34 @@ const App: React.FC = () => {
         if (data.isAuthenticated) {
           setUser(data.user);
 
-          if (data.user.storagePath) {
-            setDirName(data.user.storagePath);
-            try {
-              const { nodes: loadedNodes, edges: loadedEdges } =
-                await loadGraphFromApi();
-              if (loadedNodes && loadedNodes.length > 0) {
-                setNodes(loadedNodes);
-                setEdges(loadedEdges);
-              }
-            } catch (e) {
-              console.error("Failed to load graph from API", e);
-            }
+          // Cloud User (Paid OR Free): Auto-connect
+          if (data.user) {
+            setDirName("Cloud Storage");
+            // Load graph
+            loadGraphFromApi()
+              .then(({ nodes, edges }) => {
+                if (nodes && nodes.length > 0) {
+                  setNodes(nodes);
+                  setEdges(edges);
+
+                  // Initial usage check for free users
+                  if (!data.user.isPaid) {
+                    // Count nodes
+                    // Since we just loaded, we know the count
+                    // But we need a persistent way to track if we already notified for 20/50/80%
+                    // For simplicity, the server only sends notifications on SAVE.
+                    // But we can check here too.
+                  }
+                }
+                setIsGraphLoaded(true);
+              })
+              .catch((e) => {
+                console.error("Cloud load failed", e);
+                setIsGraphLoaded(true);
+              });
+          } else {
+            setIsGraphLoaded(true);
           }
-          setIsGraphLoaded(true);
 
           // Redirect to app.infoverse.ai if on root domain
           if (
@@ -367,7 +419,8 @@ const App: React.FC = () => {
   // --- File System Sync Effects ---
 
   useEffect(() => {
-    if (!dirHandle && !user?.storagePath) return;
+    // If using cloud storage (user) or browser FS handle
+    if (!dirHandle && !user) return;
     if (!isGraphLoaded) return;
 
     // Save all edges when they change
@@ -376,7 +429,8 @@ const App: React.FC = () => {
       try {
         if (dirHandle) {
           await saveEdgesToFile(dirHandle, edges);
-        } else if (user?.storagePath) {
+        } else if (user) {
+          // Cloud Storage (for all users)
           await saveEdgesToApi(edges);
         }
       } catch (e) {
@@ -390,14 +444,20 @@ const App: React.FC = () => {
 
   const saveNodeToDisk = useCallback(
     async (node: GraphNode) => {
-      if (!dirHandle && !user?.storagePath) return;
+      if (!dirHandle && !user) return;
       if (!isGraphLoaded) return;
       setIsSaving(true);
       try {
         if (dirHandle) {
           await saveNodeToFile(dirHandle, node);
-        } else if (user?.storagePath) {
-          await saveNodeToApi(node);
+        } else if (user) {
+          const res = await saveNodeToApi(node);
+          if (res.count !== undefined) {
+            checkUsage(res.count);
+          }
+          if (res.code === "STORAGE_LIMIT") {
+            setUsageNotification({ message: res.message, visible: true });
+          }
         }
       } catch (e) {
         console.error("Failed to save node", node.id, e);
@@ -405,18 +465,18 @@ const App: React.FC = () => {
         setIsSaving(false);
       }
     },
-    [dirHandle, user]
+    [dirHandle, user, isGraphLoaded, checkUsage]
   );
 
   const deleteNodeFromDisk = useCallback(
     async (id: string) => {
-      if (!dirHandle && !user?.storagePath) return;
+      if (!dirHandle && !user) return;
       if (!isGraphLoaded) return;
       setIsSaving(true);
       try {
         if (dirHandle) {
           await deleteNodeFile(dirHandle, id);
-        } else if (user?.storagePath) {
+        } else if (user) {
           await deleteNodeFromApi(id);
         }
       } catch (e) {
@@ -425,7 +485,7 @@ const App: React.FC = () => {
         setIsSaving(false);
       }
     },
-    [dirHandle, user]
+    [dirHandle, user, isGraphLoaded]
   );
 
   // --- Initial Center on Selected Node ---
@@ -1111,7 +1171,28 @@ const App: React.FC = () => {
 
   const handleOpenStorage = async () => {
     if (user) {
-      // Server Mode
+      // Check if user is paid for Cloud Storage
+      // Note: We use 'isPaid' from the user object (make sure to update user type or just cast)
+      if ((user as any).isPaid) {
+        setIsGraphLoaded(false);
+        // For cloud, we don't need a local path, but we set a virtual one to indicate connection
+        setDirName("Cloud Storage");
+
+        try {
+          const { nodes: loadedNodes, edges: loadedEdges } =
+            await loadGraphFromApi();
+          if (loadedNodes) setNodes(loadedNodes);
+          if (loadedEdges) setEdges(loadedEdges);
+          setIsGraphLoaded(true);
+        } catch (e) {
+          console.error("Error loading cloud graph", e);
+          setIsGraphLoaded(true);
+          alert("Failed to load cloud graph.");
+        }
+        return;
+      }
+
+      // Legacy Server Mode (Self-hosted local path)
       try {
         const { path, cancelled } = await pickServerDirectory();
         if (cancelled) return;
@@ -1139,7 +1220,7 @@ const App: React.FC = () => {
         );
       }
     } else {
-      // Local Mode
+      // Local Mode (Browser File System API)
       const handle = await pickDirectory();
       if (handle) {
         setIsGraphLoaded(false); // Prevent saving before load
@@ -1208,6 +1289,16 @@ const App: React.FC = () => {
                   </div>
                   <button
                     onClick={async () => {
+                      if ((user as any)?.isPaid) {
+                        // Logout acts as "Close Folder" for cloud
+                        // But user might want to stay logged in?
+                        // For now, just disconnect storage UI
+                        setDirName(null);
+                        setNodes([]);
+                        setEdges([]);
+                        return;
+                      }
+
                       if (user?.storagePath) {
                         try {
                           await updateUserSettings("");
@@ -1311,6 +1402,21 @@ const App: React.FC = () => {
           onUpdateNode={handleUpdateNode}
         />
 
+        {/* Usage Notification Toast */}
+        {usageNotification.visible && (
+          <div className="absolute bottom-4 right-4 z-50 bg-slate-800 border border-sky-500 text-sky-400 px-4 py-3 rounded shadow-lg animate-bounce">
+            <p className="text-sm font-bold">{usageNotification.message}</p>
+            <button
+              onClick={() =>
+                setUsageNotification((prev) => ({ ...prev, visible: false }))
+              }
+              className="absolute top-1 right-1 text-xs text-slate-500 hover:text-white"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         <Canvas
           nodes={filteredNodes}
           edges={filteredEdges}
@@ -1374,7 +1480,22 @@ const App: React.FC = () => {
             initialMode={authMode}
             onLogin={(user) => {
               setUser(user);
-              if (user.storagePath) {
+
+              if ((user as any).isPaid) {
+                setDirName("Cloud Storage");
+                loadGraphFromApi()
+                  .then(({ nodes, edges }) => {
+                    if (nodes && nodes.length > 0) {
+                      setNodes(nodes);
+                      setEdges(edges);
+                    }
+                    setIsGraphLoaded(true);
+                  })
+                  .catch((e) => {
+                    console.error("Failed to load cloud graph on login", e);
+                    setIsGraphLoaded(true);
+                  });
+              } else if (user.storagePath) {
                 setDirName(user.storagePath);
                 loadGraphFromApi()
                   .then(({ nodes, edges }) => {

@@ -32,9 +32,17 @@ const initDb = async () => {
         id SERIAL PRIMARY KEY,
         username VARCHAR(255) UNIQUE NOT NULL,
         password VARCHAR(255) NOT NULL,
-        storage_path TEXT
+        storage_path TEXT,
+        is_paid BOOLEAN DEFAULT FALSE
       );
     `);
+
+    // Add is_paid column if not exists
+    try {
+        await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_paid BOOLEAN DEFAULT FALSE`);
+    } catch (e) {
+        // Ignore if exists
+    }
     
     await query(`
       CREATE TABLE IF NOT EXISTS rate_limits (
@@ -43,6 +51,41 @@ const initDb = async () => {
         user_id INTEGER REFERENCES users(id),
         count INTEGER DEFAULT 0,
         window_start TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    
+    // Nodes Table
+    await query(`
+      CREATE TABLE IF NOT EXISTS nodes (
+        id UUID PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        type VARCHAR(50),
+        x FLOAT,
+        y FLOAT,
+        width FLOAT,
+        height FLOAT,
+        content TEXT,
+        messages JSONB,
+        link TEXT,
+        color VARCHAR(50),
+        parent_id TEXT,
+        summary TEXT,
+        auto_expand_depth INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Edges Table
+    await query(`
+      CREATE TABLE IF NOT EXISTS edges (
+        id UUID PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        source TEXT,
+        target TEXT,
+        label TEXT,
+        parent_id TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
     

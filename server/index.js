@@ -33,6 +33,7 @@ passport.use(new LocalStrategy(async (username, password, done) => {
         const isMatch = await bcrypt.compare(password, user.password);
         if (isMatch) {
             user.storagePath = user.storage_path;
+            user.isPaid = user.is_paid;
             return done(null, user);
         } else {
             return done(null, false, { message: 'Incorrect password.' });
@@ -53,6 +54,7 @@ passport.deserializeUser(async (id, done) => {
         const user = result.rows[0];
         if (user) {
             user.storagePath = user.storage_path;
+            user.isPaid = user.is_paid;
             done(null, user);
         } else {
             // User not found in DB (maybe deleted), treat as logged out
@@ -265,7 +267,7 @@ app.post('/api/auth/signup', async (req, res) => {
         // Auto login after signup
         req.login(newUser, (err) => {
             if (err) return res.status(500).json({ message: 'Login failed after signup' });
-            return res.json({ user: { id: newUser.id.toString(), username: newUser.username, storagePath: newUser.storagePath } });
+            return res.json({ user: { id: newUser.id.toString(), username: newUser.username, storagePath: newUser.storagePath, isPaid: newUser.is_paid } });
         });
 
     } catch (err) {
@@ -300,7 +302,7 @@ app.post('/api/user/settings', async (req, res) => {
         // Update session user
         req.login(updatedUser, (err) => {
             if (err) return res.status(500).json({ message: 'Failed to update session' });
-            res.json({ user: { id: updatedUser.id.toString(), username: updatedUser.username, storagePath: updatedUser.storagePath } });
+            res.json({ user: { id: updatedUser.id.toString(), username: updatedUser.username, storagePath: updatedUser.storagePath, isPaid: updatedUser.is_paid } });
         });
 
     } catch (err) {
@@ -315,7 +317,7 @@ app.post('/api/auth/login', (req, res, next) => {
         if (!user) return res.status(401).json({ message: info.message });
         req.login(user, (err) => {
             if (err) return next(err);
-            return res.json({ user: { id: user.id.toString(), username: user.username, storagePath: user.storagePath } });
+            return res.json({ user: { id: user.id.toString(), username: user.username, storagePath: user.storagePath, isPaid: user.isPaid } });
         });
     })(req, res, next);
 });
@@ -329,7 +331,7 @@ app.post('/api/auth/logout', (req, res) => {
 
 app.get('/api/auth/check', (req, res) => {
     if (req.isAuthenticated()) {
-        res.json({ isAuthenticated: true, user: { id: req.user.id.toString(), username: req.user.username, storagePath: req.user.storagePath } });
+        res.json({ isAuthenticated: true, user: { id: req.user.id.toString(), username: req.user.username, storagePath: req.user.storagePath, isPaid: req.user.isPaid } });
     } else {
         res.json({ isAuthenticated: false });
     }
@@ -364,39 +366,92 @@ const parseMarkdownNode = (filePath) => {
     }
 };
 
-app.get('/api/graph', (req, res) => {
+app.get('/api/graph', async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
+
+    // Cloud Storage Mode (Default for everyone now, limited for free)
+    // We only fallback to local if explicitly requested or legacy?
+    // User requirement says: "automatically store up to 100 nodes in the cloud database"
+    // So we prefer Cloud unless user specifically set a storagePath for local (legacy/expert)
     
-    const { storagePath } = req.user;
-    if (!storagePath || !fs.existsSync(storagePath)) {
-        return res.json({ nodes: [], edges: [] });
-    }
-
+    // Check if user has explicit local path set AND not paid (maybe they prefer local?)
+    // But request implies we want to move to cloud-first.
+    // Let's assume Cloud is primary if no local path, OR if paid.
+    // Actually, let's make Cloud available to everyone.
+    // If they have a local path, maybe we serve that? 
+    // Complexity: User might have data in both.
+    // Simplified: Authenticated users use Cloud. Local file system picker is for "Export/Import" or "Local Mode" (client-side only?)
+    // The previous code had "Legacy Local-on-Server Mode". We should probably deprecate or keep as fallback.
+    
+    // Strategy: Always try to load from Cloud first.
     try {
-        const files = fs.readdirSync(storagePath);
-        const nodes = [];
-        let edges = [];
+        const nodesResult = await db.query('SELECT * FROM nodes WHERE user_id = $1', [req.user.id]);
+        const edgesResult = await db.query('SELECT * FROM edges WHERE user_id = $1', [req.user.id]);
+        
+        if (nodesResult.rows.length > 0) {
+            // Map DB fields
+            const nodes = nodesResult.rows.map(n => ({
+                id: n.id,
+                type: n.type,
+                x: n.x,
+                y: n.y,
+                width: n.width,
+                height: n.height,
+                content: n.content,
+                messages: n.messages,
+                link: n.link,
+                color: n.color,
+                parentId: n.parent_id,
+                summary: n.summary,
+                autoExpandDepth: n.auto_expand_depth
+            }));
 
-        files.forEach(file => {
-            const fullPath = path.join(storagePath, file);
-            if (file === '_edges.json') {
-                try {
-                    const edgesData = fs.readFileSync(fullPath, 'utf8');
-                    edges = JSON.parse(edgesData);
-                } catch (e) {
-                    console.error('Error reading edges:', e);
-                }
-            } else if (file.endsWith('.md')) {
-                const node = parseMarkdownNode(fullPath);
-                if (node) nodes.push(node);
-            }
-        });
+            const edges = edgesResult.rows.map(e => ({
+                id: e.id,
+                source: e.source,
+                target: e.target,
+                label: e.label,
+                parentId: e.parent_id
+            }));
 
-        res.json({ nodes, edges });
+            return res.json({ nodes, edges });
+        }
     } catch (e) {
-        console.error('Error reading graph:', e);
-        res.status(500).json({ message: 'Error reading graph data' });
+        console.error('Error fetching cloud graph:', e);
+        // Fallthrough to local check?
     }
+    
+    // Legacy Local-on-Server Mode (Self-hosted)
+    const { storagePath } = req.user;
+    if (storagePath && fs.existsSync(storagePath)) {
+        try {
+            const files = fs.readdirSync(storagePath);
+            const nodes = [];
+            let edges = [];
+
+            files.forEach(file => {
+                const fullPath = path.join(storagePath, file);
+                if (file === '_edges.json') {
+                    try {
+                        const edgesData = fs.readFileSync(fullPath, 'utf8');
+                        edges = JSON.parse(edgesData);
+                    } catch (e) {
+                        console.error('Error reading edges:', e);
+                    }
+                } else if (file.endsWith('.md')) {
+                    const node = parseMarkdownNode(fullPath);
+                    if (node) nodes.push(node);
+                }
+            });
+
+            return res.json({ nodes, edges });
+        } catch (e) {
+            console.error('Error reading graph:', e);
+        }
+    }
+
+    // Default empty
+    res.json({ nodes: [], edges: [] });
 });
 
 // Format: YYYY-MM-DD-HH-mm-ss-SSS
@@ -411,126 +466,188 @@ const sanitizeFilename = (name) => {
     return name.replace(/[^a-z0-9\-_]/gi, '_').replace(/_{2,}/g, '_').substring(0, 50);
 };
 
-app.post('/api/nodes', (req, res) => {
+app.post('/api/nodes', async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
     
-    const { storagePath } = req.user;
     const node = req.body;
-    
     if (!node || !node.id) return res.status(400).json({ message: 'Invalid node data' });
 
-    // Fix: Validate storagePath before using it
-    if (!storagePath || typeof storagePath !== 'string') {
-        console.log('Skipping save: No storage path configured for user');
-        return res.json({ success: false, message: 'No storage path configured' });
-    }
-
+    // Cloud Storage for All Authenticated Users
+    // Logic: 
+    // - Paid: Unlimited
+    // - Free: 100 Nodes Limit
+    
     try {
-        ensureDir(storagePath);
-        
-        const contentTitle = node.content && node.content.trim() ? node.content : 'Untitled';
-        const safeTitle = sanitizeFilename(contentTitle);
-        const timestamp = getTimestamp();
-        
-        // Scan directory for existing file for this node ID to rename if necessary
-        const files = fs.readdirSync(storagePath);
-        let oldFilePath = null;
-        
-        for (const file of files) {
-            if (!file.endsWith('.md')) continue;
-            const fullPath = path.join(storagePath, file);
-            try {
-                // Read file to check ID
-                const content = fs.readFileSync(fullPath, 'utf8');
-                if (content.includes(`id: "${node.id}"`) || content.includes(`id: ${node.id}`)) {
-                    oldFilePath = fullPath;
-                    break;
-                }
-            } catch (err) { continue; }
+        // If user is free, check usage first
+        if (!req.user.isPaid) {
+            const countResult = await db.query('SELECT COUNT(*) FROM nodes WHERE user_id = $1', [req.user.id]);
+            const count = parseInt(countResult.rows[0].count, 10);
+            
+            // Check if user is updating an existing node or creating a new one
+            // We can check if ID exists, or rely on client intent. 
+            // For safety, let's check if the node exists to allow updates even at limit
+            const existsResult = await db.query('SELECT 1 FROM nodes WHERE id = $1 AND user_id = $2', [node.id, req.user.id]);
+            const exists = existsResult.rows.length > 0;
+
+            if (!exists && count >= 100) {
+                return res.status(403).json({ 
+                    message: 'Free storage limit reached (100 nodes). Upgrade to save more.',
+                    code: 'STORAGE_LIMIT'
+                });
+            }
         }
 
-        // Generate new filename
-        const newFileName = `${safeTitle}_${timestamp}.md`;
-        const newFilePath = path.join(storagePath, newFileName);
+        // Upsert node
+        const query = `
+            INSERT INTO nodes (id, user_id, type, x, y, width, height, content, messages, link, color, parent_id, summary, auto_expand_depth, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
+            ON CONFLICT (id) DO UPDATE SET
+            type = EXCLUDED.type,
+            x = EXCLUDED.x,
+            y = EXCLUDED.y,
+            width = EXCLUDED.width,
+            height = EXCLUDED.height,
+            content = EXCLUDED.content,
+            messages = EXCLUDED.messages,
+            link = EXCLUDED.link,
+            color = EXCLUDED.color,
+            parent_id = EXCLUDED.parent_id,
+            summary = EXCLUDED.summary,
+            auto_expand_depth = EXCLUDED.auto_expand_depth,
+            updated_at = NOW();
+        `;
+        const values = [
+            node.id, 
+            req.user.id, 
+            node.type, 
+            node.x, 
+            node.y, 
+            node.width, 
+            node.height, 
+            node.content, 
+            JSON.stringify(node.messages || []), 
+            node.link, 
+            node.color, 
+            node.parentId, 
+            node.summary, 
+            node.autoExpandDepth
+        ];
         
-        // If old file exists and name is different, delete it (rename)
-        if (oldFilePath && oldFilePath !== newFilePath) {
-            fs.unlinkSync(oldFilePath);
+        await db.query(query, values);
+        
+        // Return current count so client can show notifications
+        let currentCount = 0;
+        if (!req.user.isPaid) {
+             const countResult = await db.query('SELECT COUNT(*) FROM nodes WHERE user_id = $1', [req.user.id]);
+             currentCount = parseInt(countResult.rows[0].count, 10);
         }
         
-        const metadata = { ...node };
-        const frontmatter = yaml.dump(metadata);
-        const fileContent = `---\n${frontmatter}---\n\n# ${node.content || 'Untitled'}\n\n${node.summary || ''}\n`;
+        return res.json({ success: true, count: currentCount });
         
-        fs.writeFileSync(newFilePath, fileContent);
-        res.json({ success: true, fileName: newFileName });
-
     } catch (e) {
-        console.error('Error saving node:', e);
-        res.status(500).json({ message: 'Error saving node' });
+        console.error('Error saving node to cloud:', e);
+        return res.status(500).json({ message: 'Error saving node' });
     }
 });
 
-app.delete('/api/nodes/:id', (req, res) => {
+app.delete('/api/nodes/:id', async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
     
-    const { storagePath } = req.user;
     const nodeId = req.params.id;
-    
-    if (!storagePath || typeof storagePath !== 'string') {
-        return res.json({ success: false, message: 'No storage path configured' });
-    }
 
+    // Cloud Delete (Try first)
     try {
-        // We need to find the file by ID now since the name is dynamic
-        const files = fs.readdirSync(storagePath);
-        let deleted = false;
-        
-        for (const file of files) {
-            if (!file.endsWith('.md')) continue;
-            const fullPath = path.join(storagePath, file);
-            try {
-                const content = fs.readFileSync(fullPath, 'utf8');
-                if (content.includes(`id: "${nodeId}"`) || content.includes(`id: ${nodeId}`)) {
-                    fs.unlinkSync(fullPath);
-                    deleted = true;
-                    break;
-                }
-            } catch (err) { continue; }
-        }
-        
-        if (deleted) {
-            res.json({ success: true });
-        } else {
-            // If not found, maybe it was already deleted or never saved?
-            res.json({ success: true, message: 'Node not found or already deleted' });
+        const result = await db.query('DELETE FROM nodes WHERE id = $1 AND user_id = $2', [nodeId, req.user.id]);
+        if (result.rowCount > 0) {
+            // Also clean up edges connected to this node
+            await db.query('DELETE FROM edges WHERE (source = $1 OR target = $1) AND user_id = $2', [nodeId, req.user.id]);
+            return res.json({ success: true });
         }
     } catch (e) {
-        console.error('Error deleting node:', e);
-        res.status(500).json({ message: 'Error deleting node' });
+        console.error('Error deleting cloud node:', e);
+        // Continue to check local
     }
-});
-
-app.post('/api/edges', (req, res) => {
-    if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
     
     const { storagePath } = req.user;
-    const edges = req.body;
     
+    if (storagePath && typeof storagePath === 'string') {
+        try {
+            // We need to find the file by ID now since the name is dynamic
+            const files = fs.readdirSync(storagePath);
+            let deleted = false;
+            
+            for (const file of files) {
+                if (!file.endsWith('.md')) continue;
+                const fullPath = path.join(storagePath, file);
+                try {
+                    const content = fs.readFileSync(fullPath, 'utf8');
+                    if (content.includes(`id: "${nodeId}"`) || content.includes(`id: ${nodeId}`)) {
+                        fs.unlinkSync(fullPath);
+                        deleted = true;
+                        break;
+                    }
+                } catch (err) { continue; }
+            }
+            
+            if (deleted) {
+                return res.json({ success: true });
+            }
+        } catch (e) {
+            console.error('Error deleting node:', e);
+        }
+    }
+    
+    return res.json({ success: true, message: 'Node not found or already deleted' });
+});
+
+app.post('/api/edges', async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
+    
+    const edges = req.body;
     if (!Array.isArray(edges)) return res.status(400).json({ message: 'Edges must be an array' });
 
-    if (!storagePath || typeof storagePath !== 'string') {
-        return res.json({ success: false, message: 'No storage path configured' });
-    }
-
+    // Cloud Save (Default)
     try {
-        ensureDir(storagePath);
-        const filePath = path.join(storagePath, '_edges.json');
-        fs.writeFileSync(filePath, JSON.stringify(edges, null, 2));
-        res.json({ success: true });
+        // Transaction-like replacement strategy:
+        // Since we receive the FULL list of edges usually, we might want to sync carefully.
+        // But simple approach: Delete all for user (or sync efficiently) and re-insert?
+        // "Sync" is safer.
+        // Let's iterate and Upsert.
+        
+        // Note: This can be slow if many edges. Better to do bulk insert.
+        // For MVP, loop is fine.
+        
+        for (const edge of edges) {
+            const query = `
+                INSERT INTO edges (id, user_id, source, target, label, parent_id, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                ON CONFLICT (id) DO UPDATE SET
+                source = EXCLUDED.source,
+                target = EXCLUDED.target,
+                label = EXCLUDED.label,
+                parent_id = EXCLUDED.parent_id;
+            `;
+            const values = [edge.id, req.user.id, edge.source, edge.target, edge.label, edge.parentId];
+            await db.query(query, values);
+        }
+        
+        // Also save to local if configured (Sync both? Or just fallback?)
+        // Let's sync to local if path exists as backup/legacy support
+        const { storagePath } = req.user;
+        if (storagePath && typeof storagePath === 'string') {
+            try {
+                ensureDir(storagePath);
+                const filePath = path.join(storagePath, '_edges.json');
+                fs.writeFileSync(filePath, JSON.stringify(edges, null, 2));
+            } catch (e) {
+                // Ignore local save error if cloud succeeded
+            }
+        }
+
+        return res.json({ success: true });
     } catch (e) {
-        console.error('Error saving edges:', e);
-        res.status(500).json({ message: 'Error saving edges' });
+        console.error('Error saving cloud edges:', e);
+        return res.status(500).json({ message: 'Error saving edges' });
     }
 });
 
