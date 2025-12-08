@@ -105,11 +105,11 @@ const App: React.FC = () => {
         type: NodeType.CHAT,
         x: window.innerWidth / 2 - DEFAULT_NODE_WIDTH / 2,
         y: window.innerHeight / 2 - DEFAULT_NODE_HEIGHT / 2,
-        content: "Artificial Intelligence",
+        content: "Infoverse",
         messages: [
           {
             role: "model",
-            text: 'Welcome to infoverse! I am connected to Wikidata and Wikipedia via Gemini. \n\nTry asking me "What are the subfields of AI?" or click the expand icon (top right) to auto-generate hierarchical connections.',
+            text: "Welcome to Infoverse! \n\nI am an infinite, AI-powered knowledge canvas. \n\nAsk me anything to visualize a topic, or click the expand icon (top right) to discover related concepts.",
             timestamp: Date.now(),
           },
         ],
