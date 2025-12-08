@@ -8,17 +8,16 @@ interface SearchResult {
 
 interface SearchBarProps {
   onSelect: (topic: string, expand: boolean, isWiki?: boolean) => void;
+  onClose: () => void;
 }
 
-export const SearchBar: React.FC<SearchBarProps> = ({ onSelect }) => {
+export const SearchBar: React.FC<SearchBarProps> = ({ onSelect, onClose }) => {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(false); // Controls the dropdown results
   const [loading, setLoading] = useState(false);
 
-  // Mobile UI States
   const [isMobile, setIsMobile] = useState(false);
-  const [mobileExpanded, setMobileExpanded] = useState(false);
 
   const wrapperRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -31,27 +30,23 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect }) => {
   }, []);
 
   useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, []);
+
+  useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (
         wrapperRef.current &&
         !wrapperRef.current.contains(event.target as Node)
       ) {
-        setIsOpen(false);
-        // On mobile, if clicking outside, we might want to collapse the bar if empty
-        if (isMobile && !query) {
-          setMobileExpanded(false);
-        }
+        onClose();
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [isMobile, query]);
-
-  useEffect(() => {
-    if (mobileExpanded && inputRef.current) {
-      inputRef.current.focus();
-    }
-  }, [mobileExpanded]);
+  }, [onClose]);
 
   useEffect(() => {
     const fetchResults = async () => {
@@ -95,32 +90,6 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect }) => {
     return () => clearTimeout(timeoutId);
   }, [query]);
 
-  // Collapsed Mobile View (Magnifying Glass Icon)
-  if (isMobile && !mobileExpanded) {
-    return (
-      <button
-        className="absolute z-50 top-4 right-16 w-10 h-10 flex items-center justify-center bg-slate-800 border border-slate-700 rounded-full shadow-xl text-slate-200 hover:text-white hover:bg-slate-700 transition-all"
-        onClick={() => setMobileExpanded(true)}
-        title="Search Wikipedia"
-      >
-        <svg
-          className="h-5 w-5"
-          xmlns="http://www.w3.org/2000/svg"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <circle cx="11" cy="11" r="8" />
-          <line x1="21" y1="21" x2="16.65" y2="16.65" />
-        </svg>
-      </button>
-    );
-  }
-
-  // Expanded View (Desktop or Mobile Expanded)
   return (
     <div
       ref={wrapperRef}
@@ -162,31 +131,29 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect }) => {
           onFocus={() => query && setIsOpen(true)}
         />
 
-        {/* Close Button for Mobile */}
-        {isMobile && (
-          <button
-            className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-500 hover:text-slate-300"
-            onClick={() => {
-              setQuery("");
-              setMobileExpanded(false);
-            }}
+        {/* Close Button */}
+        <button
+          className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-500 hover:text-slate-300"
+          onClick={() => {
+            setQuery("");
+            onClose();
+          }}
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        )}
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
 
         {isOpen && query && (
           <ul className="absolute mt-2 w-full bg-slate-800 border border-slate-700 rounded-xl shadow-2xl overflow-hidden max-h-96 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-600">
@@ -203,7 +170,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect }) => {
                       onSelect(result.title, false, true);
                       setQuery("");
                       setIsOpen(false);
-                      if (isMobile) setMobileExpanded(false);
+                      onClose();
                     }}
                     title="Add as single node"
                   >
@@ -239,7 +206,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect }) => {
                         onSelect(result.title, true, true);
                         setQuery("");
                         setIsOpen(false);
-                        if (isMobile) setMobileExpanded(false);
+                        onClose();
                       }}
                       title="Add node and generate subgraph"
                     >
@@ -272,7 +239,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect }) => {
                     onSelect(query, false, false);
                     setQuery("");
                     setIsOpen(false);
-                    if (isMobile) setMobileExpanded(false);
+                    onClose();
                   }}
                 >
                   <div className="w-10 h-10 rounded-md bg-emerald-900/30 flex items-center justify-center text-emerald-400 shrink-0 border border-emerald-700/30 group-hover:bg-emerald-900/50 group-hover:border-emerald-500/50 transition-colors">

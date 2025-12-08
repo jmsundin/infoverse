@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, memo, useMemo } from 'react';
+import React, { useState, useRef, useEffect, memo, useMemo, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { GraphNode, NodeType, ChatMessage, NodeColor, ResizeDirection, LODLevel } from '../types';
 import { sendChatMessage, generateTitle } from '../services/geminiService';
@@ -60,6 +60,11 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(({
   // Timer ref for auto-formatting notes on pause
   const previewTimerRef = useRef<any>(null);
 
+  // Long Press Refs
+  const longPressTimerRef = useRef<any>(null);
+  const isLongPressRef = useRef(false);
+  const LONG_PRESS_DURATION = 500; // ms
+
   const colorTheme = NODE_COLORS[node.color || 'slate'];
   const isSidebar = viewMode === 'sidebar';
   
@@ -69,6 +74,38 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(({
   const isCompact = !isSidebar && lodLevel === 'DETAIL' && !isClusterParent && !isSelected;
 
   const titleText = (node.type === NodeType.CHAT ? node.content : (node.summary || node.content));
+
+  // --- Long Press & Double Click Handlers ---
+
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+      if (!isSidebar && onMouseDown) onMouseDown(e, node.id);
+      
+      isLongPressRef.current = false;
+      longPressTimerRef.current = setTimeout(() => {
+          isLongPressRef.current = true;
+          onDelete(node.id); // Triggers the delete confirmation in parent
+      }, LONG_PRESS_DURATION);
+  }, [isSidebar, onMouseDown, node.id, onDelete]);
+
+  const handleTouchEnd = useCallback((e: React.TouchEvent) => {
+      if (longPressTimerRef.current) {
+          clearTimeout(longPressTimerRef.current);
+          longPressTimerRef.current = null;
+      }
+  }, []);
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+      // If moved significantly, cancel long press
+      if (longPressTimerRef.current) {
+           clearTimeout(longPressTimerRef.current);
+           longPressTimerRef.current = null;
+      }
+  }, []);
+
+  const handleDoubleClick = useCallback((e: React.MouseEvent) => {
+      e.stopPropagation();
+      onDelete(node.id); // Triggers the delete confirmation in parent
+  }, [node.id, onDelete]);
 
   // Scroll to bottom of chat
   useEffect(() => {
@@ -359,16 +396,6 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(({
                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>
               </button>
             )}
-
-            <button
-              onClick={(e) => { e.stopPropagation(); onDelete(node.id); }}
-              className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-slate-700/50 transition-colors rounded"
-              title="Delete Node"
-              onMouseDown={(e) => e.stopPropagation()}
-              onTouchStart={(e) => e.stopPropagation()}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-            </button>
           </div>
         </div>
       )}
@@ -462,6 +489,10 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(({
             ${!isSidebar ? 'border-b ' + colorTheme.border : ''} 
             ${!isSidebar ? (isDragging ? 'cursor-grabbing' : 'cursor-grab') : ''} select-none relative touch-none shrink-0`}
             style={{ height: NODE_HEADER_HEIGHT }}
+            onDoubleClick={handleDoubleClick}
+            onTouchStart={handleTouchStart}
+            onTouchEnd={handleTouchEnd}
+            onTouchMove={handleTouchMove}
           >
             <div className={`flex items-center gap-2 overflow-hidden flex-1`}>
                 <span className={isSidebar ? "text-xl" : "text-lg"}>
@@ -529,7 +560,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(({
                         className={`p-1 rounded hover:bg-slate-700/50 transition-colors ${showSettings ? 'text-sky-400 bg-slate-700/50' : 'text-slate-400 hover:text-white'}`}
                         title="Settings"
                       >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                       </button>
 
                     {onToggleMaximize && (

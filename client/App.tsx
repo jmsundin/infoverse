@@ -7,6 +7,7 @@ import { NodeListDrawer } from "./components/NodeListDrawer";
 import { AuthPage } from "./components/AuthPage";
 import { LimitModal } from "./components/LimitModal";
 import { ProfilePage } from "./components/ProfilePage";
+import { DeleteNodeModal } from "./components/DeleteNodeModal";
 import {
   GraphEdge,
   GraphNode,
@@ -190,6 +191,10 @@ const App: React.FC = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [connectingNodeId, setConnectingNodeId] = useState<string | null>(null);
 
+  // Delete Modal State
+  const [nodeToDelete, setNodeToDelete] = useState<string | null>(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+
   // File System State
   const [dirHandle, setDirHandle] = useState<FileSystemDirectoryHandle | null>(
     null
@@ -197,6 +202,7 @@ const App: React.FC = () => {
   const [dirName, setDirName] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isGraphLoaded, setIsGraphLoaded] = useState(false);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
 
   // --- Auth State ---
   const [user, setUser] = useState<{
@@ -536,22 +542,35 @@ const App: React.FC = () => {
     [dirHandle, user, saveNodeToDisk]
   );
 
-  const handleDeleteNode = useCallback(
-    (id: string) => {
-      setNodes((prev) => prev.filter((n) => n.id !== id));
-      setEdges((prev) =>
-        prev.filter((e) => e.source !== id && e.target !== id)
-      );
+  const handleDeleteNode = useCallback((id: string) => {
+    setNodeToDelete(id);
+    setShowDeleteModal(true);
+  }, []);
 
-      if (dirHandle || user?.storagePath) deleteNodeFromDisk(id);
+  const confirmDeleteNode = useCallback(() => {
+    if (!nodeToDelete) return;
+    const id = nodeToDelete;
 
-      if (activeSidePane?.type === "node" && activeSidePane.data === id) {
-        setActiveSidePane(null);
-      }
-      if (selectedNodeId === id) setSelectedNodeId(null);
-    },
-    [activeSidePane, selectedNodeId, dirHandle, user, deleteNodeFromDisk]
-  );
+    setNodes((prev) => prev.filter((n) => n.id !== id));
+    setEdges((prev) => prev.filter((e) => e.source !== id && e.target !== id));
+
+    if (dirHandle || user?.storagePath) deleteNodeFromDisk(id);
+
+    if (activeSidePane?.type === "node" && activeSidePane.data === id) {
+      setActiveSidePane(null);
+    }
+    if (selectedNodeId === id) setSelectedNodeId(null);
+
+    setShowDeleteModal(false);
+    setNodeToDelete(null);
+  }, [
+    nodeToDelete,
+    activeSidePane,
+    selectedNodeId,
+    dirHandle,
+    user,
+    deleteNodeFromDisk,
+  ]);
 
   const handleExpandNode = useCallback(
     async (
@@ -1284,6 +1303,25 @@ const App: React.FC = () => {
       <div className="flex-1 relative min-w-0 flex flex-col">
         {/* Auth/Folder Buttons */}
         <div className="absolute top-4 right-4 z-50 flex gap-3 items-center">
+          <button
+            onClick={() => setIsSearchOpen(true)}
+            className="w-10 h-10 flex items-center justify-center bg-slate-800 border border-slate-700 rounded-full shadow-lg text-slate-200 hover:text-white hover:bg-slate-700 transition-all"
+            title="Search"
+          >
+            <svg
+              className="h-5 w-5"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+          </button>
           {!user ? (
             <>
               <button
@@ -1394,7 +1432,12 @@ const App: React.FC = () => {
           </div>
         )}
 
-        <SearchBar onSelect={handleSearchSelect} />
+        {isSearchOpen && (
+          <SearchBar
+            onSelect={handleSearchSelect}
+            onClose={() => setIsSearchOpen(false)}
+          />
+        )}
 
         <NodeListDrawer
           nodes={nodes}
@@ -1552,6 +1595,18 @@ const App: React.FC = () => {
           setAuthMode("signup");
           setShowAuth(true);
         }}
+      />
+
+      <DeleteNodeModal
+        isOpen={showDeleteModal}
+        onClose={() => {
+          setShowDeleteModal(false);
+          setNodeToDelete(null);
+        }}
+        onConfirm={confirmDeleteNode}
+        nodeName={
+          nodes.find((n) => n.id === nodeToDelete)?.content || "this node"
+        }
       />
     </div>
   );
