@@ -1434,7 +1434,9 @@ const App: React.FC = () => {
 
         {isSearchOpen && (
           <SearchBar
+            nodes={nodes}
             onSelect={handleSearchSelect}
+            onNavigate={handleFocusNode}
             onClose={() => setIsSearchOpen(false)}
           />
         )}

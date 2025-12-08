@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { GraphNode } from "../types";
 
 interface SearchResult {
   title: string;
@@ -7,13 +8,16 @@ interface SearchResult {
 }
 
 interface SearchBarProps {
+  nodes: GraphNode[];
   onSelect: (topic: string, expand: boolean, isWiki?: boolean) => void;
+  onNavigate: (id: string) => void;
   onClose: () => void;
 }
 
-export const SearchBar: React.FC<SearchBarProps> = ({ onSelect, onClose }) => {
+export const SearchBar: React.FC<SearchBarProps> = ({ nodes, onSelect, onNavigate, onClose }) => {
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<SearchResult[]>([]);
+  const [wikiResults, setWikiResults] = useState<SearchResult[]>([]);
+  const [localResults, setLocalResults] = useState<GraphNode[]>([]);
   const [isOpen, setIsOpen] = useState(false); // Controls the dropdown results
   const [loading, setLoading] = useState(false);
 
@@ -51,10 +55,19 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect, onClose }) => {
   useEffect(() => {
     const fetchResults = async () => {
       if (!query.trim()) {
-        setResults([]);
+        setWikiResults([]);
+        setLocalResults([]);
         return;
       }
 
+      // 1. Local Search (Case insensitive)
+      const normalizedQuery = query.toLowerCase();
+      const matchingNodes = nodes.filter((node) =>
+        node.content.toLowerCase().includes(normalizedQuery)
+      );
+      setLocalResults(matchingNodes);
+
+      // 2. Wikipedia Search
       setLoading(true);
       try {
         // Using Wikimedia Core REST API for title search
@@ -66,20 +79,25 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect, onClose }) => {
         const data = await response.json();
 
         if (data.pages && data.pages.length > 0) {
-          setResults(
-            data.pages.map((p: any) => ({
+           // Filter out Wiki results that exactly match existing node titles to avoid duplicates
+          const filteredWiki = data.pages
+            .map((p: any) => ({
               title: p.title,
               description: p.description,
               thumbnail: p.thumbnail,
             }))
-          );
+            .filter((p: SearchResult) => 
+               !nodes.some(n => n.content.toLowerCase() === p.title.toLowerCase())
+            );
+            
+          setWikiResults(filteredWiki);
         } else {
-          setResults([]);
+          setWikiResults([]);
         }
         setIsOpen(true);
       } catch (error) {
         console.error("Wiki search error:", error);
-        setResults([]);
+        setWikiResults([]);
         setIsOpen(true);
       } finally {
         setLoading(false);
@@ -88,7 +106,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect, onClose }) => {
 
     const timeoutId = setTimeout(fetchResults, 300);
     return () => clearTimeout(timeoutId);
-  }, [query]);
+  }, [query, nodes]);
 
   return (
     <div
@@ -125,7 +143,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect, onClose }) => {
           ref={inputRef}
           type="text"
           className="block w-full rounded-xl border border-slate-600 bg-slate-800/90 backdrop-blur-md py-2.5 pl-10 pr-10 text-sm text-slate-100 placeholder-slate-400 focus:border-sky-500 focus:bg-slate-900 focus:outline-none focus:ring-1 focus:ring-sky-500 shadow-lg transition-all"
-          placeholder="Search Wikipedia..."
+          placeholder="Search for a topic..."
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => query && setIsOpen(true)}
@@ -157,82 +175,139 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect, onClose }) => {
 
         {isOpen && query && (
           <ul className="absolute mt-2 w-full bg-slate-800 border border-slate-700 rounded-xl shadow-2xl overflow-hidden max-h-96 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-600">
-            {results.length > 0 ? (
-              results.map((result) => (
-                <li
-                  key={result.title}
-                  className="flex border-b border-slate-700/50 last:border-0 hover:bg-slate-700/30 transition-colors group/item"
-                >
-                  {/* Main Click: Add Single Node */}
-                  <button
-                    className="flex-1 text-left px-4 py-3 flex items-center gap-3 min-w-0 focus:outline-none focus:bg-slate-700/50"
-                    onClick={() => {
-                      onSelect(result.title, false, true);
-                      setQuery("");
-                      setIsOpen(false);
-                      onClose();
-                    }}
-                    title="Add as single node"
+            {/* 1. Existing Nodes Section */}
+            {localResults.length > 0 && (
+              <>
+                <li className="px-4 py-2 bg-slate-700/50 text-xs font-bold text-slate-400 uppercase tracking-wider">
+                  Existing Nodes
+                </li>
+                {localResults.map((node) => (
+                  <li
+                    key={node.id}
+                    className="flex border-b border-slate-700/50 last:border-0 hover:bg-slate-700/30 transition-colors group/item"
                   >
-                    {result.thumbnail?.url ? (
-                      <img
-                        src={result.thumbnail.url}
-                        alt=""
-                        className="w-10 h-10 rounded-md object-cover bg-slate-700 shrink-0"
-                      />
-                    ) : (
-                      <div className="w-10 h-10 rounded-md bg-slate-700 flex items-center justify-center text-slate-500 shrink-0">
-                        <span className="text-xs font-bold">W</span>
-                      </div>
-                    )}
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium text-slate-200 truncate">
-                        {result.title}
-                      </div>
-                      {result.description && (
-                        <div className="text-xs text-slate-400 truncate">
-                          {result.description}
-                        </div>
-                      )}
-                    </div>
-                  </button>
-
-                  {/* Secondary Action: Add & Expand Subgraph */}
-                  <div className="flex items-stretch border-l border-slate-700/50">
                     <button
-                      className="px-4 text-slate-500 hover:text-sky-400 hover:bg-slate-700/80 transition-all flex items-center justify-center"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onSelect(result.title, true, true);
+                      className="flex-1 text-left px-4 py-3 flex items-center gap-3 min-w-0 focus:outline-none focus:bg-slate-700/50"
+                      onClick={() => {
+                        onNavigate(node.id);
                         setQuery("");
                         setIsOpen(false);
                         onClose();
                       }}
-                      title="Add node and generate subgraph"
                     >
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        width="18"
-                        height="18"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <circle cx="12" cy="12" r="3" />
-                        <circle cx="6" cy="6" r="2" />
-                        <circle cx="18" cy="6" r="2" />
-                        <line x1="10" y1="10" x2="7.5" y2="7.5" />
-                        <line x1="14" y1="10" x2="16.5" y2="7.5" />
-                      </svg>
+                      <div className="w-10 h-10 rounded-md bg-emerald-900/30 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="20"
+                          height="20"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+                        </svg>
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-emerald-300 truncate">
+                          {node.content}
+                        </div>
+                        <div className="text-xs text-slate-500 truncate">
+                          Jump to existing node
+                        </div>
+                      </div>
                     </button>
-                  </div>
+                  </li>
+                ))}
+              </>
+            )}
+
+            {/* 2. Wikipedia / Search Results */}
+            {localResults.length > 0 && wikiResults.length > 0 && (
+                <li className="px-4 py-2 bg-slate-700/50 text-xs font-bold text-slate-400 uppercase tracking-wider border-t border-slate-700/50">
+                  New from Wikipedia
                 </li>
-              ))
-            ) : (
-              <li className="p-2">
+            )}
+
+            {wikiResults.map((result) => (
+              <li
+                key={result.title}
+                className="flex border-b border-slate-700/50 last:border-0 hover:bg-slate-700/30 transition-colors group/item"
+              >
+                {/* Main Click: Add Single Node */}
+                <button
+                  className="flex-1 text-left px-4 py-3 flex items-center gap-3 min-w-0 focus:outline-none focus:bg-slate-700/50"
+                  onClick={() => {
+                    onSelect(result.title, false, true);
+                    setQuery("");
+                    setIsOpen(false);
+                    onClose();
+                  }}
+                  title="Add as single node"
+                >
+                  {result.thumbnail?.url ? (
+                    <img
+                      src={result.thumbnail.url}
+                      alt=""
+                      className="w-10 h-10 rounded-md object-cover bg-slate-700 shrink-0"
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded-md bg-slate-700 flex items-center justify-center text-slate-500 shrink-0">
+                      <span className="text-xs font-bold">W</span>
+                    </div>
+                  )}
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-slate-200 truncate">
+                      {result.title}
+                    </div>
+                    {result.description && (
+                      <div className="text-xs text-slate-400 truncate">
+                        {result.description}
+                      </div>
+                    )}
+                  </div>
+                </button>
+
+                {/* Secondary Action: Add & Expand Subgraph */}
+                <div className="flex items-stretch border-l border-slate-700/50">
+                  <button
+                    className="px-4 text-slate-500 hover:text-sky-400 hover:bg-slate-700/80 transition-all flex items-center justify-center"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelect(result.title, true, true);
+                      setQuery("");
+                      setIsOpen(false);
+                      onClose();
+                    }}
+                    title="Add node and generate subgraph"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="18"
+                      height="18"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <circle cx="12" cy="12" r="3" />
+                      <circle cx="6" cy="6" r="2" />
+                      <circle cx="18" cy="6" r="2" />
+                      <line x1="10" y1="10" x2="7.5" y2="7.5" />
+                      <line x1="14" y1="10" x2="16.5" y2="7.5" />
+                    </svg>
+                  </button>
+                </div>
+              </li>
+            ))}
+
+            {/* 3. Create New Option - ONLY if no local results */}
+            {localResults.length === 0 && (
+              <li className="p-2 border-t border-slate-700/50">
                 <button
                   className="w-full text-left px-4 py-3 rounded-lg hover:bg-slate-700/50 flex items-center gap-3 transition-colors text-slate-300 group"
                   onClick={() => {
@@ -250,7 +325,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSelect, onClose }) => {
                       Chat with AI about "{query}"
                     </div>
                     <div className="text-xs text-slate-500">
-                      Topic not found on Wikipedia
+                      Topic not found? Create a new node.
                     </div>
                   </div>
                 </button>
