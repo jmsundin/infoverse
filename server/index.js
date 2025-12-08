@@ -500,7 +500,8 @@ app.get('/api/graph', async (req, res) => {
                 color: n.color,
                 parentId: n.parent_id,
                 summary: n.summary,
-                autoExpandDepth: n.auto_expand_depth
+                autoExpandDepth: n.auto_expand_depth,
+                aliases: n.aliases
             }));
 
             const edges = edgesResult.rows.map(e => ({
@@ -596,8 +597,8 @@ app.post('/api/nodes', async (req, res) => {
 
         // Upsert node
         const query = `
-            INSERT INTO nodes (id, user_id, type, x, y, width, height, content, messages, link, color, parent_id, summary, auto_expand_depth, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
+            INSERT INTO nodes (id, user_id, type, x, y, width, height, content, messages, link, color, parent_id, summary, auto_expand_depth, aliases, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
             ON CONFLICT (id) DO UPDATE SET
             type = EXCLUDED.type,
             x = EXCLUDED.x,
@@ -611,6 +612,7 @@ app.post('/api/nodes', async (req, res) => {
             parent_id = EXCLUDED.parent_id,
             summary = EXCLUDED.summary,
             auto_expand_depth = EXCLUDED.auto_expand_depth,
+            aliases = EXCLUDED.aliases,
             updated_at = NOW();
         `;
         const values = [
@@ -627,7 +629,8 @@ app.post('/api/nodes', async (req, res) => {
             node.color, 
             node.parentId, 
             node.summary, 
-            node.autoExpandDepth
+            node.autoExpandDepth,
+            JSON.stringify(node.aliases || [])
         ];
         
         await db.query(query, values);

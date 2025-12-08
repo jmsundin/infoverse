@@ -474,6 +474,54 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(({
                  </div>
              </div>
           )}
+
+          <div className="flex flex-col gap-1 mt-2 pt-2 border-t border-slate-700">
+            <span className="text-[10px] uppercase font-bold text-slate-400">
+              Aliases
+            </span>
+            <div className="flex flex-wrap gap-1 mb-1">
+              {node.aliases?.map((alias) => (
+                <span
+                  key={alias}
+                  className="text-[10px] bg-slate-700 px-1.5 py-0.5 rounded flex items-center gap-1 group/alias"
+                >
+                  {alias}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onUpdate(node.id, {
+                        aliases: node.aliases?.filter((a) => a !== alias),
+                      });
+                    }}
+                    className="hover:text-red-400 opacity-50 group-hover/alias:opacity-100"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+            <input
+              type="text"
+              placeholder="Add alias + Enter"
+              className="text-xs bg-black/20 border border-slate-600 rounded px-1.5 py-1 w-full focus:outline-none focus:border-sky-500 placeholder-slate-600"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.stopPropagation();
+                  const val = e.currentTarget.value.trim();
+                  if (val) {
+                    const newAliases = [...(node.aliases || [])];
+                    if (!newAliases.includes(val)) {
+                      newAliases.push(val);
+                      onUpdate(node.id, { aliases: newAliases });
+                    }
+                    e.currentTarget.value = "";
+                  }
+                }
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
+            />
+          </div>
         </div>
       )}
 

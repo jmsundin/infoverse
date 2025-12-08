@@ -1302,10 +1302,10 @@ const App: React.FC = () => {
     <div className="flex w-screen h-screen overflow-hidden bg-slate-900 text-slate-200 font-sans">
       <div className="flex-1 relative min-w-0 flex flex-col">
         {/* Auth/Folder Buttons */}
-        <div className="absolute top-4 right-4 z-50 flex gap-3 items-center">
+        <div className="absolute top-4 right-4 z-50 flex gap-3 items-center pointer-events-none">
           <button
             onClick={() => setIsSearchOpen(true)}
-            className="w-10 h-10 flex items-center justify-center bg-slate-800 border border-slate-700 rounded-full shadow-lg text-slate-200 hover:text-white hover:bg-slate-700 transition-all"
+            className="w-10 h-10 flex items-center justify-center bg-slate-800 border border-slate-700 rounded-full shadow-lg text-slate-200 hover:text-white hover:bg-slate-700 transition-all pointer-events-auto"
             title="Search"
           >
             <svg
@@ -1329,7 +1329,7 @@ const App: React.FC = () => {
                   setAuthMode("login");
                   setShowAuth(true);
                 }}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-sky-400 text-sm font-bold rounded-lg border border-slate-700 shadow-lg transition-all"
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-sky-400 text-sm font-bold rounded-lg border border-slate-700 shadow-lg transition-all pointer-events-auto"
               >
                 Log In
               </button>
@@ -1338,7 +1338,7 @@ const App: React.FC = () => {
                   setAuthMode("signup");
                   setShowAuth(true);
                 }}
-                className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-sm font-bold rounded-lg shadow-lg transition-all"
+                className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-sm font-bold rounded-lg shadow-lg transition-all pointer-events-auto"
               >
                 Sign Up
               </button>
@@ -1346,7 +1346,7 @@ const App: React.FC = () => {
           ) : (
             <button
               onClick={() => setShowProfile(true)}
-              className="w-10 h-10 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 hover:text-white hover:border-slate-500 transition-all shadow-lg"
+              className="w-10 h-10 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 hover:text-white hover:border-slate-500 transition-all shadow-lg pointer-events-auto"
               title={user.username}
             >
               <svg

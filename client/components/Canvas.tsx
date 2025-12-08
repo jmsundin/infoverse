@@ -1140,7 +1140,7 @@ export const Canvas: React.FC<CanvasProps> = ({
 
       <div
         ref={containerRef}
-        className={`flex-1 relative overflow-hidden cursor-default canvas-background min-w-0 ${
+        className={`flex-1 relative overflow-hidden cursor-default canvas-background min-w-0 touch-none ${
           connectingNodeId ? "cursor-crosshair" : ""
         }`}
         style={{

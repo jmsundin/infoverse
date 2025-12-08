@@ -14,7 +14,12 @@ interface SearchBarProps {
   onClose: () => void;
 }
 
-export const SearchBar: React.FC<SearchBarProps> = ({ nodes, onSelect, onNavigate, onClose }) => {
+export const SearchBar: React.FC<SearchBarProps> = ({
+  nodes,
+  onSelect,
+  onNavigate,
+  onClose,
+}) => {
   const [query, setQuery] = useState("");
   const [wikiResults, setWikiResults] = useState<SearchResult[]>([]);
   const [localResults, setLocalResults] = useState<GraphNode[]>([]);
@@ -62,9 +67,13 @@ export const SearchBar: React.FC<SearchBarProps> = ({ nodes, onSelect, onNavigat
 
       // 1. Local Search (Case insensitive)
       const normalizedQuery = query.toLowerCase();
-      const matchingNodes = nodes.filter((node) =>
-        node.content.toLowerCase().includes(normalizedQuery)
-      );
+      const matchingNodes = nodes.filter((node) => {
+        const titleMatch = node.content.toLowerCase().includes(normalizedQuery);
+        const aliasMatch = node.aliases?.some((alias) =>
+          alias.toLowerCase().includes(normalizedQuery)
+        );
+        return titleMatch || aliasMatch;
+      });
       setLocalResults(matchingNodes);
 
       // 2. Wikipedia Search
@@ -79,17 +88,24 @@ export const SearchBar: React.FC<SearchBarProps> = ({ nodes, onSelect, onNavigat
         const data = await response.json();
 
         if (data.pages && data.pages.length > 0) {
-           // Filter out Wiki results that exactly match existing node titles to avoid duplicates
+          // Filter out Wiki results that exactly match existing node titles to avoid duplicates
           const filteredWiki = data.pages
             .map((p: any) => ({
               title: p.title,
               description: p.description,
               thumbnail: p.thumbnail,
             }))
-            .filter((p: SearchResult) => 
-               !nodes.some(n => n.content.toLowerCase() === p.title.toLowerCase())
+            .filter(
+              (p: SearchResult) =>
+                !nodes.some(
+                  (n) =>
+                    n.content.toLowerCase() === p.title.toLowerCase() ||
+                    n.aliases?.some(
+                      (a) => a.toLowerCase() === p.title.toLowerCase()
+                    )
+                )
             );
-            
+
           setWikiResults(filteredWiki);
         } else {
           setWikiResults([]);
@@ -111,7 +127,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({ nodes, onSelect, onNavigat
   return (
     <div
       ref={wrapperRef}
-      className={`absolute z-50 transition-all duration-200
+      className={`absolute z-50 transition-all duration-200 pointer-events-none
          ${
            isMobile
              ? "top-16 left-4 right-4" // Mobile Expanded Position
@@ -119,7 +135,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({ nodes, onSelect, onNavigat
          }
       `}
     >
-      <div className="relative group font-sans">
+      <div className="relative group font-sans pointer-events-auto">
         <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
           {loading ? (
             <div className="h-4 w-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></div>
@@ -226,9 +242,9 @@ export const SearchBar: React.FC<SearchBarProps> = ({ nodes, onSelect, onNavigat
 
             {/* 2. Wikipedia / Search Results */}
             {localResults.length > 0 && wikiResults.length > 0 && (
-                <li className="px-4 py-2 bg-slate-700/50 text-xs font-bold text-slate-400 uppercase tracking-wider border-t border-slate-700/50">
-                  New from Wikipedia
-                </li>
+              <li className="px-4 py-2 bg-slate-700/50 text-xs font-bold text-slate-400 uppercase tracking-wider border-t border-slate-700/50">
+                New from Wikipedia
+              </li>
             )}
 
             {wikiResults.map((result) => (

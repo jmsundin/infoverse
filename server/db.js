@@ -79,10 +79,18 @@ const initDb = async () => {
         parent_id TEXT,
         summary TEXT,
         auto_expand_depth INTEGER,
+        aliases JSONB,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
+
+    // Add aliases column if not exists
+    try {
+        await query(`ALTER TABLE nodes ADD COLUMN IF NOT EXISTS aliases JSONB`);
+    } catch (e) {
+        // Ignore if exists
+    }
 
     // Edges Table
     await query(`

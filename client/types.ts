@@ -25,6 +25,7 @@ export interface GraphNode {
   parentId?: string; // For hierarchical scoping
   summary?: string; // High-level summary for semantic zoom
   autoExpandDepth?: number; // Number of levels to automatically expand
+  aliases?: string[]; // Alternative names for the node
 }
 
 export interface ChatMessage {
