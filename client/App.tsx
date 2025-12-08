@@ -6,6 +6,7 @@ import { SearchBar } from "./components/SearchBar";
 import { NodeListDrawer } from "./components/NodeListDrawer";
 import { AuthPage } from "./components/AuthPage";
 import { LimitModal } from "./components/LimitModal";
+import { ProfilePage } from "./components/ProfilePage";
 import {
   GraphEdge,
   GraphNode,
@@ -201,10 +202,13 @@ const App: React.FC = () => {
   const [user, setUser] = useState<{
     id: string;
     username: string;
+    email?: string;
     storagePath?: string;
+    isPaid?: boolean;
   } | null>(null);
   const [showAuth, setShowAuth] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+  const [showProfile, setShowProfile] = useState(false);
   const [usageNotification, setUsageNotification] = useState<{
     message: string;
     visible: boolean;
@@ -1079,6 +1083,32 @@ const App: React.FC = () => {
     [currentScopeId, nodes]
   );
 
+  const handleCloseFolder = useCallback(async () => {
+    if ((user as any)?.isPaid) {
+      // Logout acts as "Close Folder" for cloud
+      // But user might want to stay logged in?
+      // For now, just disconnect storage UI
+      setDirName(null);
+      setNodes([]);
+      setEdges([]);
+      return;
+    }
+
+    if (user?.storagePath) {
+      try {
+        await updateUserSettings("");
+        setUser((prev) => (prev ? { ...prev, storagePath: undefined } : null));
+      } catch (e) {
+        console.error("Failed to clear user settings", e);
+      }
+    }
+    setDirHandle(null);
+    setDirName(null);
+    setNodes([]); // Clear?
+    setEdges([]);
+    window.location.reload();
+  }, [user]);
+
   // Breadcrumbs: Use BFS to find shortest path from Root to Selected Node
   const getBreadcrumbs = () => {
     // 1. Build Scope Path (Vertical Hierarchy)
@@ -1094,8 +1124,9 @@ const App: React.FC = () => {
       }
     }
 
+    const rootName = dirName || "Home";
     const combinedCrumbs: { id: string | null; name: string; type: string }[] =
-      [{ id: null, name: "Home", type: "root" }, ...crumbs];
+      [{ id: null, name: rootName, type: "root" }, ...crumbs];
 
     // 2. Build Graph Path (Horizontal Connections within Scope)
     if (selectedNodeId) {
@@ -1275,82 +1306,26 @@ const App: React.FC = () => {
               </button>
             </>
           ) : (
-            <>
-              {dirName ? (
-                <div className="flex items-center gap-3">
-                  <div className="px-3 py-1 bg-green-900/50 border border-green-700 text-green-200 text-xs rounded flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-                    {dirName}
-                    {isSaving && (
-                      <span className="text-xs opacity-50 ml-1">
-                        (saving...)
-                      </span>
-                    )}
-                  </div>
-                  <button
-                    onClick={async () => {
-                      if ((user as any)?.isPaid) {
-                        // Logout acts as "Close Folder" for cloud
-                        // But user might want to stay logged in?
-                        // For now, just disconnect storage UI
-                        setDirName(null);
-                        setNodes([]);
-                        setEdges([]);
-                        return;
-                      }
-
-                      if (user?.storagePath) {
-                        try {
-                          await updateUserSettings("");
-                          setUser((prev) =>
-                            prev ? { ...prev, storagePath: undefined } : null
-                          );
-                        } catch (e) {
-                          console.error("Failed to clear user settings", e);
-                        }
-                      }
-                      setDirHandle(null);
-                      setDirName(null);
-                      setNodes([]); // Clear?
-                      setEdges([]);
-                      window.location.reload();
-                    }}
-                    className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded border border-slate-700"
-                  >
-                    Close Folder
-                  </button>
-                </div>
-              ) : (
-                <button
-                  onClick={handleOpenStorage}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-sky-400 text-sm font-bold rounded-lg border border-slate-700 shadow-lg transition-all flex items-center gap-2"
-                >
-                  <svg
-                    className="w-4 h-4"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth="2"
-                      d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-                    ></path>
-                  </svg>
-                  Open Local Folder
-                </button>
-              )}
-              <div className="flex items-center gap-3 ml-4 border-l border-slate-700 pl-4">
-                <span className="text-slate-400 text-sm">{user.username}</span>
-                <button
-                  onClick={handleLogout}
-                  className="text-xs text-red-400 hover:text-red-300 hover:underline"
-                >
-                  Logout
-                </button>
-              </div>
-            </>
+            <button
+              onClick={() => setShowProfile(true)}
+              className="w-10 h-10 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 hover:text-white hover:border-slate-500 transition-all shadow-lg"
+              title={user.username}
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+              </svg>
+            </button>
           )}
         </div>
 
@@ -1359,26 +1334,53 @@ const App: React.FC = () => {
           {getBreadcrumbs().map((crumb, i) => (
             <React.Fragment key={i}>
               {i > 0 && <span className="text-slate-600 font-bold">&gt;</span>}
-              <button
-                onClick={() => {
-                  if (crumb.type === "node") {
-                    if (crumb.id) {
-                      handleFocusNode(crumb.id);
+              <div className="flex items-center gap-1 pointer-events-auto">
+                <button
+                  onClick={() => {
+                    if (crumb.type === "node") {
+                      if (crumb.id) {
+                        handleFocusNode(crumb.id);
+                      }
+                      return;
                     }
-                    return;
-                  }
-                  setCurrentScopeId(crumb.id);
-                  setSelectedNodeId(null);
-                }}
-                className={`transition-colors pointer-events-auto ${
-                  crumb.id === selectedNodeId
-                    ? "text-sky-400 font-bold cursor-default"
-                    : "text-slate-400 hover:text-white"
-                }`}
-                disabled={crumb.id === selectedNodeId}
-              >
-                {crumb.name}
-              </button>
+                    setCurrentScopeId(crumb.id);
+                    setSelectedNodeId(null);
+                  }}
+                  className={`transition-colors ${
+                    crumb.id === selectedNodeId
+                      ? "text-sky-400 font-bold cursor-default"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                  disabled={crumb.id === selectedNodeId}
+                >
+                  {crumb.name}
+                </button>
+                {crumb.type === "root" && dirName && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleCloseFolder();
+                    }}
+                    className="ml-1 p-0.5 text-slate-500 hover:text-red-400 rounded-full hover:bg-slate-800 transition-colors"
+                    title="Close Folder"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                )}
+              </div>
             </React.Fragment>
           ))}
         </div>
@@ -1524,6 +1526,17 @@ const App: React.FC = () => {
             onCancel={() => setShowAuth(false)}
           />
         </div>
+      )}
+
+      {showProfile && user && (
+        <ProfilePage
+          user={user}
+          onClose={() => setShowProfile(false)}
+          onUpdateUser={(updates) =>
+            setUser((prev) => (prev ? { ...prev, ...updates } : null))
+          }
+          onLogout={handleLogout}
+        />
       )}
 
       <LimitModal

@@ -267,7 +267,7 @@ app.post('/api/auth/signup', async (req, res) => {
         // Auto login after signup
         req.login(newUser, (err) => {
             if (err) return res.status(500).json({ message: 'Login failed after signup' });
-            return res.json({ user: { id: newUser.id.toString(), username: newUser.username, storagePath: newUser.storagePath, isPaid: newUser.is_paid } });
+            return res.json({ user: { id: newUser.id.toString(), username: newUser.username, email: newUser.email, storagePath: newUser.storagePath, isPaid: newUser.is_paid } });
         });
 
     } catch (err) {
@@ -302,7 +302,7 @@ app.post('/api/user/settings', async (req, res) => {
         // Update session user
         req.login(updatedUser, (err) => {
             if (err) return res.status(500).json({ message: 'Failed to update session' });
-            res.json({ user: { id: updatedUser.id.toString(), username: updatedUser.username, storagePath: updatedUser.storagePath, isPaid: updatedUser.is_paid } });
+            res.json({ user: { id: updatedUser.id.toString(), username: updatedUser.username, email: updatedUser.email, storagePath: updatedUser.storagePath, isPaid: updatedUser.is_paid } });
         });
 
     } catch (err) {
@@ -317,7 +317,7 @@ app.post('/api/auth/login', (req, res, next) => {
         if (!user) return res.status(401).json({ message: info.message });
         req.login(user, (err) => {
             if (err) return next(err);
-            return res.json({ user: { id: user.id.toString(), username: user.username, storagePath: user.storagePath, isPaid: user.isPaid } });
+            return res.json({ user: { id: user.id.toString(), username: user.username, email: user.email, storagePath: user.storagePath, isPaid: user.isPaid } });
         });
     })(req, res, next);
 });
@@ -329,9 +329,106 @@ app.post('/api/auth/logout', (req, res) => {
     });
 });
 
+// Profile Update Endpoint
+app.put('/api/user/profile', async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
+
+    const { username, email, currentPassword, newPassword } = req.body;
+    
+    if (!currentPassword) {
+        return res.status(400).json({ message: 'Current password is required' });
+    }
+
+    try {
+        // 1. Verify current password
+        const userResult = await db.query('SELECT * FROM users WHERE id = $1', [req.user.id]);
+        const user = userResult.rows[0];
+        
+        const isMatch = await bcrypt.compare(currentPassword, user.password);
+        if (!isMatch) {
+            return res.status(403).json({ message: 'Incorrect password' });
+        }
+
+        // 2. Prepare updates
+        let updateQuery = 'UPDATE users SET ';
+        const values = [];
+        let paramCount = 1;
+
+        if (username && username !== user.username) {
+            // Check availability
+            const check = await db.query('SELECT 1 FROM users WHERE username = $1 AND id != $2', [username, req.user.id]);
+            if (check.rows.length > 0) return res.status(409).json({ message: 'Username taken' });
+            
+            updateQuery += `username = $${paramCount}, `;
+            values.push(username);
+            paramCount++;
+        }
+
+        if (email && email !== user.email) {
+             // Check availability
+            const check = await db.query('SELECT 1 FROM users WHERE email = $1 AND id != $2', [email, req.user.id]);
+            if (check.rows.length > 0) return res.status(409).json({ message: 'Email taken' });
+
+            updateQuery += `email = $${paramCount}, `;
+            values.push(email);
+            paramCount++;
+        }
+
+        if (newPassword) {
+            const hashedPassword = await bcrypt.hash(newPassword, 10);
+            updateQuery += `password = $${paramCount}, `;
+            values.push(hashedPassword);
+            paramCount++;
+        }
+
+        // If nothing to update
+        if (values.length === 0) {
+            return res.json({ user: { username: user.username, email: user.email, isPaid: user.is_paid } });
+        }
+
+        // Finalize query
+        updateQuery = updateQuery.slice(0, -2); // Remove trailing comma
+        updateQuery += ` WHERE id = $${paramCount} RETURNING id, username, email, is_paid, storage_path`;
+        values.push(req.user.id);
+
+        const result = await db.query(updateQuery, values);
+        const updatedUser = result.rows[0];
+
+        // Update session
+        req.login(updatedUser, (err) => {
+            if (err) console.error('Session update error', err);
+            // We don't fail the request if session update fails, just log it. 
+            // Client will refresh or re-auth if needed.
+            return res.json({ 
+                message: 'Profile updated',
+                user: { 
+                    id: updatedUser.id.toString(), 
+                    username: updatedUser.username, 
+                    email: updatedUser.email,
+                    isPaid: updatedUser.is_paid,
+                    storagePath: updatedUser.storage_path
+                } 
+            });
+        });
+
+    } catch (e) {
+        console.error('Profile update error:', e);
+        res.status(500).json({ message: 'Error updating profile' });
+    }
+});
+
 app.get('/api/auth/check', (req, res) => {
     if (req.isAuthenticated()) {
-        res.json({ isAuthenticated: true, user: { id: req.user.id.toString(), username: req.user.username, storagePath: req.user.storagePath, isPaid: req.user.isPaid } });
+        res.json({ 
+            isAuthenticated: true, 
+            user: { 
+                id: req.user.id.toString(), 
+                username: req.user.username, 
+                email: req.user.email, // Include email in check
+                storagePath: req.user.storagePath, 
+                isPaid: req.user.isPaid 
+            } 
+        });
     } else {
         res.json({ isAuthenticated: false });
     }

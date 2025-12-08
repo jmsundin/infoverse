@@ -32,6 +32,7 @@ const initDb = async () => {
         id SERIAL PRIMARY KEY,
         username VARCHAR(255) UNIQUE NOT NULL,
         password VARCHAR(255) NOT NULL,
+        email VARCHAR(255) UNIQUE,
         storage_path TEXT,
         is_paid BOOLEAN DEFAULT FALSE
       );
@@ -40,6 +41,13 @@ const initDb = async () => {
     // Add is_paid column if not exists
     try {
         await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_paid BOOLEAN DEFAULT FALSE`);
+    } catch (e) {
+        // Ignore if exists
+    }
+
+    // Add email column if not exists
+    try {
+        await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255) UNIQUE`);
     } catch (e) {
         // Ignore if exists
     }
