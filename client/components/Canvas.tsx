@@ -120,6 +120,14 @@ export const Canvas: React.FC<CanvasProps> = ({
     sourceId?: string;
   } | null>(null);
 
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    canvasX: number;
+    canvasY: number;
+  } | null>(null);
+  const lastTapRef = useRef<number>(0);
+
   const dragStartRef = useRef<{
     mouseX: number;
     mouseY: number;
@@ -417,7 +425,9 @@ export const Canvas: React.FC<CanvasProps> = ({
 
         const simulation = d3
           .forceSimulation(simNodes as any)
-          .force("charge", d3.forceManyBody().strength(-2000))
+          .force("charge", d3.forceManyBody().strength(-500)) // Reduced repulsion from -2000 to -500
+          .force("x", d3.forceX(0).strength(0.02)) // Add weak centering gravity
+          .force("y", d3.forceY(0).strength(0.02)) // Add weak centering gravity
           .force(
             "link",
             d3
@@ -816,6 +826,7 @@ export const Canvas: React.FC<CanvasProps> = ({
 
   const handleBackgroundClick = useCallback(
     (e: React.MouseEvent | React.TouchEvent) => {
+      if (contextMenu) setContextMenu(null);
       if (connectingNodeId) {
         onCancelConnect();
         return;
@@ -833,8 +844,62 @@ export const Canvas: React.FC<CanvasProps> = ({
         setSelectionTooltip(null);
       }
     },
-    [connectingNodeId, onCancelConnect, onNodeSelect]
+    [connectingNodeId, onCancelConnect, onNodeSelect, contextMenu]
   );
+
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      if (draggingId || resizingId || connectingNodeId) return;
+
+      const target = e.target as HTMLElement;
+      if (
+        ["INPUT", "BUTTON", "A", "TEXTAREA"].includes(target.tagName) ||
+        target.closest("button")
+      ) {
+        return;
+      }
+
+      const clientX = e.clientX;
+      const clientY = e.clientY;
+      const canvasX = (clientX - viewTransform.x) / viewTransform.k;
+      const canvasY = (clientY - viewTransform.y) / viewTransform.k;
+
+      setContextMenu({
+        x: clientX,
+        y: clientY,
+        canvasX,
+        canvasY,
+      });
+    },
+    [viewTransform, draggingId, resizingId, connectingNodeId]
+  );
+
+  const handleTouchEnd = useCallback(
+    (e: React.TouchEvent) => {
+      const now = Date.now();
+      if (now - lastTapRef.current < 300) {
+        // Double tap
+        if (e.changedTouches.length > 0) {
+          const touch = e.changedTouches[0];
+          const clientX = touch.clientX;
+          const clientY = touch.clientY;
+          const canvasX = (clientX - viewTransform.x) / viewTransform.k;
+          const canvasY = (clientY - viewTransform.y) / viewTransform.k;
+
+          setContextMenu({
+            x: clientX,
+            y: clientY,
+            canvasX,
+            canvasY,
+          });
+        }
+      }
+      lastTapRef.current = now;
+    },
+    [viewTransform]
+  );
+
 
   const handleResizeStart = useCallback(
     (
@@ -924,13 +989,19 @@ export const Canvas: React.FC<CanvasProps> = ({
     }
   };
 
-  const addNewNode = (type: NodeType) => {
-    const cx =
-      (containerSize.width / 2 - viewTransform.x) / viewTransform.k -
-      DEFAULT_NODE_WIDTH / 2;
-    const cy =
-      (containerSize.height / 2 - viewTransform.y) / viewTransform.k -
-      DEFAULT_NODE_HEIGHT / 2;
+  const addNewNode = (type: NodeType, pos?: { x: number; y: number }) => {
+    let cx, cy;
+    if (pos) {
+      cx = pos.x;
+      cy = pos.y;
+    } else {
+      cx =
+        (containerSize.width / 2 - viewTransform.x) / viewTransform.k -
+        DEFAULT_NODE_WIDTH / 2;
+      cy =
+        (containerSize.height / 2 - viewTransform.y) / viewTransform.k -
+        DEFAULT_NODE_HEIGHT / 2;
+    }
     const newNode: GraphNode = {
       id: crypto.randomUUID(),
       type,
@@ -944,6 +1015,19 @@ export const Canvas: React.FC<CanvasProps> = ({
     };
     setNodes((prev) => [...prev, newNode]);
     onNodeSelect(newNode.id);
+    setContextMenu(null);
+
+    // If added via sidebar (no specific position provided), center viewport on new node
+    if (!pos) {
+      const k = 1; // Focus zoom level
+      const nodeCenterX = newNode.x + (newNode.width || DEFAULT_NODE_WIDTH) / 2;
+      const nodeCenterY = newNode.y + (newNode.height || DEFAULT_NODE_HEIGHT) / 2;
+      
+      const newX = window.innerWidth / 2 - nodeCenterX * k;
+      const newY = window.innerHeight / 2 - nodeCenterY * k;
+      
+      onViewTransformChange({ x: newX, y: newY, k });
+    }
   };
 
   const bgSize = 40 * viewTransform.k;
@@ -1150,6 +1234,8 @@ export const Canvas: React.FC<CanvasProps> = ({
           backgroundRepeat: "repeat",
         }}
         onClick={handleBackgroundClick}
+        onContextMenu={handleContextMenu}
+        onTouchEnd={handleTouchEnd}
       >
         {/* Mobile Hamburger - Fixed Top Left */}
         <button
@@ -1379,7 +1465,7 @@ export const Canvas: React.FC<CanvasProps> = ({
                 strokeLinecap="round"
                 strokeLinejoin="round"
               >
-                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
               </svg>
               <span className="text-[8px] font-bold">CHAT</span>
             </button>
@@ -1422,7 +1508,72 @@ export const Canvas: React.FC<CanvasProps> = ({
             )}
           </div>
         )}
+
+        {contextMenu && (
+          <div
+            className="fixed z-[10000] bg-slate-800 text-white rounded-lg shadow-xl border border-slate-700 flex flex-col min-w-[150px] overflow-hidden animate-in fade-in zoom-in duration-100 origin-top-left"
+            style={{
+              left: contextMenu.x,
+              top: contextMenu.y,
+            }}
+            onClick={(e) => e.stopPropagation()}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            <button
+              className="w-full text-left px-4 py-2 hover:bg-slate-700 text-sm flex items-center gap-2"
+              onClick={() => {
+                addNewNode(NodeType.NOTE, {
+                  x: contextMenu.canvasX,
+                  y: contextMenu.canvasY,
+                });
+              }}
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="text-slate-400"
+              >
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+              </svg>
+              Create Note
+            </button>
+            <button
+              className="w-full text-left px-4 py-2 hover:bg-slate-700 text-sm flex items-center gap-2 border-t border-slate-700"
+              onClick={() => {
+                addNewNode(NodeType.CHAT, {
+                  x: contextMenu.canvasX,
+                  y: contextMenu.canvasY,
+                });
+              }}
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="text-slate-400"
+              >
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+              Create AI Chat
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
 };
+

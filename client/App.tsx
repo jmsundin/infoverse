@@ -7,7 +7,7 @@ import { NodeListDrawer } from "./components/NodeListDrawer";
 import { AuthPage } from "./components/AuthPage";
 import { LimitModal } from "./components/LimitModal";
 import { ProfilePage } from "./components/ProfilePage";
-import { DeleteNodeModal } from "./components/DeleteNodeModal";
+import { Toast } from "./components/Toast";
 import {
   GraphEdge,
   GraphNode,
@@ -191,9 +191,18 @@ const App: React.FC = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [connectingNodeId, setConnectingNodeId] = useState<string | null>(null);
 
-  // Delete Modal State
-  const [nodeToDelete, setNodeToDelete] = useState<string | null>(null);
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  // Undo/Toast State
+  const [toast, setToast] = useState<{
+    visible: boolean;
+    message: string;
+    action?: () => void;
+  }>({ visible: false, message: "" });
+
+  const deletedNodeRef = useRef<{
+    node: GraphNode;
+    edges: GraphEdge[];
+    timer: number | null;
+  } | null>(null);
 
   // File System State
   const [dirHandle, setDirHandle] = useState<FileSystemDirectoryHandle | null>(
@@ -542,35 +551,127 @@ const App: React.FC = () => {
     [dirHandle, user, saveNodeToDisk]
   );
 
-  const handleDeleteNode = useCallback((id: string) => {
-    setNodeToDelete(id);
-    setShowDeleteModal(true);
-  }, []);
+  const confirmDeleteNode = useCallback(
+    async (id: string) => {
+      // 1. Snapshot state for Undo
+      const node = nodes.find((n) => n.id === id);
+      if (!node) return;
 
-  const confirmDeleteNode = useCallback(() => {
-    if (!nodeToDelete) return;
-    const id = nodeToDelete;
+      const associatedEdges = edges.filter(
+        (e) => e.source === id || e.target === id
+      );
 
-    setNodes((prev) => prev.filter((n) => n.id !== id));
-    setEdges((prev) => prev.filter((e) => e.source !== id && e.target !== id));
+      // Clear any pending deletion timer
+      if (deletedNodeRef.current && deletedNodeRef.current.timer) {
+        clearTimeout(deletedNodeRef.current.timer);
+        // Force commit previous deletion if we are deleting again?
+        // Or just overwrite. For simplicity, we'll just overwrite logic, meaning you can only undo the *last* action.
+      }
 
-    if (dirHandle || user?.storagePath) deleteNodeFromDisk(id);
+      // 2. Optimistic Update (Remove from UI)
+      setNodes((prev) => prev.filter((n) => n.id !== id));
+      setEdges((prev) =>
+        prev.filter((e) => e.source !== id && e.target !== id)
+      );
 
-    if (activeSidePane?.type === "node" && activeSidePane.data === id) {
-      setActiveSidePane(null);
-    }
-    if (selectedNodeId === id) setSelectedNodeId(null);
+      if (activeSidePane?.type === "node" && activeSidePane.data === id) {
+        setActiveSidePane(null);
+      }
+      if (selectedNodeId === id) setSelectedNodeId(null);
 
-    setShowDeleteModal(false);
-    setNodeToDelete(null);
-  }, [
-    nodeToDelete,
-    activeSidePane,
-    selectedNodeId,
-    dirHandle,
-    user,
-    deleteNodeFromDisk,
-  ]);
+      // 3. Set up Soft Delete / Undo Timer
+      // We wait 5 seconds before actually deleting from disk/API
+      const timer = window.setTimeout(async () => {
+        if (dirHandle || user?.storagePath) {
+          await deleteNodeFromDisk(id);
+        }
+        deletedNodeRef.current = null; // Clear undo history
+      }, 5000);
+
+      deletedNodeRef.current = {
+        node,
+        edges: associatedEdges,
+        timer,
+      };
+
+      // 4. Show Toast
+      setToast({
+        visible: true,
+        message: "Node deleted",
+        action: () => {
+          // Undo Logic
+          // Check if we have a pending deletion state
+          if (deletedNodeRef.current) {
+            const { node, edges, timer } = deletedNodeRef.current;
+
+            // Cancel the physical deletion timer
+            if (timer) {
+              clearTimeout(timer);
+            }
+
+            // Restore State
+            setNodes((prev) => [...prev, node]);
+            setEdges((prev) => [...prev, ...edges]);
+
+            // Cleanup
+            deletedNodeRef.current = null;
+            setToast((prev) => ({ ...prev, visible: false }));
+          }
+        },
+      });
+    },
+    [
+      nodes,
+      edges,
+      activeSidePane,
+      selectedNodeId,
+      dirHandle,
+      user,
+      deleteNodeFromDisk,
+    ]
+  );
+
+  const handleDeleteNode = useCallback(
+    (id: string) => {
+      confirmDeleteNode(id);
+    },
+    [confirmDeleteNode]
+  );
+
+  // Keyboard Shortcuts (Undo, Delete)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const activeEl = document.activeElement as HTMLElement;
+      const isInputActive =
+        activeEl &&
+        (["INPUT", "TEXTAREA"].includes(activeEl.tagName) ||
+          activeEl.isContentEditable);
+
+      // Undo (Ctrl+Z / Cmd+Z)
+      if ((e.ctrlKey || e.metaKey) && e.key === "z") {
+        if (toast.visible && toast.action) {
+          e.preventDefault();
+          toast.action();
+        }
+      }
+
+      // Delete (Delete / Backspace)
+      if ((e.key === "Delete" || e.key === "Backspace") && !isInputActive) {
+        if (selectedNodeId) {
+          e.preventDefault();
+          handleDeleteNode(selectedNodeId);
+        }
+      }
+
+      // Search (Ctrl+F / Cmd+F)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        setIsSearchOpen(true);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [toast, selectedNodeId, handleDeleteNode]);
 
   const handleExpandNode = useCallback(
     async (
@@ -1004,6 +1105,17 @@ const App: React.FC = () => {
 
       setSelectedNodeId(newNodeId);
 
+      // Focus on the new node
+      const k = 1;
+      const nodeCenterX = newNode.x + (newNode.width || DEFAULT_NODE_WIDTH) / 2;
+      const nodeCenterY =
+        newNode.y + (newNode.height || DEFAULT_NODE_HEIGHT) / 2;
+
+      const newX = window.innerWidth / 2 - nodeCenterX * k;
+      const newY = window.innerHeight / 2 - nodeCenterY * k;
+
+      setViewTransform({ x: newX, y: newY, k });
+
       if (!isWiki) {
         const prompt = getTopicSummaryPrompt(topic);
         let currentText = "";
@@ -1277,6 +1389,16 @@ const App: React.FC = () => {
         setDirHandle(handle);
         setDirName(handle.name);
         try {
+          // Sync current nodes and edges to the selected local directory
+          if (nodes.length > 0) {
+            for (const node of nodes) {
+              await saveNodeToFile(handle, node);
+            }
+          }
+          if (edges.length > 0) {
+            await saveEdgesToFile(handle, edges);
+          }
+
           const { nodes: loadedNodes, edges: loadedEdges } =
             await loadGraphFromDirectory(handle);
           if (loadedNodes.length > 0) {
@@ -1438,6 +1560,7 @@ const App: React.FC = () => {
             onSelect={handleSearchSelect}
             onNavigate={handleFocusNode}
             onClose={() => setIsSearchOpen(false)}
+            isCloud={!!user}
           />
         )}
 
@@ -1525,11 +1648,43 @@ const App: React.FC = () => {
         <div className="fixed inset-0 z-[100]">
           <AuthPage
             initialMode={authMode}
-            onLogin={(user) => {
+            onLogin={async (user) => {
               setUser(user);
+
+              // Helper to sync local data to cloud on login
+              const syncToCloud = async () => {
+                // If we have local nodes (and it's not just the default welcome node)
+                const isDefaultGraph =
+                  nodes.length === 1 && nodes[0].id === "1";
+                const hasLocalData = nodes.length > 0 && !isDefaultGraph;
+
+                if (hasLocalData) {
+                  try {
+                    // Sync Nodes
+                    for (const node of nodes) {
+                      const res = await saveNodeToApi(node);
+                      if (res.code === "STORAGE_LIMIT") {
+                        setUsageNotification({
+                          message:
+                            "Storage limit reached during sync. Some nodes may not be saved.",
+                          visible: true,
+                        });
+                        break; // Stop syncing nodes
+                      }
+                    }
+                    // Sync Edges
+                    if (edges.length > 0) {
+                      await saveEdgesToApi(edges);
+                    }
+                  } catch (e) {
+                    console.error("Failed to sync local data to cloud", e);
+                  }
+                }
+              };
 
               if ((user as any).isPaid) {
                 setDirName("Cloud Storage");
+                await syncToCloud();
                 loadGraphFromApi()
                   .then(({ nodes, edges }) => {
                     if (nodes && nodes.length > 0) {
@@ -1557,7 +1712,21 @@ const App: React.FC = () => {
                     setIsGraphLoaded(true);
                   });
               } else {
-                setIsGraphLoaded(true);
+                // Free user, no local server path -> Default to Cloud
+                setDirName("Cloud Storage");
+                await syncToCloud();
+                loadGraphFromApi()
+                  .then(({ nodes, edges }) => {
+                    if (nodes && nodes.length > 0) {
+                      setNodes(nodes);
+                      setEdges(edges);
+                    }
+                    setIsGraphLoaded(true);
+                  })
+                  .catch((e) => {
+                    console.error("Failed to load cloud graph on login", e);
+                    setIsGraphLoaded(true);
+                  });
               }
               setShowAuth(false);
               // Redirect to app subdomain upon login
@@ -1599,16 +1768,11 @@ const App: React.FC = () => {
         }}
       />
 
-      <DeleteNodeModal
-        isOpen={showDeleteModal}
-        onClose={() => {
-          setShowDeleteModal(false);
-          setNodeToDelete(null);
-        }}
-        onConfirm={confirmDeleteNode}
-        nodeName={
-          nodes.find((n) => n.id === nodeToDelete)?.content || "this node"
-        }
+      <Toast
+        message={toast.message}
+        visible={toast.visible}
+        onUndo={toast.action}
+        onClose={() => setToast((prev) => ({ ...prev, visible: false }))}
       />
     </div>
   );

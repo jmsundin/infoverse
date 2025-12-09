@@ -9,6 +9,7 @@ const cors = require('cors');
 const yaml = require('js-yaml');
 const { exec } = require('child_process');
 const db = require('./db');
+const { generateEmbedding } = require('./gemini-ai');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -595,10 +596,24 @@ app.post('/api/nodes', async (req, res) => {
             }
         }
 
+        // Generate Embedding
+        // Combine content, aliases, and summary for rich semantic representation
+        const aliases = node.aliases || [];
+        const embeddingText = [
+            node.content,
+            aliases.join(' '),
+            node.summary
+        ].filter(Boolean).join(' ');
+
+        let embedding = null;
+        if (embeddingText) {
+            embedding = await generateEmbedding(embeddingText);
+        }
+
         // Upsert node
         const query = `
-            INSERT INTO nodes (id, user_id, type, x, y, width, height, content, messages, link, color, parent_id, summary, auto_expand_depth, aliases, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
+            INSERT INTO nodes (id, user_id, type, x, y, width, height, content, messages, link, color, parent_id, summary, auto_expand_depth, aliases, embedding, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW())
             ON CONFLICT (id) DO UPDATE SET
             type = EXCLUDED.type,
             x = EXCLUDED.x,
@@ -613,6 +628,7 @@ app.post('/api/nodes', async (req, res) => {
             summary = EXCLUDED.summary,
             auto_expand_depth = EXCLUDED.auto_expand_depth,
             aliases = EXCLUDED.aliases,
+            embedding = EXCLUDED.embedding,
             updated_at = NOW();
         `;
         const values = [
@@ -630,7 +646,8 @@ app.post('/api/nodes', async (req, res) => {
             node.parentId, 
             node.summary, 
             node.autoExpandDepth,
-            JSON.stringify(node.aliases || [])
+            JSON.stringify(node.aliases || []),
+            embedding ? JSON.stringify(embedding) : null
         ];
         
         await db.query(query, values);
@@ -748,6 +765,77 @@ app.post('/api/edges', async (req, res) => {
     } catch (e) {
         console.error('Error saving cloud edges:', e);
         return res.status(500).json({ message: 'Error saving edges' });
+    }
+});
+
+// Semantic Search Endpoint
+app.get('/api/search/semantic', async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
+
+    const { q } = req.query;
+    if (!q || !q.trim()) return res.json({ results: [] });
+
+    try {
+        const embedding = await generateEmbedding(q);
+        if (!embedding) return res.json({ results: [] });
+
+        // Vector Search using Cosine Distance (<=>)
+        // 1 - distance gives us a similarity score (approx)
+        const query = `
+            SELECT id, content, summary, 1 - (embedding <=> $1) as similarity
+            FROM nodes
+            WHERE user_id = $2 AND embedding IS NOT NULL
+            ORDER BY embedding <=> $1 ASC
+            LIMIT 10;
+        `;
+        
+        const result = await db.query(query, [JSON.stringify(embedding), req.user.id]);
+        res.json({ results: result.rows });
+    } catch (e) {
+        console.error('Semantic search failed:', e);
+        res.status(500).json({ message: 'Search failed' });
+    }
+});
+
+// Backfill Embeddings Endpoint (Utility)
+app.post('/api/admin/backfill-embeddings', async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
+    
+    // In a multi-user real app, this should be an admin-only route or run as a script.
+    // Here we let the user backfill their own nodes.
+    
+    try {
+        const nodesResult = await db.query('SELECT * FROM nodes WHERE user_id = $1 AND embedding IS NULL', [req.user.id]);
+        const nodes = nodesResult.rows;
+        
+        console.log(`Backfilling ${nodes.length} nodes for user ${req.user.username}`);
+        
+        let successCount = 0;
+        
+        for (const node of nodes) {
+            const aliases = node.aliases || [];
+            const embeddingText = [
+                node.content,
+                aliases.join(' '),
+                node.summary
+            ].filter(Boolean).join(' ');
+
+            if (embeddingText) {
+                const embedding = await generateEmbedding(embeddingText);
+                if (embedding) {
+                    await db.query('UPDATE nodes SET embedding = $1 WHERE id = $2', [JSON.stringify(embedding), node.id]);
+                    successCount++;
+                }
+            }
+            // Rate limit protection / niceness
+            await new Promise(r => setTimeout(r, 100));
+        }
+        
+        res.json({ message: `Backfilled ${successCount} of ${nodes.length} nodes.` });
+        
+    } catch (e) {
+        console.error('Backfill failed:', e);
+        res.status(500).json({ message: 'Backfill failed' });
     }
 });
 

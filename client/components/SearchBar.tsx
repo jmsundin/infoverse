@@ -12,6 +12,7 @@ interface SearchBarProps {
   onSelect: (topic: string, expand: boolean, isWiki?: boolean) => void;
   onNavigate: (id: string) => void;
   onClose: () => void;
+  isCloud?: boolean;
 }
 
 export const SearchBar: React.FC<SearchBarProps> = ({
@@ -19,10 +20,16 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   onSelect,
   onNavigate,
   onClose,
+  isCloud = false,
 }) => {
   const [query, setQuery] = useState("");
   const [wikiResults, setWikiResults] = useState<SearchResult[]>([]);
-  const [localResults, setLocalResults] = useState<GraphNode[]>([]);
+  const [localResults, setLocalResults] = useState<
+    (GraphNode & { similarity?: number })[]
+  >([]);
+  const [searchMode, setSearchMode] = useState<"keyword" | "semantic">(
+    "keyword"
+  );
   const [isOpen, setIsOpen] = useState(false); // Controls the dropdown results
   const [loading, setLoading] = useState(false);
 
@@ -60,24 +67,103 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   useEffect(() => {
     const fetchResults = async () => {
       if (!query.trim()) {
-        setWikiResults([]);
-        setLocalResults([]);
+        if (nodes.length > 0) {
+          // Suggestion Mode: Pick a random node
+          const randomNode = nodes[Math.floor(Math.random() * nodes.length)];
+          setLocalResults([randomNode]);
+
+          // Fetch related from Wiki
+          try {
+            setLoading(true);
+            const response = await fetch(
+              `https://api.wikimedia.org/core/v1/wikipedia/en/search/title?q=${encodeURIComponent(
+                randomNode.content
+              )}&limit=6`
+            );
+            const data = await response.json();
+
+            if (data.pages && data.pages.length > 0) {
+              const suggestions = data.pages
+                .map((p: any) => ({
+                  title: p.title,
+                  description: p.description,
+                  thumbnail: p.thumbnail,
+                }))
+                .filter(
+                  (p: SearchResult) =>
+                    p.title.toLowerCase() !==
+                      randomNode.content.toLowerCase() &&
+                    !nodes.some(
+                      (n) => n.content.toLowerCase() === p.title.toLowerCase()
+                    )
+                );
+
+              setWikiResults(suggestions.slice(0, 3));
+            } else {
+              setWikiResults([]);
+            }
+            setIsOpen(true);
+          } catch (e) {
+            console.error("Suggestion fetch error", e);
+            setWikiResults([]);
+          } finally {
+            setLoading(false);
+          }
+        } else {
+          setWikiResults([]);
+          setLocalResults([]);
+        }
         return;
       }
 
-      // 1. Local Search (Case insensitive)
-      const normalizedQuery = query.toLowerCase();
-      const matchingNodes = nodes.filter((node) => {
-        const titleMatch = node.content.toLowerCase().includes(normalizedQuery);
-        const aliasMatch = node.aliases?.some((alias) =>
-          alias.toLowerCase().includes(normalizedQuery)
-        );
-        return titleMatch || aliasMatch;
-      });
-      setLocalResults(matchingNodes);
+      setLoading(true);
+
+      // 1. Local Search
+      if (searchMode === "semantic" && isCloud) {
+        try {
+          const apiBase = (import.meta as any).env.VITE_API_URL || "";
+          const res = await fetch(
+            `${apiBase}/api/search/semantic?q=${encodeURIComponent(query)}`
+          );
+          const data = await res.json();
+
+          if (data.results && Array.isArray(data.results)) {
+            // Map back to full node objects if possible, or use returned data
+            // The API returns id, content, summary, similarity
+            // We want to preserve the client-side node state (color, etc) if available
+            const mapped = data.results
+              .map((r: any) => {
+                const existing = nodes.find((n) => n.id === r.id);
+                return existing
+                  ? { ...existing, similarity: r.similarity }
+                  : null;
+              })
+              .filter(Boolean);
+
+            setLocalResults(mapped);
+          } else {
+            setLocalResults([]);
+          }
+        } catch (e) {
+          console.error("Semantic search error", e);
+          setLocalResults([]);
+        }
+      } else {
+        // Keyword Search (Case insensitive)
+        const normalizedQuery = query.toLowerCase();
+        const matchingNodes = nodes.filter((node) => {
+          const titleMatch = node.content
+            .toLowerCase()
+            .includes(normalizedQuery);
+          const aliasMatch = node.aliases?.some((alias) =>
+            alias.toLowerCase().includes(normalizedQuery)
+          );
+          return titleMatch || aliasMatch;
+        });
+        setLocalResults(matchingNodes);
+      }
 
       // 2. Wikipedia Search
-      setLoading(true);
       try {
         // Using Wikimedia Core REST API for title search
         const response = await fetch(
@@ -122,7 +208,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
 
     const timeoutId = setTimeout(fetchResults, 300);
     return () => clearTimeout(timeoutId);
-  }, [query, nodes]);
+  }, [query, nodes, searchMode, isCloud]);
 
   return (
     <div
@@ -158,12 +244,47 @@ export const SearchBar: React.FC<SearchBarProps> = ({
         <input
           ref={inputRef}
           type="text"
-          className="block w-full rounded-xl border border-slate-600 bg-slate-800/90 backdrop-blur-md py-2.5 pl-10 pr-10 text-sm text-slate-100 placeholder-slate-400 focus:border-sky-500 focus:bg-slate-900 focus:outline-none focus:ring-1 focus:ring-sky-500 shadow-lg transition-all"
-          placeholder="Search for a topic..."
+          className="block w-full rounded-xl border border-slate-600 bg-slate-800/90 backdrop-blur-md py-2.5 pl-10 pr-24 text-sm text-slate-100 placeholder-slate-400 focus:border-sky-500 focus:bg-slate-900 focus:outline-none focus:ring-1 focus:ring-sky-500 shadow-lg transition-all"
+          placeholder={
+            searchMode === "semantic"
+              ? "Ask a question..."
+              : "Search for a topic..."
+          }
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          onFocus={() => query && setIsOpen(true)}
+          onFocus={() => setIsOpen(true)}
         />
+
+        {/* Toggle Switch */}
+        {isCloud && (
+          <div className="absolute inset-y-0 right-8 flex items-center pr-2">
+            <button
+              onClick={() =>
+                setSearchMode((prev) =>
+                  prev === "keyword" ? "semantic" : "keyword"
+                )
+              }
+              className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold uppercase transition-colors border ${
+                searchMode === "semantic"
+                  ? "bg-sky-900/50 text-sky-400 border-sky-700 hover:bg-sky-900"
+                  : "bg-slate-700/50 text-slate-400 border-slate-600 hover:bg-slate-700"
+              }`}
+              title="Toggle Semantic Search"
+            >
+              {searchMode === "semantic" ? (
+                <>
+                  <span className="text-xs">🧠</span>
+                  <span>AI</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-xs">🔍</span>
+                  <span>Key</span>
+                </>
+              )}
+            </button>
+          </div>
+        )}
 
         {/* Close Button */}
         <button
@@ -189,13 +310,13 @@ export const SearchBar: React.FC<SearchBarProps> = ({
           </svg>
         </button>
 
-        {isOpen && query && (
+        {isOpen && (
           <ul className="absolute mt-2 w-full bg-slate-800 border border-slate-700 rounded-xl shadow-2xl overflow-hidden max-h-96 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-600">
             {/* 1. Existing Nodes Section */}
             {localResults.length > 0 && (
               <>
                 <li className="px-4 py-2 bg-slate-700/50 text-xs font-bold text-slate-400 uppercase tracking-wider">
-                  Existing Nodes
+                  {query ? "Existing Nodes" : "Suggested from your Canvas"}
                 </li>
                 {localResults.map((node) => (
                   <li
@@ -230,8 +351,13 @@ export const SearchBar: React.FC<SearchBarProps> = ({
                         <div className="text-sm font-medium text-emerald-300 truncate">
                           {node.content}
                         </div>
-                        <div className="text-xs text-slate-500 truncate">
-                          Jump to existing node
+                        <div className="text-xs text-slate-500 truncate flex gap-2">
+                          <span>Jump to existing node</span>
+                          {node.similarity !== undefined && (
+                            <span className="text-sky-400 font-bold">
+                              {Math.round(node.similarity * 100)}% match
+                            </span>
+                          )}
                         </div>
                       </div>
                     </button>
@@ -243,7 +369,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
             {/* 2. Wikipedia / Search Results */}
             {localResults.length > 0 && wikiResults.length > 0 && (
               <li className="px-4 py-2 bg-slate-700/50 text-xs font-bold text-slate-400 uppercase tracking-wider border-t border-slate-700/50">
-                New from Wikipedia
+                {query ? "New from Wikipedia" : "Related Topics"}
               </li>
             )}
 
@@ -322,7 +448,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
             ))}
 
             {/* 3. Create New Option - ONLY if no local results */}
-            {localResults.length === 0 && (
+            {query && localResults.length === 0 && (
               <li className="p-2 border-t border-slate-700/50">
                 <button
                   className="w-full text-left px-4 py-3 rounded-lg hover:bg-slate-700/50 flex items-center gap-3 transition-colors text-slate-300 group"

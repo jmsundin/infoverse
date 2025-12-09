@@ -1,11 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const { GoogleGenAI, Type, Schema } = require("@google/genai");
+const { Type } = require("@google/genai");
 const db = require('./db');
-
-// Initialize Gemini
-// Ensure GEMINI_API_KEY is available in process.env
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const { ai } = require('./gemini-ai');
 
 // Rate Limit Middleware
 const rateLimiter = async (req, res, next) => {

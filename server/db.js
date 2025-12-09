@@ -139,6 +139,22 @@ const initDb = async () => {
     
     await query(`CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire")`);
 
+    // Enable Vector Extension
+    try {
+        await query('CREATE EXTENSION IF NOT EXISTS vector');
+    } catch (e) {
+        console.warn('Vector extension creation failed. Ensure pgvector is installed on the database server.', e.message);
+    }
+
+    // Add embedding column to nodes
+    try {
+        await query('ALTER TABLE nodes ADD COLUMN IF NOT EXISTS embedding vector(768)');
+        // Create HNSW index for efficient similarity search
+        await query('CREATE INDEX IF NOT EXISTS nodes_embedding_idx ON nodes USING hnsw (embedding vector_cosine_ops)');
+    } catch (e) {
+        console.warn('Embedding column/index creation failed. Vector support might be missing.', e.message);
+    }
+
     console.log('Database initialized: users, rate_limits & session tables created/verified');
   } catch (err) {
     console.error('Error initializing database:', err);
