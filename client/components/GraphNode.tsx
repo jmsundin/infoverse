@@ -7,6 +7,7 @@ import React, {
   useCallback,
 } from "react";
 import ReactMarkdown from "react-markdown";
+import { MarkdownEditor } from "./MarkdownEditor";
 import {
   GraphNode,
   NodeType,
@@ -76,12 +77,8 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     const [showSettings, setShowSettings] = useState(false);
     const [isEditingTitle, setIsEditingTitle] = useState(false);
     const [titleEditValue, setTitleEditValue] = useState("");
-    const [isEditingNote, setIsEditingNote] = useState(false);
     const chatContainerRef = useRef<HTMLDivElement>(null);
     const settingsRef = useRef<HTMLDivElement>(null);
-
-    // Timer ref for auto-formatting notes on pause
-    const previewTimerRef = useRef<any>(null);
 
     // Long Press Refs
     const longPressTimerRef = useRef<any>(null);
@@ -179,12 +176,6 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       };
     }, [showSettings]);
 
-    // Clean up timer on unmount
-    useEffect(() => {
-      return () => {
-        if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
-      };
-    }, []);
 
     const handleSendMessage = async () => {
       if (!input.trim()) return;
@@ -242,31 +233,6 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         onUpdate(node.id, { content: titleEditValue });
       }
       setIsEditingTitle(false);
-    };
-
-    // Hybrid Editing Logic for Notes
-    const handleNoteContentChange = (
-      e: React.ChangeEvent<HTMLTextAreaElement>
-    ) => {
-      const newVal = e.target.value;
-      onUpdate(node.id, { content: newVal });
-
-      // Debounce the switch back to preview mode
-      if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
-      previewTimerRef.current = setTimeout(() => {
-        setIsEditingNote(false);
-      }, 2000); // 2 seconds of pause -> auto format
-    };
-
-    const handleNoteBlur = () => {
-      if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
-      setIsEditingNote(false);
-    };
-
-    const handleNoteFocus = (e: React.MouseEvent) => {
-      e.stopPropagation();
-      setIsEditingNote(true);
-      if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
     };
 
     const handleLinkClick = (e: React.MouseEvent, url: string) => {
@@ -1009,23 +975,25 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
               className={`flex-1 overflow-hidden flex flex-col relative ${colorTheme.bg}`}
             >
               {node.type === NodeType.NOTE ? (
-                isEditingNote || (!node.content && isSelected) ? (
-                  <textarea
-                    autoFocus
-                    className={`w-full h-full bg-transparent ${
+                isSelected || isSidebar ? (
+                  <div
+                    className={`w-full h-full ${
                       colorTheme.text
-                    } resize-none focus:outline-none font-mono placeholder-slate-500 ${
+                    } ${
                       isSidebar
                         ? "text-base p-6 leading-relaxed"
                         : "text-sm p-3"
-                    } pointer-events-auto`}
-                    value={node.content}
-                    onChange={handleNoteContentChange}
-                    onBlur={handleNoteBlur}
-                    placeholder="Write a note (Markdown supported)..."
+                    } pointer-events-auto cursor-text`}
                     onMouseDown={(e) => e.stopPropagation()}
                     onTouchStart={(e) => e.stopPropagation()}
-                  />
+                  >
+                    <MarkdownEditor
+                      initialContent={node.content}
+                      onChange={(val) => onUpdate(node.id, { content: val })}
+                      className="nodrag-scroll-container"
+                      placeholder="Write a note (Markdown supported)..."
+                    />
+                  </div>
                 ) : (
                   <div
                     className={`w-full h-full overflow-y-auto overflow-x-hidden ${
@@ -1039,7 +1007,6 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                         ? "pointer-events-auto cursor-text"
                         : "pointer-events-none"
                     }`}
-                    onClick={handleNoteFocus}
                     onMouseDown={(e) => e.stopPropagation()}
                     onTouchStart={(e) => e.stopPropagation()}
                   >
