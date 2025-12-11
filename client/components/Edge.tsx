@@ -66,37 +66,91 @@ export const Edge: React.FC<EdgeProps> = ({
   if (!sourceNode || !targetNode) return null;
 
   // Determine effective width/height based on LOD and Node Role
-  const isTitleOnly = lodLevel === 'TITLE';
+  // CLUSTER mode: < 0.25 zoom. Nodes are Dots or Text-only Hubs.
+  // TITLE mode: 0.25 - 0.5 zoom. Nodes are Header Boxes.
+  // DETAIL mode: > 0.5 zoom. Nodes are Full Content.
+  const isCluster = lodLevel === 'CLUSTER';
+  const isTitle = lodLevel === 'TITLE';
   
-  // Dot Size (approx diameter 24px + border/shadow)
+  // Dot Size (diameter 24px) for Leaf Nodes in Cluster Mode
   const dotSize = 24; 
+  // Hub Nodes in Cluster Mode are text only, effectively 0 size for connection purposes (point to center)
+  // or small area. Let's treat them as point connections or small circle.
+  const hubSize = 10; 
 
   let sH = sourceNode.height || 200;
   let tH = targetNode.height || 200;
+  let sW = sourceNode.width || 300;
+  let tW = targetNode.width || 300;
+  
+  // Center Positions (Default is center of logical node box)
+  let sCx = sourceNode.x + sW / 2;
+  let sCy = sourceNode.y + sH / 2;
+  let tCx = targetNode.x + tW / 2;
+  let tCy = targetNode.y + tH / 2;
 
-  // Adjust Height for Compact View (Detail level but not parent/selected)
-  if (lodLevel === 'DETAIL') {
-      if (!sourceIsParent && !sourceIsSelected) sH = NODE_HEADER_HEIGHT;
-      if (!targetIsParent && !targetIsSelected) tH = NODE_HEADER_HEIGHT;
+  // --- Adjust for Cluster Mode ---
+  if (isCluster) {
+      // Source
+      if (sourceIsParent) {
+          // Hub Node: Text only. Treat as small point at center.
+          // In GraphNode, Hub is centered at (x + width/2, y + height/2) visually?
+          // No, GraphNode positioning logic:
+          // Hub: absolute, left: node.x, top: node.y, width: node.width (300), height: node.height (200)
+          // Inside: flex items-center justify-center. So visual text is at center of box.
+          sW = hubSize;
+          sH = hubSize;
+          // sCx, sCy are already center of box.
+      } else {
+          // Leaf Node: Dot at (x, y). 
+          // GraphNode: left: node.x, top: node.y, width: 48, height: 48.
+          // Visual dot is 24px (w-6) centered in 48px box.
+          // So center is at node.x + 24, node.y + 24.
+          const containerSize = 48;
+          sCx = sourceNode.x + containerSize / 2;
+          sCy = sourceNode.y + containerSize / 2;
+          sW = dotSize;
+          sH = dotSize;
+      }
+
+      // Target
+      if (targetIsParent) {
+          tW = hubSize;
+          tH = hubSize;
+      } else {
+          const containerSize = 48;
+          tCx = targetNode.x + containerSize / 2;
+          tCy = targetNode.y + containerSize / 2;
+          tW = dotSize;
+          tH = dotSize;
+      }
+  } 
+  // --- Adjust for Title Mode ---
+  else if (isTitle) {
+      // All nodes are Title Boxes.
+      // Assuming GraphNode renders them full width/height or reduced?
+      // GraphNode TitleOnly: left: node.x, top: node.y, width: node.width, height: node.height.
+      // So default center/size works.
   }
+  // --- Adjust for Detail Mode (Compact vs Full) ---
+  else {
+      // Compact check (collapsed)
+      // GraphNode: isCompact = !isSidebar && lodLevel === "DETAIL" && !isClusterParent && !isSelected;
+      // If compact, height is HEADER_HEIGHT.
+      // Note: Edge component doesn't know if GraphNode decided to be compact.
+      // We replicate logic:
+      const sourceCompact = !sourceIsParent && !sourceIsSelected;
+      const targetCompact = !targetIsParent && !targetIsSelected;
 
-  // Calculate widths and adjust heights for TITLE mode (Dots/Labels)
-  // If selected, we assume the node expands to full box even in TITLE mode
-  const sourceIsDot = isTitleOnly && !sourceIsParent && !sourceIsSelected;
-  const targetIsDot = isTitleOnly && !targetIsParent && !targetIsSelected;
-
-  const sW = sourceIsDot ? dotSize : (sourceNode.width || 300);
-  if (sourceIsDot) sH = dotSize;
-  
-  const tW = targetIsDot ? dotSize : (targetNode.width || 300);
-  if (targetIsDot) tH = dotSize;
-
-  // Centers need to be adjusted if visual height changes from logical height (node.y is top)
-  const sCx = sourceNode.x + (sourceNode.width || 300) / 2;
-  const sCy = sourceNode.y + sH / 2;
-  
-  const tCx = targetNode.x + (targetNode.width || 300) / 2;
-  const tCy = targetNode.y + tH / 2;
+      if (sourceCompact) {
+          sH = NODE_HEADER_HEIGHT;
+          sCy = sourceNode.y + sH / 2;
+      }
+      if (targetCompact) {
+          tH = NODE_HEADER_HEIGHT;
+          tCy = targetNode.y + tH / 2;
+      }
+  }
 
   // Calculate intersection points on the node boundaries
   const start = getBoxIntersection({ x: sCx, y: sCy }, sW, sH, { x: tCx, y: tCy });
@@ -154,7 +208,7 @@ export const Edge: React.FC<EdgeProps> = ({
       />
       
       {/* Relationship Label Badge - Hide when zoom is low/title only to reduce clutter */}
-      {edge.label && !isTitleOnly && (
+      {edge.label && !isTitle && (
         <foreignObject x={labelX - 50} y={labelY - 12} width={100} height={24} className="overflow-visible pointer-events-none">
           <div className="flex items-center justify-center">
             <span className="bg-slate-900 text-slate-300 text-[10px] px-1.5 py-0.5 rounded border border-slate-700 shadow-sm whitespace-nowrap group-hover:border-sky-400 group-hover:text-sky-400 transition-colors pointer-events-auto">
