@@ -9,19 +9,28 @@ interface SidePanelProps {
 }
 
 export const SidePanel: React.FC<SidePanelProps> = ({ onClose, children, title, initialWidthPercent = 50 }) => {
-  // dimension represents Width % on Desktop, Height % on Mobile
-  const [dimension, setDimension] = useState(initialWidthPercent);
+  const [dimension, setDimension] = useState(() => {
+      if (typeof window !== 'undefined' && window.innerWidth < 768) return 100;
+      return initialWidthPercent;
+  });
   const [isMobile, setIsMobile] = useState(false);
   const isResizingRef = useRef(false);
 
   useEffect(() => {
     const checkMobile = () => {
-      setIsMobile(window.innerWidth < 768);
+      const mobile = window.innerWidth < 768;
+      setIsMobile(prev => {
+        if (prev !== mobile) {
+           if (mobile) setDimension(100);
+           else setDimension(initialWidthPercent);
+        }
+        return mobile;
+      });
     };
     checkMobile();
     window.addEventListener('resize', checkMobile);
     return () => window.removeEventListener('resize', checkMobile);
-  }, []);
+  }, [initialWidthPercent]);
 
   useEffect(() => {
     const handleMove = (e: MouseEvent | TouchEvent) => {
@@ -70,7 +79,8 @@ export const SidePanel: React.FC<SidePanelProps> = ({ onClose, children, title, 
       left: 0,
       right: 0,
       borderTopWidth: '1px',
-      borderLeftWidth: '0px'
+      borderLeftWidth: '0px',
+      paddingTop: '60px'
   } : {
       width: `${dimension}%`,
       height: '100%',

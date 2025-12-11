@@ -751,9 +751,15 @@ export const Canvas: React.FC<CanvasProps> = ({
         
         if (dist < 5) {
              const isShift = (e as MouseEvent).shiftKey;
+             const isMobile = window.matchMedia("(max-width: 768px)").matches;
+             
              // If we clicked a selected node without shift, we deferred the clear-others logic. Do it now.
              if (!isShift && selectedNodeIds.has(draggingId)) {
                   onNodeSelect(draggingId, false);
+             }
+
+             if (isMobile) {
+                onMaximizeNode(draggingId);
              }
         }
       }

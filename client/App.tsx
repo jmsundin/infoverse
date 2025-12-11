@@ -1477,7 +1477,7 @@ const App: React.FC = () => {
     <div className="flex w-screen h-screen overflow-hidden bg-slate-900 text-slate-200 font-sans">
       <div className="flex-1 relative min-w-0 flex flex-col">
         {/* Auth/Folder Buttons */}
-        <div className="absolute top-4 right-4 z-50 flex gap-3 items-center pointer-events-none">
+        <div className="absolute top-4 right-4 z-[60] flex gap-3 items-center pointer-events-none">
           <button
             onClick={() => setIsSearchOpen(true)}
             className="w-10 h-10 flex items-center justify-center bg-slate-800 border border-slate-700 rounded-full shadow-lg text-slate-200 hover:text-white hover:bg-slate-700 transition-all pointer-events-auto"
