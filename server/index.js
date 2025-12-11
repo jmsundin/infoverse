@@ -14,6 +14,57 @@ const { generateEmbedding } = require('./gemini-ai');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Stripe Init
+let stripe;
+try {
+    if (process.env.STRIPE_SECRET_KEY) {
+        stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+    } else {
+        console.warn('Warning: STRIPE_SECRET_KEY not found. Billing features will be disabled.');
+    }
+} catch (e) {
+    console.error('Failed to initialize Stripe:', e.message);
+}
+
+// Webhook Endpoint - Must be defined BEFORE express.json()
+app.post('/api/billing/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+    if (!stripe) {
+        return res.status(503).send('Billing service unavailable');
+    }
+    const sig = req.headers['stripe-signature'];
+    const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+    let event;
+
+    try {
+        event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
+    } catch (err) {
+        console.error(`Webhook Error: ${err.message}`);
+        return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    // Handle the event
+    if (event.type === 'checkout.session.completed') {
+        const session = event.data.object;
+        
+        // Fulfill the purchase...
+        if (session.client_reference_id) {
+             try {
+                await db.query(
+                    'UPDATE users SET is_paid = TRUE, stripe_customer_id = $1, stripe_subscription_id = $2 WHERE id = $3', 
+                    [session.customer, session.subscription, session.client_reference_id]
+                );
+                console.log(`User ${session.client_reference_id} upgraded to paid.`);
+             } catch (e) {
+                console.error('Error updating user payment status:', e);
+             }
+        }
+    }
+
+    // Return a 200 response to acknowledge receipt of the event
+    res.send();
+});
+
 // Initialize Database
 db.initDb().catch(err => console.error('DB Init Failed:', err));
 
@@ -836,6 +887,73 @@ app.post('/api/admin/backfill-embeddings', async (req, res) => {
     } catch (e) {
         console.error('Backfill failed:', e);
         res.status(500).json({ message: 'Backfill failed' });
+    }
+});
+
+// --- Billing API ---
+
+app.post('/api/billing/checkout', async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
+    
+    if (!stripe) {
+        return res.status(503).json({ message: 'Billing service unavailable (Server Config Error)' });
+    }
+
+    if (!process.env.STRIPE_PRICE_ID) {
+        return res.status(500).json({ message: 'Stripe configuration missing (Price ID)' });
+    }
+
+    try {
+        const frontendUrl = process.env.FRONTEND_URL || req.headers.origin || 'http://localhost:3000';
+        
+        const session = await stripe.checkout.sessions.create({
+            line_items: [
+                {
+                    price: process.env.STRIPE_PRICE_ID,
+                    quantity: 1,
+                },
+            ],
+            mode: 'subscription',
+            success_url: `${frontendUrl}/profile?success=true`,
+            cancel_url: `${frontendUrl}/profile?canceled=true`,
+            client_reference_id: req.user.id.toString(),
+            customer_email: req.user.email,
+        });
+
+        res.json({ url: session.url });
+    } catch (e) {
+        console.error('Stripe checkout error:', e);
+        res.status(500).json({ message: 'Error creating checkout session' });
+    }
+});
+
+app.post('/api/billing/portal', async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
+
+    if (!stripe) {
+        return res.status(503).json({ message: 'Billing service unavailable' });
+    }
+
+    try {
+        // Get user stripe ID
+        const result = await db.query('SELECT stripe_customer_id FROM users WHERE id = $1', [req.user.id]);
+        const customerId = result.rows[0]?.stripe_customer_id;
+
+        if (!customerId) {
+            return res.status(400).json({ message: 'No subscription found' });
+        }
+
+        const frontendUrl = process.env.FRONTEND_URL || req.headers.origin || 'http://localhost:3000';
+
+        const session = await stripe.billingPortal.sessions.create({
+            customer: customerId,
+            return_url: `${frontendUrl}/profile`,
+        });
+
+        res.json({ url: session.url });
+    } catch (e) {
+        console.error('Stripe portal error:', e);
+        res.status(500).json({ message: 'Error creating portal session' });
     }
 });
 

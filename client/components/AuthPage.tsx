@@ -59,12 +59,32 @@ export const AuthPage: React.FC<AuthPageProps> = ({
     <div className="flex items-center justify-center min-h-screen bg-slate-900 text-slate-200">
       <div className="w-full max-w-md p-8 bg-slate-800 rounded-xl shadow-2xl border border-slate-700">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 mb-4 rounded-full bg-sky-900/30 text-4xl">
-            🔒
+          <div className="flex flex-col items-center justify-center mb-2">
+            <div className="w-16 h-16 bg-gradient-to-br from-sky-500 to-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-sky-500/20 mb-4">
+              <svg
+                className="w-10 h-10 text-white"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <circle cx="12" cy="12" r="3" />
+                <circle cx="6" cy="6" r="2" />
+                <circle cx="18" cy="6" r="2" />
+                <circle cx="6" cy="18" r="2" />
+                <circle cx="18" cy="18" r="2" />
+                <path d="M12 12L6 6" />
+                <path d="M12 12L18 6" />
+                <path d="M12 12L6 18" />
+                <path d="M12 12L18 18" />
+              </svg>
+            </div>
+            <h1 className="text-3xl font-bold text-white tracking-tight">
+              infoverse
+            </h1>
           </div>
-          <h2 className="text-3xl font-bold text-white">
-            {isLogin ? "Welcome Back" : "Create Account"}
-          </h2>
           <p className="text-slate-400 mt-2">
             {isLogin
               ? "Sign in to access your personalized Infoverse."

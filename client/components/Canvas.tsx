@@ -30,6 +30,12 @@ import {
   sendChatMessage,
   getTopicSummaryPrompt,
 } from "../services/geminiService";
+import {
+  applyForceLayout,
+  applyTreeLayout,
+  applyHybridLayout,
+  resolveCollisions as resolveCollisionsService,
+} from "../services/layoutService";
 
 interface CanvasProps {
   nodes: GraphNode[];
@@ -58,8 +64,9 @@ interface CanvasProps {
   currentScopeId?: string | null;
   autoGraphEnabled?: boolean;
   onSetAutoGraphEnabled?: (enabled: boolean) => void;
-  selectedNodeId: string | null;
-  onNodeSelect: (id: string | null) => void;
+  selectedNodeIds: Set<string>;
+  onNodeSelect: (id: string | null, multi?: boolean) => void;
+  onMultiSelect?: (ids: string[], multi?: boolean) => void;
 }
 
 // Semantic Zoom Thresholds
@@ -97,11 +104,18 @@ export const Canvas: React.FC<CanvasProps> = ({
   currentScopeId,
   autoGraphEnabled,
   onSetAutoGraphEnabled,
-  selectedNodeId,
+  selectedNodeIds,
   onNodeSelect,
+  onMultiSelect,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  
+  // Derived state
+  const selectedNodeId = useMemo(() => 
+    selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null
+  , [selectedNodeIds]);
+
   const [containerSize, setContainerSize] = useState({
     width: window.innerWidth,
     height: window.innerHeight,
@@ -111,6 +125,13 @@ export const Canvas: React.FC<CanvasProps> = ({
   const [resizeDirection, setResizeDirection] =
     useState<ResizeDirection | null>(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+
+  const [selectionBox, setSelectionBox] = useState<{
+    startX: number;
+    startY: number;
+    currentX: number;
+    currentY: number;
+  } | null>(null);
 
   const [selectionTooltip, setSelectionTooltip] = useState<{
     x: number;
@@ -131,10 +152,10 @@ export const Canvas: React.FC<CanvasProps> = ({
   const dragStartRef = useRef<{
     mouseX: number;
     mouseY: number;
-    nodeX: number;
-    nodeY: number;
-    nodeWidth: number;
-    nodeHeight: number;
+    initialPositions: Map<string, { x: number; y: number }>;
+    // Specifics for resize (which is always single node)
+    nodeWidth?: number;
+    nodeHeight?: number;
   } | null>(null);
 
   const isDraggingRef = useRef(false);
@@ -340,6 +361,7 @@ export const Canvas: React.FC<CanvasProps> = ({
         onViewTransformChange(t);
       })
       .filter((event) => {
+        if (event.shiftKey) return false;
         if (
           draggingIdRef.current ||
           resizingIdRef.current ||
@@ -408,55 +430,19 @@ export const Canvas: React.FC<CanvasProps> = ({
 
   const resolveCollisions = useCallback(
     (fixedNodeId?: string) => {
+      // Use functional state update to ensure we always have latest nodes
+      // AND prevent race conditions where we overwrite the position of the dragged node
+      // with an old position from the simulation start.
       setNodes((currentNodes) => {
-        const simNodes = currentNodes.map((n) => ({
-          ...n,
-          fx: n.id === fixedNodeId ? n.x : undefined,
-          fy: n.id === fixedNodeId ? n.y : undefined,
-          effectiveW: n.width || DEFAULT_NODE_WIDTH,
-          effectiveH: n.height || DEFAULT_NODE_HEIGHT,
-        }));
-
-        // Filter edges to only those where both source and target exist in the simulation
-        const nodeIds = new Set(simNodes.map((n) => n.id));
-        const validEdges = edges.filter(
-          (e) => nodeIds.has(e.source) && nodeIds.has(e.target)
-        );
-
-        const simulation = d3
-          .forceSimulation(simNodes as any)
-          .force("charge", d3.forceManyBody().strength(-500)) // Reduced repulsion from -2000 to -500
-          .force("x", d3.forceX(0).strength(0.02)) // Add weak centering gravity
-          .force("y", d3.forceY(0).strength(0.02)) // Add weak centering gravity
-          .force(
-            "link",
-            d3
-              .forceLink(validEdges.map((e) => ({ ...e })))
-              .id((d: any) => d.id)
-              .distance(500)
-          )
-          .force(
-            "collide",
-            d3
-              .forceCollide()
-              .radius((d: any) => {
-                const w = d.effectiveW;
-                const h = d.effectiveH;
-                const radius = Math.sqrt(w * w + h * h) / 2;
-                return radius + 5;
-              })
-              .iterations(8)
-              .strength(1)
-          )
-          .stop();
-
-        for (let i = 0; i < 150; ++i) simulation.tick();
-
-        return currentNodes.map((n, i) => ({
-          ...n,
-          x: (simNodes[i] as any).x,
-          y: (simNodes[i] as any).y,
-        }));
+          // If we are dragging, we must ensure the fixedNodeId (the dragged node) 
+          // maintains the position set by the mouse event, which might be newer than
+          // what's in 'currentNodes' if state updates are batched.
+          // actually, currentNodes inside setNodes is the latest committed state.
+          // The issue is if we call resolveCollisions, it runs a simulation on currentNodes.
+          // If we are dragging, the mouse move updates state -> triggers render.
+          // If we call resolveCollisions inside the mouse move handler, it stacks up.
+          
+          return resolveCollisionsService(currentNodes, edges, fixedNodeId);
       });
     },
     [setNodes, edges]
@@ -706,13 +692,77 @@ export const Canvas: React.FC<CanvasProps> = ({
 
   // Drag Logic
   useEffect(() => {
-    const handleEnd = () => {
+    const handleEnd = (e: MouseEvent | TouchEvent) => {
+      // Box Selection End
+      if (selectionBox) {
+        const x = Math.min(selectionBox.startX, selectionBox.currentX);
+        const y = Math.min(selectionBox.startY, selectionBox.currentY);
+        const w = Math.abs(selectionBox.startX - selectionBox.currentX);
+        const h = Math.abs(selectionBox.startY - selectionBox.currentY);
+
+        if (w > 5 || h > 5) {
+          const toCanvas = (sx: number, sy: number) => ({
+            x: (sx - viewTransform.x) / viewTransform.k,
+            y: (sy - viewTransform.y) / viewTransform.k,
+          });
+
+          const p1 = toCanvas(x, y);
+          const p2 = toCanvas(x + w, y + h);
+
+          const left = Math.min(p1.x, p2.x);
+          const right = Math.max(p1.x, p2.x);
+          const top = Math.min(p1.y, p2.y);
+          const bottom = Math.max(p1.y, p2.y);
+
+          const selectedIds = nodes
+            .filter((n) => {
+              const nW = n.width || DEFAULT_NODE_WIDTH;
+              const nH = n.height || DEFAULT_NODE_HEIGHT;
+              const nRight = n.x + nW;
+              const nBottom = n.y + nH;
+              // Check intersection
+              return (
+                n.x < right && nRight > left && n.y < bottom && nBottom > top
+              );
+            })
+            .map((n) => n.id);
+
+          if (onMultiSelect && selectedIds.length > 0) {
+            onMultiSelect(selectedIds, true);
+          }
+        } else {
+            // Treat as click? Handled by handleBackgroundClick usually
+        }
+        setSelectionBox(null);
+      }
+
       const wasInteracting = draggingId || resizingId;
       const interactingId = draggingId || resizingId;
+      
+      // Check for Click on Selected Node (Deselect others)
+      if (draggingId && dragStartRef.current) {
+        let clientX =
+            "touches" in e ? e.changedTouches[0].clientX : (e as MouseEvent).clientX;
+        let clientY =
+            "touches" in e ? e.changedTouches[0].clientY : (e as MouseEvent).clientY;
+        
+        const { mouseX, mouseY } = dragStartRef.current;
+        const dist = Math.hypot(clientX - mouseX, clientY - mouseY);
+        
+        if (dist < 5) {
+             const isShift = (e as MouseEvent).shiftKey;
+             // If we clicked a selected node without shift, we deferred the clear-others logic. Do it now.
+             if (!isShift && selectedNodeIds.has(draggingId)) {
+                  onNodeSelect(draggingId, false);
+             }
+        }
+      }
+
       setDraggingId(null);
       setResizingId(null);
       setResizeDirection(null);
       dragStartRef.current = null;
+      // Final settle
       if (wasInteracting && interactingId) resolveCollisions(interactingId);
     };
 
@@ -723,49 +773,68 @@ export const Canvas: React.FC<CanvasProps> = ({
         "touches" in e ? e.touches[0].clientY : (e as MouseEvent).clientY;
 
       setMousePos({ x: clientX, y: clientY });
+      
+      if (selectionBox) {
+        setSelectionBox((prev) =>
+          prev ? { ...prev, currentX: clientX, currentY: clientY } : null
+        );
+        return;
+      }
 
       if (!dragStartRef.current) return;
       if (e.type === "touchmove" && (draggingId || resizingId))
         e.preventDefault();
 
-      const { mouseX, mouseY, nodeX, nodeY, nodeWidth, nodeHeight } =
+      const { mouseX, mouseY, initialPositions, nodeWidth, nodeHeight } =
         dragStartRef.current;
       const dx = (clientX - mouseX) / viewTransform.k;
       const dy = (clientY - mouseY) / viewTransform.k;
 
       if (draggingId) {
-        setNodes((prev) =>
-          prev.map((n) =>
-            n.id === draggingId ? { ...n, x: nodeX + dx, y: nodeY + dy } : n
-          )
-        );
-      } else if (resizingId && resizeDirection) {
-        setNodes((prev) =>
-          prev.map((n) => {
-            if (n.id === resizingId) {
-              let newX = nodeX,
-                newY = nodeY,
-                newW = nodeWidth,
-                newH = nodeHeight;
-              if (resizeDirection.includes("e"))
-                newW = Math.max(MIN_NODE_WIDTH, nodeWidth + dx);
-              else if (resizeDirection.includes("w")) {
-                const effectiveDx = Math.min(dx, nodeWidth - MIN_NODE_WIDTH);
-                newW = nodeWidth - effectiveDx;
-                newX = nodeX + effectiveDx;
-              }
-              if (resizeDirection.includes("s"))
-                newH = Math.max(MIN_NODE_HEIGHT, nodeHeight + dy);
-              else if (resizeDirection.includes("n")) {
-                const effectiveDy = Math.min(dy, nodeHeight - MIN_NODE_HEIGHT);
-                newH = nodeHeight - effectiveDy;
-                newY = nodeY + effectiveDy;
-              }
-              return { ...n, x: newX, y: newY, width: newW, height: newH };
+        // Update position of the dragged node(s) immediately
+        setNodes((prev) => {
+          const nextNodes = prev.map((n) => {
+            const initPos = initialPositions.get(n.id);
+            if (initPos) {
+              return { ...n, x: initPos.x + dx, y: initPos.y + dy };
             }
             return n;
-          })
-        );
+          });
+          // Run collision on the NEW state immediately to push others away
+          // We use the draggingId as the "fixed" node. 
+          // Note: If dragging multiple, this only fixes one, but others move in lockstep so it's mostly fine.
+          return resolveCollisionsService(nextNodes, edges, draggingId);
+        });
+      } else if (resizingId && resizeDirection) {
+        const initPos = initialPositions.get(resizingId);
+        if (initPos && nodeWidth !== undefined && nodeHeight !== undefined) {
+          setNodes((prev) =>
+            prev.map((n) => {
+              if (n.id === resizingId) {
+                let newX = initPos.x,
+                  newY = initPos.y,
+                  newW = nodeWidth,
+                  newH = nodeHeight;
+                if (resizeDirection.includes("e"))
+                  newW = Math.max(MIN_NODE_WIDTH, nodeWidth + dx);
+                else if (resizeDirection.includes("w")) {
+                  const effectiveDx = Math.min(dx, nodeWidth - MIN_NODE_WIDTH);
+                  newW = nodeWidth - effectiveDx;
+                  newX = initPos.x + effectiveDx;
+                }
+                if (resizeDirection.includes("s"))
+                  newH = Math.max(MIN_NODE_HEIGHT, nodeHeight + dy);
+                else if (resizeDirection.includes("n")) {
+                  const effectiveDy = Math.min(dy, nodeHeight - MIN_NODE_HEIGHT);
+                  newH = nodeHeight - effectiveDy;
+                  newY = initPos.y + effectiveDy;
+                }
+                return { ...n, x: newX, y: newY, width: newW, height: newH };
+              }
+              return n;
+            })
+          );
+        }
       }
     };
 
@@ -783,9 +852,14 @@ export const Canvas: React.FC<CanvasProps> = ({
     draggingId,
     resizingId,
     resizeDirection,
-    viewTransform.k,
+    selectionBox,
+    viewTransform,
     setNodes,
     resolveCollisions,
+    nodes,
+    selectedNodeIds,
+    onMultiSelect,
+    onNodeSelect
   ]);
 
   const handleNodeMouseDown = useCallback(
@@ -795,9 +869,37 @@ export const Canvas: React.FC<CanvasProps> = ({
         if (id !== connectingNodeId) onConnectEnd(connectingNodeId, id);
         return;
       }
-      const node = nodes.find((n) => n.id === id);
-      if (!node) return;
-      onNodeSelect(id);
+      
+      const isShift = (e as React.MouseEvent).shiftKey;
+      const isSelected = selectedNodeIds.has(id);
+      
+      if (isShift) {
+        // Toggle selection
+        onNodeSelect(id, true);
+        // If we are deselecting (was selected, now toggled off), do not start drag
+        if (isSelected) return; 
+      } else {
+        // No Shift
+        if (!isSelected) {
+            // New selection: select this one, clear others
+            onNodeSelect(id, false);
+        }
+        // If ALREADY selected: Do NOT call onNodeSelect(id, false) yet.
+        // We defer this to MouseUp to allow dragging the whole group.
+        // See handleEnd logic.
+      }
+
+      // Calculate the effective selection for dragging purposes
+      const effectiveSelectedIds = new Set(selectedNodeIds);
+      if (isShift) {
+         if (!isSelected) effectiveSelectedIds.add(id);
+      } else {
+         if (!isSelected) {
+             effectiveSelectedIds.clear();
+             effectiveSelectedIds.add(id);
+         }
+         // If isSelected, effectiveSelectedIds is just selectedNodeIds (whole group)
+      }
 
       const target = e.target as HTMLElement;
       if (
@@ -811,17 +913,43 @@ export const Canvas: React.FC<CanvasProps> = ({
         "touches" in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
       let clientY =
         "touches" in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+      
       setDraggingId(id);
+      
+      const initialPositions = new Map();
+      nodes.forEach(n => {
+        if (effectiveSelectedIds.has(n.id)) {
+          initialPositions.set(n.id, { x: n.x, y: n.y });
+        }
+      });
+
       dragStartRef.current = {
         mouseX: clientX,
         mouseY: clientY,
-        nodeX: node.x,
-        nodeY: node.y,
-        nodeWidth: node.width || DEFAULT_NODE_WIDTH,
-        nodeHeight: node.height || DEFAULT_NODE_HEIGHT,
+        initialPositions,
       };
     },
-    [nodes, connectingNodeId, onConnectEnd, onNodeSelect]
+    [nodes, connectingNodeId, onConnectEnd, onNodeSelect, selectedNodeIds]
+  );
+  
+  const handleBackgroundMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+        // Shift + Drag on background -> Box Selection
+        if (e.shiftKey && e.button === 0) {
+            e.stopPropagation();
+            e.preventDefault(); // Prevent text selection etc
+            const clientX = e.clientX;
+            const clientY = e.clientY;
+            
+            setSelectionBox({
+                startX: clientX,
+                startY: clientY,
+                currentX: clientX,
+                currentY: clientY
+            });
+        }
+    },
+    []
   );
 
   const handleBackgroundClick = useCallback(
@@ -916,11 +1044,14 @@ export const Canvas: React.FC<CanvasProps> = ({
         "touches" in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
       setResizingId(id);
       setResizeDirection(direction);
+      
+      const initialPositions = new Map();
+      initialPositions.set(id, { x: node.x, y: node.y });
+      
       dragStartRef.current = {
         mouseX: clientX,
         mouseY: clientY,
-        nodeX: node.x,
-        nodeY: node.y,
+        initialPositions,
         nodeWidth: node.width || DEFAULT_NODE_WIDTH,
         nodeHeight: node.height || DEFAULT_NODE_HEIGHT,
       };
@@ -928,65 +1059,78 @@ export const Canvas: React.FC<CanvasProps> = ({
     [nodes]
   );
 
-  const applyLayout = (type: "force" | "tree-tb" | "tree-lr") => {
+  const handleFocusCanvas = useCallback(() => {
     if (nodes.length === 0) return;
-    const simNodes = nodes.map((n) => ({ ...n }));
-    const simEdges = edges.map((e) => ({ ...e }));
-    if (type === "force") {
-      d3.forceSimulation(simNodes as any)
-        .force("charge", d3.forceManyBody().strength(-2000))
-        .force(
-          "link",
-          d3
-            .forceLink(simEdges)
-            .id((d: any) => d.id)
-            .distance(500)
-        )
-        .force("center", d3.forceCenter(0, 0))
-        .force("collide", d3.forceCollide().radius(200))
-        .stop()
-        .tick(300);
-      setNodes((prev) =>
-        prev.map((n, i) => ({
-          ...n,
-          x: (simNodes[i] as any).x,
-          y: (simNodes[i] as any).y,
-        }))
-      );
-    } else {
-      const rootId = nodes[0].id;
-      const stratify = d3
-        .stratify<GraphNode>()
-        .id((d) => d.id)
-        .parentId((d) => {
-          const edge = edges.find((e) => e.target === d.id);
-          return edge ? edge.source : d.id === rootId ? null : rootId;
-        });
-      try {
-        const root = stratify(nodes);
-        // Tighter tree layout: [320, 220] for TB, [320, 250] for LR
-        const treeLayout = d3
-          .tree<GraphNode>()
-          .nodeSize(type === "tree-tb" ? [320, 220] : [320, 250]);
-        treeLayout(root);
-        const descendants = root.descendants();
-        setNodes((prev) =>
-          prev.map((n) => {
-            const d = descendants.find((dn) => dn.id === n.id);
-            return d
-              ? {
-                  ...n,
-                  x: type === "tree-tb" ? d.x : d.y,
-                  y: type === "tree-tb" ? d.y : d.x,
-                }
-              : n;
-          })
-        );
-      } catch (e) {
-        console.warn(e);
-        applyLayout("force");
+
+    let targetX: number | undefined;
+    let targetY: number | undefined;
+    let k = 1;
+
+    // 1. Focus on Selected Node
+    if (selectedNodeId) {
+      const node = nodes.find((n) => n.id === selectedNodeId);
+      if (node) {
+        targetX = node.x + (node.width || DEFAULT_NODE_WIDTH) / 2;
+        targetY = node.y + (node.height || DEFAULT_NODE_HEIGHT) / 2;
       }
     }
+
+    // 2. Focus on Center of Mass (if no selection)
+    if (targetX === undefined || targetY === undefined) {
+      let minX = Infinity,
+        minY = Infinity,
+        maxX = -Infinity,
+        maxY = -Infinity;
+        
+      let hasValidNodes = false;
+      nodes.forEach((n) => {
+        if (typeof n.x !== 'number' || typeof n.y !== 'number' || isNaN(n.x) || isNaN(n.y)) return;
+        hasValidNodes = true;
+        const w = n.width || DEFAULT_NODE_WIDTH;
+        const h = n.height || DEFAULT_NODE_HEIGHT;
+        minX = Math.min(minX, n.x);
+        minY = Math.min(minY, n.y);
+        maxX = Math.max(maxX, n.x + w);
+        maxY = Math.max(maxY, n.y + h);
+      });
+
+      if (!hasValidNodes) return;
+
+      const width = maxX - minX + 200; // Padding
+      const height = maxY - minY + 200;
+      
+      targetX = (minX + maxX) / 2;
+      targetY = (minY + maxY) / 2;
+      
+      const scaleX = window.innerWidth / width;
+      const scaleY = window.innerHeight / height;
+      k = Math.min(scaleX, scaleY, 1);
+      k = Math.max(k, 0.1); 
+    }
+
+    const newX = window.innerWidth / 2 - targetX * k;
+    const newY = window.innerHeight / 2 - targetY * k;
+
+    onViewTransformChange({ x: newX, y: newY, k });
+  }, [nodes, selectedNodeId, onViewTransformChange]);
+
+  const applyLayout = (type: "force" | "tree-tb" | "tree-lr" | "hybrid") => {
+    if (nodes.length === 0) return;
+    
+    setNodes((currentNodes) => {
+      switch (type) {
+        case "force":
+          return applyForceLayout(currentNodes, edges);
+        case "tree-tb":
+          return applyTreeLayout(currentNodes, edges, "TB");
+        case "tree-lr":
+          return applyTreeLayout(currentNodes, edges, "LR");
+        case "hybrid":
+          return applyHybridLayout(currentNodes, edges, "TB"); // Default to TB hybrid
+        default:
+          return currentNodes;
+      }
+    });
   };
 
   const addNewNode = (type: NodeType, pos?: { x: number; y: number }) => {
@@ -1154,6 +1298,30 @@ export const Canvas: React.FC<CanvasProps> = ({
         </div>
         <div className="flex flex-row md:flex-col gap-4 md:gap-4 border-l md:border-l-0 md:border-t border-slate-800 pl-4 md:pl-0 md:pt-4 items-center">
           <button
+            onClick={handleFocusCanvas}
+            className="p-2 text-slate-500 hover:text-sky-400 hover:bg-slate-800 rounded-lg md:mb-2 mr-2 md:mr-0"
+            title={selectedNodeId ? "Focus Selected" : "Focus Canvas"}
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <circle cx="12" cy="12" r="3" />
+              <line x1="12" y1="2" x2="12" y2="5" />
+              <line x1="12" y1="19" x2="12" y2="22" />
+              <line x1="2" y1="12" x2="5" y2="12" />
+              <line x1="19" y1="12" x2="22" y2="12" />
+            </svg>
+          </button>
+          <button
             onClick={() => applyLayout("tree-tb")}
             className="p-2 text-slate-500 hover:text-sky-400 hover:bg-slate-800 rounded-lg"
           >
@@ -1178,6 +1346,7 @@ export const Canvas: React.FC<CanvasProps> = ({
           <button
             onClick={() => applyLayout("tree-lr")}
             className="p-2 text-slate-500 hover:text-sky-400 hover:bg-slate-800 rounded-lg"
+            title="Tree Left-Right"
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -1198,8 +1367,34 @@ export const Canvas: React.FC<CanvasProps> = ({
             </svg>
           </button>
           <button
+            onClick={() => applyLayout("hybrid")}
+            className="p-2 text-slate-500 hover:text-sky-400 hover:bg-slate-800 rounded-lg"
+            title="Hybrid Layout"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M12 2v20" />
+              <path d="M2 12h20" />
+              <circle cx="12" cy="12" r="3" />
+              <circle cx="12" cy="4" r="2" />
+              <circle cx="12" cy="20" r="2" />
+              <circle cx="4" cy="12" r="2" />
+              <circle cx="20" cy="12" r="2" />
+            </svg>
+          </button>
+          <button
             onClick={() => applyLayout("force")}
             className="p-2 text-slate-500 hover:text-sky-400 hover:bg-slate-800 rounded-lg"
+            title="Force Layout"
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -1233,6 +1428,7 @@ export const Canvas: React.FC<CanvasProps> = ({
           backgroundPosition: `${bgX}px ${bgY}px`,
           backgroundRepeat: "repeat",
         }}
+        onMouseDown={handleBackgroundMouseDown}
         onClick={handleBackgroundClick}
         onContextMenu={handleContextMenu}
         onTouchEnd={handleTouchEnd}
@@ -1260,6 +1456,19 @@ export const Canvas: React.FC<CanvasProps> = ({
             <line x1="4" y1="18" x2="20" y2="18" />
           </svg>
         </button>
+
+        {/* Selection Box */ }
+        {selectionBox && (
+          <div
+            className="absolute border border-sky-400 bg-sky-400/20 pointer-events-none z-[9999]"
+            style={{
+              left: Math.min(selectionBox.startX, selectionBox.currentX),
+              top: Math.min(selectionBox.startY, selectionBox.currentY),
+              width: Math.abs(selectionBox.startX - selectionBox.currentX),
+              height: Math.abs(selectionBox.startY - selectionBox.currentY),
+            }}
+          />
+        )}
 
         {connectingNodeId && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-sky-900/80 text-sky-200 px-4 py-2 rounded-full text-sm font-bold z-50 pointer-events-none animate-in fade-in slide-in-from-top-4">

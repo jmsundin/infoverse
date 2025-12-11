@@ -6,8 +6,10 @@ import { SearchBar } from "./components/SearchBar";
 import { NodeListDrawer } from "./components/NodeListDrawer";
 import { AuthPage } from "./components/AuthPage";
 import { LimitModal } from "./components/LimitModal";
+import { UpgradeModal } from "./components/UpgradeModal";
 import { ProfilePage } from "./components/ProfilePage";
 import { Toast } from "./components/Toast";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import {
   GraphEdge,
   GraphNode,
@@ -172,16 +174,29 @@ const App: React.FC = () => {
     return null;
   });
 
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(() => {
+  const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => {
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        return parsed.selectedNodeId || null;
+        // Migration: Check for old selectedNodeId (string) or new selectedNodeIds (array)
+        if (parsed.selectedNodeIds && Array.isArray(parsed.selectedNodeIds)) {
+          return new Set(parsed.selectedNodeIds);
+        }
+        if (parsed.selectedNodeId) {
+          return new Set([parsed.selectedNodeId]);
+        }
       }
     } catch (e) {}
-    return null;
+    return new Set();
   });
+
+  const selectedNodeId =
+    selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null;
+  const setSelectedNodeId = useCallback((id: string | null) => {
+    if (id === null) setSelectedNodeIds(new Set());
+    else setSelectedNodeIds(new Set([id]));
+  }, []);
 
   const [activeSidePane, setActiveSidePane] = useState<{
     type: "web" | "node";
@@ -199,7 +214,7 @@ const App: React.FC = () => {
   }>({ visible: false, message: "" });
 
   const deletedNodeRef = useRef<{
-    node: GraphNode;
+    nodes: GraphNode[];
     edges: GraphEdge[];
     timer: number | null;
   } | null>(null);
@@ -263,6 +278,7 @@ const App: React.FC = () => {
   }, []);
 
   const [showLimitModal, setShowLimitModal] = useState(false);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
 
   const prevNodesRef = useRef<GraphNode[]>(nodes);
   const prevEdgesRef = useRef<GraphEdge[]>(edges);
@@ -420,7 +436,7 @@ const App: React.FC = () => {
         viewTransform,
         autoGraphEnabled,
         currentScopeId,
-        selectedNodeId,
+        selectedNodeIds: Array.from(selectedNodeIds),
       };
       localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(data));
     }, 1000);
@@ -432,7 +448,7 @@ const App: React.FC = () => {
     viewTransform,
     autoGraphEnabled,
     currentScopeId,
-    selectedNodeId,
+    selectedNodeIds,
   ]);
 
   // --- File System Sync Effects ---
@@ -476,6 +492,7 @@ const App: React.FC = () => {
           }
           if (res.code === "STORAGE_LIMIT") {
             setUsageNotification({ message: res.message, visible: true });
+            setShowUpgradeModal(true);
           }
         }
       } catch (e) {
@@ -510,8 +527,9 @@ const App: React.FC = () => {
   // --- Initial Center on Selected Node ---
   useEffect(() => {
     // If we have a selected node from storage, center on it
-    if (selectedNodeId) {
-      const node = nodes.find((n) => n.id === selectedNodeId);
+    if (selectedNodeIds.size > 0) {
+      const primaryId = Array.from(selectedNodeIds)[0];
+      const node = nodes.find((n) => n.id === primaryId);
       if (node) {
         // Use k=1 for focus view
         const k = 1;
@@ -530,9 +548,36 @@ const App: React.FC = () => {
   }, []); // Run once on mount
 
   // --- Node Operations ---
-  const handleNodeSelect = useCallback((id: string | null) => {
-    setSelectedNodeId(id);
-  }, []);
+  const handleNodeSelect = useCallback(
+    (id: string | null, multi: boolean = false) => {
+      if (id === null) {
+        if (!multi) setSelectedNodeIds(new Set());
+        return;
+      }
+
+      setSelectedNodeIds((prev) => {
+        if (!multi) return new Set([id]);
+
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    },
+    []
+  );
+
+  const handleBoxSelect = useCallback(
+    (ids: string[], multi: boolean = false) => {
+      setSelectedNodeIds((prev) => {
+        if (!multi) return new Set(ids);
+        const next = new Set(prev);
+        ids.forEach((id) => next.add(id));
+        return next;
+      });
+    },
+    []
+  );
 
   const handleUpdateNode = useCallback(
     (id: string, updates: Partial<GraphNode>) => {
@@ -552,90 +597,95 @@ const App: React.FC = () => {
   );
 
   const confirmDeleteNode = useCallback(
-    async (id: string) => {
+    async (ids: string[]) => {
       // 1. Snapshot state for Undo
-      const node = nodes.find((n) => n.id === id);
-      if (!node) return;
+      const nodesToDelete = nodes.filter((n) => ids.includes(n.id));
+      if (nodesToDelete.length === 0) return;
 
-      const associatedEdges = edges.filter(
-        (e) => e.source === id || e.target === id
+      const edgesToDelete = edges.filter(
+        (e) => ids.includes(e.source) || ids.includes(e.target)
       );
 
       // Clear any pending deletion timer
       if (deletedNodeRef.current && deletedNodeRef.current.timer) {
         clearTimeout(deletedNodeRef.current.timer);
-        // Force commit previous deletion if we are deleting again?
-        // Or just overwrite. For simplicity, we'll just overwrite logic, meaning you can only undo the *last* action.
       }
+
+      const idsSet = new Set(ids);
 
       // 2. Optimistic Update (Remove from UI)
-      setNodes((prev) => prev.filter((n) => n.id !== id));
+      setNodes((prev) => prev.filter((n) => !idsSet.has(n.id)));
       setEdges((prev) =>
-        prev.filter((e) => e.source !== id && e.target !== id)
+        prev.filter((e) => !idsSet.has(e.source) && !idsSet.has(e.target))
       );
 
-      if (activeSidePane?.type === "node" && activeSidePane.data === id) {
+      if (activeSidePane?.type === "node" && idsSet.has(activeSidePane.data)) {
         setActiveSidePane(null);
       }
-      if (selectedNodeId === id) setSelectedNodeId(null);
+
+      setSelectedNodeIds((prev) => {
+        const next = new Set(prev);
+        ids.forEach((id) => next.delete(id));
+        return next;
+      });
 
       // 3. Set up Soft Delete / Undo Timer
       // We wait 5 seconds before actually deleting from disk/API
       const timer = window.setTimeout(async () => {
         if (dirHandle || user?.storagePath) {
-          await deleteNodeFromDisk(id);
+          for (const id of ids) {
+            await deleteNodeFromDisk(id);
+          }
         }
         deletedNodeRef.current = null; // Clear undo history
       }, 5000);
 
       deletedNodeRef.current = {
-        node,
-        edges: associatedEdges,
+        nodes: nodesToDelete,
+        edges: edgesToDelete,
         timer,
       };
 
       // 4. Show Toast
       setToast({
         visible: true,
-        message: "Node deleted",
+        message: `${nodesToDelete.length} node(s) deleted`,
         action: () => {
           // Undo Logic
-          // Check if we have a pending deletion state
           if (deletedNodeRef.current) {
-            const { node, edges, timer } = deletedNodeRef.current;
+            const {
+              nodes: restoredNodes,
+              edges: restoredEdges,
+              timer,
+            } = deletedNodeRef.current;
 
-            // Cancel the physical deletion timer
             if (timer) {
               clearTimeout(timer);
             }
 
-            // Restore State
-            setNodes((prev) => [...prev, node]);
-            setEdges((prev) => [...prev, ...edges]);
+            setNodes((prev) => [...prev, ...restoredNodes]);
+            setEdges((prev) => [...prev, ...restoredEdges]);
 
-            // Cleanup
             deletedNodeRef.current = null;
             setToast((prev) => ({ ...prev, visible: false }));
           }
         },
       });
     },
-    [
-      nodes,
-      edges,
-      activeSidePane,
-      selectedNodeId,
-      dirHandle,
-      user,
-      deleteNodeFromDisk,
-    ]
+    [nodes, edges, activeSidePane, dirHandle, user, deleteNodeFromDisk]
   );
 
   const handleDeleteNode = useCallback(
     (id: string) => {
-      confirmDeleteNode(id);
+      // If the target node is part of the selection, delete ALL selected nodes.
+      // Otherwise, just delete the target node.
+      if (selectedNodeIds.has(id)) {
+        confirmDeleteNode(Array.from(selectedNodeIds));
+      } else {
+        confirmDeleteNode([id]);
+      }
     },
-    [confirmDeleteNode]
+    [confirmDeleteNode, selectedNodeIds]
   );
 
   // Keyboard Shortcuts (Undo, Delete)
@@ -657,9 +707,9 @@ const App: React.FC = () => {
 
       // Delete (Delete / Backspace)
       if ((e.key === "Delete" || e.key === "Backspace") && !isInputActive) {
-        if (selectedNodeId) {
+        if (selectedNodeIds.size > 0) {
           e.preventDefault();
-          handleDeleteNode(selectedNodeId);
+          confirmDeleteNode(Array.from(selectedNodeIds));
         }
       }
 
@@ -671,7 +721,7 @@ const App: React.FC = () => {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [toast, selectedNodeId, handleDeleteNode]);
+  }, [toast, selectedNodeIds, handleDeleteNode, confirmDeleteNode]);
 
   const handleExpandNode = useCallback(
     async (
@@ -1006,7 +1056,7 @@ const App: React.FC = () => {
         setCurrentScopeId(node.parentId || null);
       }
 
-      setSelectedNodeId(nodeId);
+      setSelectedNodeIds(new Set([nodeId]));
 
       const k = 1;
       const nodeCenterX = node.x + (node.width || DEFAULT_NODE_WIDTH) / 2;
@@ -1103,7 +1153,7 @@ const App: React.FC = () => {
         handleExpandNode(newNodeId, topic, newNode);
       }
 
-      setSelectedNodeId(newNodeId);
+      setSelectedNodeIds(new Set([newNodeId]));
 
       // Focus on the new node
       const k = 1;
@@ -1173,7 +1223,7 @@ const App: React.FC = () => {
 
   const handleNavigateDown = useCallback((nodeId: string) => {
     setCurrentScopeId(nodeId);
-    setSelectedNodeId(null);
+    setSelectedNodeIds(new Set());
     // Center view? Optional, but Fractal Zoom usually handles transform
   }, []);
 
@@ -1187,7 +1237,7 @@ const App: React.FC = () => {
           setCurrentScopeId(exitingNode.parentId || null);
 
           // Select the node we just exited from
-          setSelectedNodeId(exitingNode.id);
+          setSelectedNodeIds(new Set([exitingNode.id]));
 
           // Center camera on the exiting node in the parent view
           // Set zoom to 1.0 (Detail View) so we can see the "Topic Node" clearly
@@ -1208,7 +1258,7 @@ const App: React.FC = () => {
       if (currentScopeId) {
         const currentNode = nodes.find((n) => n.id === currentScopeId);
         setCurrentScopeId(currentNode?.parentId || null);
-        if (currentNode) setSelectedNodeId(currentNode.id);
+        if (currentNode) setSelectedNodeIds(new Set([currentNode.id]));
       }
     },
     [currentScopeId, nodes]
@@ -1260,7 +1310,10 @@ const App: React.FC = () => {
       [{ id: null, name: rootName, type: "root" }, ...crumbs];
 
     // 2. Build Graph Path (Horizontal Connections within Scope)
-    if (selectedNodeId) {
+    const activeId =
+      selectedNodeIds.size > 0 ? Array.from(selectedNodeIds)[0] : null;
+
+    if (activeId) {
       const currentNodes = nodes.filter((n) => n.parentId == currentScopeId);
       const currentEdges = edges.filter((e) => e.parentId == currentScopeId);
 
@@ -1270,7 +1323,7 @@ const App: React.FC = () => {
         const rootNode = currentNodes[0];
 
         // If selected node IS the root, just show it
-        if (selectedNodeId === rootNode.id) {
+        if (activeId === rootNode.id) {
           combinedCrumbs.push({
             id: rootNode.id,
             name: rootNode.content,
@@ -1294,7 +1347,7 @@ const App: React.FC = () => {
           let found = false;
           while (queue.length > 0) {
             const curr = queue.shift()!;
-            if (curr === selectedNodeId) {
+            if (curr === activeId) {
               found = true;
               break;
             }
@@ -1309,7 +1362,7 @@ const App: React.FC = () => {
 
           if (found) {
             const path: { id: string; name: string; type: string }[] = [];
-            let curr: string | undefined = selectedNodeId;
+            let curr: string | undefined = activeId;
             while (curr) {
               const n = currentNodes.find((node) => node.id === curr);
               if (n) path.unshift({ id: n.id, name: n.content, type: "node" });
@@ -1318,7 +1371,7 @@ const App: React.FC = () => {
             combinedCrumbs.push(...path);
           } else {
             // Disconnected node (Island)
-            const n = currentNodes.find((node) => node.id === selectedNodeId);
+            const n = currentNodes.find((node) => node.id === activeId);
             if (n)
               combinedCrumbs.push({ id: n.id, name: n.content, type: "node" });
           }
@@ -1504,14 +1557,22 @@ const App: React.FC = () => {
                       return;
                     }
                     setCurrentScopeId(crumb.id);
-                    setSelectedNodeId(null);
+                    setSelectedNodeIds(new Set());
                   }}
                   className={`transition-colors ${
-                    crumb.id === selectedNodeId
+                    crumb.id &&
+                    selectedNodeIds.has(crumb.id) &&
+                    selectedNodeIds.size === 1
                       ? "text-sky-400 font-bold cursor-default"
                       : "text-slate-400 hover:text-white"
                   }`}
-                  disabled={crumb.id === selectedNodeId}
+                  disabled={
+                    !!(
+                      crumb.id &&
+                      selectedNodeIds.has(crumb.id) &&
+                      selectedNodeIds.size === 1
+                    )
+                  }
                 >
                   {crumb.name}
                 </button>
@@ -1564,13 +1625,15 @@ const App: React.FC = () => {
           />
         )}
 
-        <NodeListDrawer
-          nodes={nodes}
-          isOpen={isMenuOpen}
-          onClose={() => setIsMenuOpen(false)}
-          onSelectNode={handleFocusNode}
-          onUpdateNode={handleUpdateNode}
-        />
+        <ErrorBoundary>
+          <NodeListDrawer
+            nodes={nodes}
+            isOpen={isMenuOpen}
+            onClose={() => setIsMenuOpen(false)}
+            onSelectNode={handleFocusNode}
+            onUpdateNode={handleUpdateNode}
+          />
+        </ErrorBoundary>
 
         {/* Usage Notification Toast */}
         {usageNotification.visible && (
@@ -1587,171 +1650,185 @@ const App: React.FC = () => {
           </div>
         )}
 
-        <Canvas
-          nodes={filteredNodes}
-          edges={filteredEdges}
-          setNodes={setNodes}
-          setEdges={setEdges}
-          viewTransform={viewTransform}
-          onViewTransformChange={setViewTransform}
-          onOpenStorage={handleOpenStorage}
-          storageConnected={!!dirName}
-          storageDirName={dirName}
-          isSaving={isSaving}
-          onOpenLink={handleOpenLink}
-          onMaximizeNode={handleMaximizeNode}
-          onExpandNode={handleExpandNode}
-          onUpdateNode={handleUpdateNode}
-          onDeleteNode={handleDeleteNode}
-          expandingNodeIds={expandingNodeIds}
-          onToggleMenu={() => setIsMenuOpen(true)}
-          connectingNodeId={connectingNodeId}
-          onConnectStart={handleConnectStart}
-          onConnectEnd={handleConnectEnd}
-          onCancelConnect={() => setConnectingNodeId(null)}
-          onNavigateDown={handleNavigateDown}
-          onNavigateUp={handleNavigateUp}
-          currentScopeId={currentScopeId}
-          autoGraphEnabled={autoGraphEnabled}
-          onSetAutoGraphEnabled={setAutoGraphEnabled}
-          selectedNodeId={selectedNodeId}
-          onNodeSelect={handleNodeSelect}
-        />
+        <ErrorBoundary>
+          <Canvas
+            nodes={filteredNodes}
+            edges={filteredEdges}
+            setNodes={setNodes}
+            setEdges={setEdges}
+            viewTransform={viewTransform}
+            onViewTransformChange={setViewTransform}
+            onOpenStorage={handleOpenStorage}
+            storageConnected={!!dirName}
+            storageDirName={dirName}
+            isSaving={isSaving}
+            onOpenLink={handleOpenLink}
+            onMaximizeNode={handleMaximizeNode}
+            onExpandNode={handleExpandNode}
+            onUpdateNode={handleUpdateNode}
+            onDeleteNode={handleDeleteNode}
+            expandingNodeIds={expandingNodeIds}
+            onToggleMenu={() => setIsMenuOpen(true)}
+            connectingNodeId={connectingNodeId}
+            onConnectStart={handleConnectStart}
+            onConnectEnd={handleConnectEnd}
+            onCancelConnect={() => setConnectingNodeId(null)}
+            onNavigateDown={handleNavigateDown}
+            onNavigateUp={handleNavigateUp}
+            currentScopeId={currentScopeId}
+            autoGraphEnabled={autoGraphEnabled}
+            onSetAutoGraphEnabled={setAutoGraphEnabled}
+            selectedNodeIds={selectedNodeIds}
+            onNodeSelect={handleNodeSelect}
+            onMultiSelect={handleBoxSelect}
+          />
+        </ErrorBoundary>
       </div>
 
       {activeSidePane && (
         <SidePanel onClose={handleCloseSidePane}>
-          {activeSidePane.type === "web" ? (
-            <WebContent
-              url={activeSidePane.data}
-              onClose={handleCloseSidePane}
-            />
-          ) : sidebarNode ? (
-            <GraphNodeComponent
-              node={sidebarNode}
-              viewMode="sidebar"
-              onUpdate={handleUpdateNode}
-              onExpand={handleExpandNode}
-              onDelete={handleDeleteNode}
-              onToggleMaximize={handleMaximizeNode}
-              onOpenLink={handleOpenLink}
-              autoGraphEnabled={autoGraphEnabled}
-              onSetAutoGraphEnabled={setAutoGraphEnabled}
-            />
-          ) : (
-            <div className="p-4 text-slate-500">Node not found.</div>
-          )}
+          <ErrorBoundary>
+            {activeSidePane.type === "web" ? (
+              <WebContent
+                url={activeSidePane.data}
+                onClose={handleCloseSidePane}
+              />
+            ) : sidebarNode ? (
+              <GraphNodeComponent
+                node={sidebarNode}
+                viewMode="sidebar"
+                onUpdate={handleUpdateNode}
+                onExpand={handleExpandNode}
+                onDelete={handleDeleteNode}
+                onToggleMaximize={handleMaximizeNode}
+                onOpenLink={handleOpenLink}
+                autoGraphEnabled={autoGraphEnabled}
+                onSetAutoGraphEnabled={setAutoGraphEnabled}
+              />
+            ) : (
+              <div className="p-4 text-slate-500">Node not found.</div>
+            )}
+          </ErrorBoundary>
         </SidePanel>
       )}
 
       {showAuth && (
         <div className="fixed inset-0 z-[100]">
-          <AuthPage
-            initialMode={authMode}
-            onLogin={async (user) => {
-              setUser(user);
+          <ErrorBoundary>
+            <AuthPage
+              initialMode={authMode}
+              onLogin={async (user) => {
+                setUser(user);
 
-              // Helper to sync local data to cloud on login
-              const syncToCloud = async () => {
-                // If we have local nodes (and it's not just the default welcome node)
-                const isDefaultGraph =
-                  nodes.length === 1 && nodes[0].id === "1";
-                const hasLocalData = nodes.length > 0 && !isDefaultGraph;
+                // Helper to sync local data to cloud on login
+                const syncToCloud = async () => {
+                  // If we have local nodes (and it's not just the default welcome node)
+                  const isDefaultGraph =
+                    nodes.length === 1 && nodes[0].id === "1";
+                  const hasLocalData = nodes.length > 0 && !isDefaultGraph;
 
-                if (hasLocalData) {
-                  try {
-                    // Sync Nodes
-                    for (const node of nodes) {
-                      const res = await saveNodeToApi(node);
-                      if (res.code === "STORAGE_LIMIT") {
-                        setUsageNotification({
-                          message:
-                            "Storage limit reached during sync. Some nodes may not be saved.",
-                          visible: true,
-                        });
-                        break; // Stop syncing nodes
+                  if (hasLocalData) {
+                    try {
+                      // Sync Nodes
+                      for (const node of nodes) {
+                        const res = await saveNodeToApi(node);
+                        if (res.code === "STORAGE_LIMIT") {
+                          setUsageNotification({
+                            message:
+                              "Storage limit reached during sync. Some nodes may not be saved.",
+                            visible: true,
+                          });
+                          break; // Stop syncing nodes
+                        }
                       }
+                      // Sync Edges
+                      if (edges.length > 0) {
+                        await saveEdgesToApi(edges);
+                      }
+                    } catch (e) {
+                      console.error("Failed to sync local data to cloud", e);
                     }
-                    // Sync Edges
-                    if (edges.length > 0) {
-                      await saveEdgesToApi(edges);
-                    }
-                  } catch (e) {
-                    console.error("Failed to sync local data to cloud", e);
                   }
-                }
-              };
+                };
 
-              if ((user as any).isPaid) {
-                setDirName("Cloud Storage");
-                await syncToCloud();
-                loadGraphFromApi()
-                  .then(({ nodes, edges }) => {
-                    if (nodes && nodes.length > 0) {
-                      setNodes(nodes);
-                      setEdges(edges);
-                    }
-                    setIsGraphLoaded(true);
-                  })
-                  .catch((e) => {
-                    console.error("Failed to load cloud graph on login", e);
-                    setIsGraphLoaded(true);
-                  });
-              } else if (user.storagePath) {
-                setDirName(user.storagePath);
-                loadGraphFromApi()
-                  .then(({ nodes, edges }) => {
-                    if (nodes && nodes.length > 0) {
-                      setNodes(nodes);
-                      setEdges(edges);
-                    }
-                    setIsGraphLoaded(true);
-                  })
-                  .catch((e) => {
-                    console.error("Failed to load graph on login", e);
-                    setIsGraphLoaded(true);
-                  });
-              } else {
-                // Free user, no local server path -> Default to Cloud
-                setDirName("Cloud Storage");
-                await syncToCloud();
-                loadGraphFromApi()
-                  .then(({ nodes, edges }) => {
-                    if (nodes && nodes.length > 0) {
-                      setNodes(nodes);
-                      setEdges(edges);
-                    }
-                    setIsGraphLoaded(true);
-                  })
-                  .catch((e) => {
-                    console.error("Failed to load cloud graph on login", e);
-                    setIsGraphLoaded(true);
-                  });
-              }
-              setShowAuth(false);
-              // Redirect to app subdomain upon login
-              if (
-                window.location.hostname === "infoverse.ai" &&
-                !window.location.hostname.startsWith("app.")
-              ) {
-                window.location.href = "https://app.infoverse.ai";
-              }
-            }}
-            onCancel={() => setShowAuth(false)}
-          />
+                if ((user as any).isPaid) {
+                  setDirName("Cloud Storage");
+                  await syncToCloud();
+                  loadGraphFromApi()
+                    .then(({ nodes, edges }) => {
+                      if (nodes && nodes.length > 0) {
+                        setNodes(nodes);
+                        setEdges(edges);
+                      }
+                      setIsGraphLoaded(true);
+                    })
+                    .catch((e) => {
+                      console.error("Failed to load cloud graph on login", e);
+                      setIsGraphLoaded(true);
+                    });
+                } else if (user.storagePath) {
+                  setDirName(user.storagePath);
+                  loadGraphFromApi()
+                    .then(({ nodes, edges }) => {
+                      if (nodes && nodes.length > 0) {
+                        setNodes(nodes);
+                        setEdges(edges);
+                      }
+                      setIsGraphLoaded(true);
+                    })
+                    .catch((e) => {
+                      console.error("Failed to load graph on login", e);
+                      setIsGraphLoaded(true);
+                    });
+                } else {
+                  // Free user, no local server path -> Default to Cloud
+                  setDirName("Cloud Storage");
+                  await syncToCloud();
+                  loadGraphFromApi()
+                    .then(({ nodes, edges }) => {
+                      if (nodes && nodes.length > 0) {
+                        setNodes(nodes);
+                        setEdges(edges);
+                      }
+                      setIsGraphLoaded(true);
+                    })
+                    .catch((e) => {
+                      console.error("Failed to load cloud graph on login", e);
+                      setIsGraphLoaded(true);
+                    });
+                }
+                setShowAuth(false);
+                // Redirect to app subdomain upon login
+                if (
+                  window.location.hostname === "infoverse.ai" &&
+                  !window.location.hostname.startsWith("app.")
+                ) {
+                  window.location.href = "https://app.infoverse.ai";
+                }
+              }}
+              onCancel={() => setShowAuth(false)}
+            />
+          </ErrorBoundary>
         </div>
       )}
 
       {showProfile && user && (
-        <ProfilePage
-          user={user}
-          onClose={() => setShowProfile(false)}
-          onUpdateUser={(updates) =>
-            setUser((prev) => (prev ? { ...prev, ...updates } : null))
-          }
-          onLogout={handleLogout}
-        />
+        <ErrorBoundary>
+          <ProfilePage
+            user={user}
+            onClose={() => setShowProfile(false)}
+            onUpdateUser={(updates) =>
+              setUser((prev) => (prev ? { ...prev, ...updates } : null))
+            }
+            onLogout={handleLogout}
+          />
+        </ErrorBoundary>
       )}
+
+      <UpgradeModal
+        isOpen={showUpgradeModal}
+        onClose={() => setShowUpgradeModal(false)}
+      />
 
       <LimitModal
         isOpen={showLimitModal}

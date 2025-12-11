@@ -58,6 +58,48 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onClose, onUpdat
     }
   };
 
+  const handleUpgrade = async () => {
+    try {
+      const apiBase = (import.meta as any).env.VITE_API_URL || '/api';
+      const res = await fetch(`${apiBase}/billing/checkout`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        }
+      });
+      const data = await res.json();
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        setMessage('Failed to start checkout');
+      }
+    } catch (e) {
+      console.error(e);
+      setMessage('Error starting checkout');
+    }
+  };
+
+  const handlePortal = async () => {
+    try {
+      const apiBase = (import.meta as any).env.VITE_API_URL || '/api';
+      const res = await fetch(`${apiBase}/billing/portal`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        }
+      });
+      const data = await res.json();
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        setMessage('Failed to open billing portal');
+      }
+    } catch (e) {
+      console.error(e);
+      setMessage('Error opening billing portal');
+    }
+  };
+
   return (
     <div className="fixed inset-0 bg-slate-900/90 z-[60] flex items-center justify-center p-4">
       <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
@@ -201,7 +243,10 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onClose, onUpdat
                   <div className="mt-6 pt-6 border-t border-slate-800">
                     <h4 className="text-white font-bold mb-2">Upgrade to Pro</h4>
                     <p className="text-sm text-slate-400 mb-4">Get unlimited cloud storage and priority support for just $8/month.</p>
-                    <button className="w-full py-2 bg-green-600 hover:bg-green-500 text-white font-bold rounded-lg transition-colors">
+                    <button 
+                        onClick={handleUpgrade}
+                        className="w-full py-2 bg-green-600 hover:bg-green-500 text-white font-bold rounded-lg transition-colors"
+                    >
                       Upgrade Now ($8/mo)
                     </button>
                   </div>
@@ -209,8 +254,11 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onClose, onUpdat
 
                 {user.isPaid && (
                   <div className="mt-6 pt-6 border-t border-slate-800">
-                    <button className="text-sm text-red-400 hover:text-red-300 hover:underline">
-                      Cancel Subscription
+                    <button 
+                        onClick={handlePortal}
+                        className="text-sm text-red-400 hover:text-red-300 hover:underline"
+                    >
+                      Manage / Cancel Subscription
                     </button>
                   </div>
                 )}

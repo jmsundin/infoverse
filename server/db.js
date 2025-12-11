@@ -51,6 +51,14 @@ const initDb = async () => {
     } catch (e) {
         // Ignore if exists
     }
+
+    // Add stripe columns
+    try {
+        await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(255)`);
+        await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_subscription_id VARCHAR(255)`);
+    } catch (e) {
+        // Ignore if exists
+    }
     
     await query(`
       CREATE TABLE IF NOT EXISTS rate_limits (
