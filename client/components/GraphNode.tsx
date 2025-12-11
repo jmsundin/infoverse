@@ -43,6 +43,7 @@ interface GraphNodeProps {
   onViewSubgraph?: (id: string) => void;
   autoGraphEnabled?: boolean;
   onSetAutoGraphEnabled?: (enabled: boolean) => void;
+  scale?: number;
 }
 
 export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
@@ -65,6 +66,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     onViewSubgraph,
     autoGraphEnabled,
     onSetAutoGraphEnabled,
+    scale = 1,
   }) => {
     const [input, setInput] = useState("");
     const [isChatting, setIsChatting] = useState(false);
@@ -90,7 +92,8 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     const isSidebar = viewMode === "sidebar";
 
     // Semantic Zoom Modes
-    const isClusterMode = lodLevel === "CLUSTER" && !isSelected && !isSidebar;
+    const isClusterMode = lodLevel === "CLUSTER" && !isSelected && !isSidebar && !isClusterParent;
+    const isClusterParentMode = lodLevel === "CLUSTER" && !isSelected && !isSidebar && isClusterParent;
     const isTitleOnly = lodLevel === "TITLE" && !isSelected && !isSidebar;
     const isCompact =
       !isSidebar && lodLevel === "DETAIL" && !isClusterParent && !isSelected;
@@ -371,6 +374,47 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       "absolute z-50 hover:bg-sky-400/20 transition-colors touch-none";
     const displayMessages = node.messages || [];
 
+    if (isClusterParentMode) {
+      const scaleFactor = Math.min(Math.max((1 / scale) * 0.2, 1), 8);
+      
+      return (
+        <div
+          data-node-id={node.id}
+          data-selected={isSelected}
+          className={`absolute graph-node flex items-center justify-center transition-all duration-300 pointer-events-none`}
+          style={{
+            left: node.x,
+            top: node.y,
+            width: node.width || 300,
+            height: node.height || 200,
+            zIndex: 40,
+          }}
+        >
+          <div
+            className={`
+                font-bold text-slate-100 drop-shadow-md bg-slate-900/80 backdrop-blur-sm 
+                px-4 py-2 rounded-xl border border-white/20 pointer-events-auto
+                hover:bg-slate-800/90 cursor-pointer text-center
+            `}
+            style={{
+                transform: `scale(${scaleFactor})`,
+                fontSize: '3.5rem',
+                minWidth: '200px'
+            }}
+            onMouseDown={(e) =>
+                !isSidebar && onMouseDown && onMouseDown(e, node.id)
+            }
+            onTouchStart={(e) =>
+                !isSidebar && onMouseDown && onMouseDown(e, node.id)
+            }
+          >
+             {node.type === NodeType.CHAT ? "💬 " : "📝 "}
+             {titleText.length > 50 ? titleText.substring(0, 50) + "..." : titleText}
+          </div>
+        </div>
+      );
+    }
+
     if (isClusterMode) {
       return (
         <div
@@ -380,13 +424,13 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
           style={{
             left: node.x,
             top: node.y,
-            width: 32,
-            height: 32,
+            width: 48,
+            height: 48,
             pointerEvents: "none",
           }}
         >
           <div
-            className={`w-3 h-3 rounded-full ${colorTheme.indicator} shadow-[0_0_5px_rgba(0,0,0,0.5)] ring-1 ring-slate-900 pointer-events-auto cursor-pointer hover:scale-150 transition-transform`}
+            className={`w-6 h-6 rounded-full ${colorTheme.indicator} shadow-[0_0_8px_rgba(0,0,0,0.8)] ring-2 ring-slate-900 pointer-events-auto cursor-pointer hover:scale-150 transition-transform`}
             onMouseDown={(e) =>
               !isSidebar && onMouseDown && onMouseDown(e, node.id)
             }

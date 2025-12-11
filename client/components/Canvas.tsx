@@ -70,10 +70,10 @@ interface CanvasProps {
 }
 
 // Semantic Zoom Thresholds
-// < 0.1: Cluster/Dot Mode (Infinite Canvas Optimization)
-// 0.1 - 0.5: Title Mode (Headers)
+// < 0.25: Cluster/Dot Mode (Infinite Canvas Optimization)
+// 0.25 - 0.5: Title Mode (Headers)
 // > 0.5: Detail Mode (Full Content)
-const LOD_THRESHOLD_CLUSTER = 0.1;
+const LOD_THRESHOLD_CLUSTER = 0.25;
 const LOD_THRESHOLD_TITLE = 0.5;
 const LOD_THRESHOLD_SEMANTIC_SHIFT = 0.05; // Trigger scope up very far out
 
@@ -286,8 +286,8 @@ export const Canvas: React.FC<CanvasProps> = ({
       let visEdges: GraphEdge[] = [];
       const nodeMap = new Map(nodes.map((n) => [n.id, n]));
 
-      if (currentLod !== "CLUSTER") {
-        visEdges = edges.filter((e) => {
+      // Always render edges regardless of LOD
+      visEdges = edges.filter((e) => {
           const source = nodeMap.get(e.source);
           const target = nodeMap.get(e.target);
           // Must have both nodes to render edge
@@ -319,8 +319,7 @@ export const Canvas: React.FC<CanvasProps> = ({
             top < renderRect.bottom &&
             bottom > renderRect.top
           );
-        });
-      }
+      });
 
       return {
         visibleNodes: visible,
@@ -1587,6 +1586,7 @@ export const Canvas: React.FC<CanvasProps> = ({
                 }}
                 autoGraphEnabled={autoGraphEnabled}
                 onSetAutoGraphEnabled={onSetAutoGraphEnabled}
+                scale={viewTransform.k}
               />
             </div>
           ))}
