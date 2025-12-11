@@ -318,6 +318,10 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       []
     );
 
+    const transitionStyle = isDragging
+        ? "none"
+        : "box-shadow 0.2s, transform 0.2s, left 0.5s cubic-bezier(0.25, 1, 0.5, 1), top 0.5s cubic-bezier(0.25, 1, 0.5, 1)"; // Removed height transition to prevent 'retracting' animation
+
     const computedStyle: React.CSSProperties = isSidebar
       ? {
           width: "100%",
@@ -329,9 +333,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
           top: node.y,
           width: node.width || 300,
           height: isCompact ? NODE_HEADER_HEIGHT : node.height || 200,
-          transition: isDragging
-            ? "none"
-            : "box-shadow 0.2s, transform 0.2s, left 0.5s cubic-bezier(0.25, 1, 0.5, 1), top 0.5s cubic-bezier(0.25, 1, 0.5, 1), height 0.3s ease",
+          transition: transitionStyle,
           overflow: "visible",
           zIndex: isSelected ? 50 : isDragging ? 50 : 10,
         };
@@ -358,14 +360,15 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         >
           <div
             className={`
-                font-bold text-slate-100 drop-shadow-md bg-slate-900/80 backdrop-blur-sm 
-                px-4 py-2 rounded-xl border border-white/20 pointer-events-auto
-                hover:bg-slate-800/90 cursor-pointer text-center
+                font-bold text-slate-100 drop-shadow-md 
+                px-4 py-2 pointer-events-auto
+                hover:text-sky-400 cursor-pointer text-center
             `}
             style={{
                 transform: `scale(${scaleFactor})`,
                 fontSize: '3.5rem',
-                minWidth: '200px'
+                minWidth: '200px',
+                textShadow: '0 2px 4px rgba(0,0,0,0.8)'
             }}
             onMouseDown={(e) =>
                 !isSidebar && onMouseDown && onMouseDown(e, node.id)
@@ -374,7 +377,6 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                 !isSidebar && onMouseDown && onMouseDown(e, node.id)
             }
           >
-             {node.type === NodeType.CHAT ? "💬 " : "📝 "}
              {titleText.length > 50 ? titleText.substring(0, 50) + "..." : titleText}
           </div>
         </div>
@@ -414,7 +416,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         <div
           data-node-id={node.id}
           data-selected={isSelected}
-          className={`absolute graph-node flex items-center justify-center p-4 text-center transition-all duration-300`}
+          className={`absolute graph-node flex items-center justify-center p-4 text-center animate-in fade-in zoom-in duration-300`}
           style={{
             left: node.x,
             top: node.y,
@@ -450,7 +452,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         className={`${
           isSidebar
             ? "flex flex-col h-full w-full"
-            : "absolute flex flex-col graph-node"
+            : "absolute flex flex-col graph-node animate-in fade-in zoom-in duration-300"
         } group outline-none`}
         style={computedStyle}
         onMouseDown={(e) =>
