@@ -1,6 +1,12 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+} from "react";
 import { Canvas } from "./components/Canvas";
-import { SidePanel, WebContent } from "./components/SidePanel";
+import { SidePanel, WebContent, SidePanelLayout } from "./components/SidePanel";
 import { GraphNodeComponent } from "./components/GraphNode";
 import { SearchBar } from "./components/SearchBar";
 import { NodeListDrawer } from "./components/NodeListDrawer";
@@ -10,14 +16,21 @@ import { UpgradeModal } from "./components/UpgradeModal";
 import { ProfilePage } from "./components/ProfilePage";
 import { Toast } from "./components/Toast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { SelectionTooltip } from "./components/SelectionTooltip";
 import {
   GraphEdge,
   GraphNode,
   NodeType,
   ViewportTransform,
   ChatMessage,
+  SelectionTooltipState,
 } from "./types";
-import { DEFAULT_NODE_HEIGHT, DEFAULT_NODE_WIDTH } from "./constants";
+import {
+  DEFAULT_NODE_HEIGHT,
+  DEFAULT_NODE_WIDTH,
+  PARENT_NODE_HEIGHT,
+  PARENT_NODE_WIDTH,
+} from "./constants";
 import {
   pickDirectory,
   loadGraphFromDirectory,
@@ -208,6 +221,8 @@ const App: React.FC = () => {
   const [expandingNodeIds, setExpandingNodeIds] = useState<string[]>([]);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [connectingNodeId, setConnectingNodeId] = useState<string | null>(null);
+  const [selectionTooltip, setSelectionTooltip] =
+    useState<SelectionTooltipState | null>(null);
 
   // Undo/Toast State
   const [toast, setToast] = useState<{
@@ -287,6 +302,46 @@ const App: React.FC = () => {
 
   const prevNodesRef = useRef<GraphNode[]>(nodes);
   const prevEdgesRef = useRef<GraphEdge[]>(edges);
+
+  // Layout & Visual Stability
+  const [sidePanelLayout, setSidePanelLayout] =
+    useState<SidePanelLayout | null>(null);
+  const prevPanelLeftShiftRef = useRef(0);
+  const prevPanelTopShiftRef = useRef(0);
+
+  const handleSidePanelLayoutChange = useCallback((layout: SidePanelLayout) => {
+    setSidePanelLayout(layout);
+
+    // Visual Stability Logic: Compensate ViewTransform if Margins change
+    if (typeof window === "undefined") return;
+
+    const { width, dockPosition } = layout;
+    let newLeftShift = 0;
+    let newTopShift = 0;
+
+    // Matches logic in Canvas.tsx
+    if (
+      dockPosition === "left" ||
+      dockPosition === "top-left" ||
+      dockPosition === "bottom-left"
+    ) {
+      newLeftShift = (window.innerWidth * width) / 100;
+    }
+
+    const deltaX = newLeftShift - prevPanelLeftShiftRef.current;
+    const deltaY = newTopShift - prevPanelTopShiftRef.current;
+
+    if (Math.abs(deltaX) > 1 || Math.abs(deltaY) > 1) {
+      setViewTransform((prev) => ({
+        ...prev,
+        x: prev.x - deltaX,
+        y: prev.y - deltaY,
+      }));
+    }
+
+    prevPanelLeftShiftRef.current = newLeftShift;
+    prevPanelTopShiftRef.current = newTopShift;
+  }, []);
 
   // --- Check Auth on Mount ---
   useEffect(() => {
@@ -529,6 +584,66 @@ const App: React.FC = () => {
     [dirHandle, user, isGraphLoaded]
   );
 
+  // --- Auto-Resize Nodes Based on Children ---
+  useEffect(() => {
+    // Identify parents
+    const parentIds = new Set(edges.map((e) => e.source));
+    let hasChanges = false;
+    const changedNodes: GraphNode[] = [];
+
+    const newNodes = nodes.map((node) => {
+      const isParent = parentIds.has(node.id);
+      const currentW = node.width || DEFAULT_NODE_WIDTH;
+      const currentH = node.height || DEFAULT_NODE_HEIGHT;
+
+      let newW = currentW;
+      let newH = currentH;
+
+      // Logic: Only toggle between DEFAULT and PARENT sizes.
+      // If user has custom size (e.g. 500x500), leave it alone.
+
+      if (isParent) {
+        // Upgrade to Parent Size if currently Default Leaf Size
+        if (
+          Math.abs(currentW - DEFAULT_NODE_WIDTH) < 1 &&
+          Math.abs(currentH - DEFAULT_NODE_HEIGHT) < 1
+        ) {
+          newW = PARENT_NODE_WIDTH;
+          newH = PARENT_NODE_HEIGHT;
+        }
+      } else {
+        // Downgrade to Leaf Size if currently Parent Size
+        // This handles cases where a node lost its last child
+        if (
+          Math.abs(currentW - PARENT_NODE_WIDTH) < 1 &&
+          Math.abs(currentH - PARENT_NODE_HEIGHT) < 1
+        ) {
+          newW = DEFAULT_NODE_WIDTH;
+          newH = DEFAULT_NODE_HEIGHT;
+        }
+      }
+
+      if (newW !== currentW || newH !== currentH) {
+        hasChanges = true;
+        const updated = { ...node, width: newW, height: newH };
+        changedNodes.push(updated);
+        return updated;
+      }
+      return node;
+    });
+
+    if (hasChanges) {
+      setNodes(newNodes);
+
+      // Optional: Sync to disk (debounce this if many changes?)
+      // For now, we rely on the fact that this is deterministic.
+      // If we want to persist, we can call saveNodeToDisk for changedNodes.
+      if (dirHandle || user?.storagePath) {
+        changedNodes.forEach((n) => saveNodeToDisk(n));
+      }
+    }
+  }, [edges, nodes, dirHandle, user, saveNodeToDisk]);
+
   // --- Initial Center on Selected Node ---
   useEffect(() => {
     // If we have a selected node from storage, center on it
@@ -728,6 +843,200 @@ const App: React.FC = () => {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [toast, selectedNodeIds, handleDeleteNode, confirmDeleteNode]);
 
+  const handleExpandNodeFromWikidata = useCallback(
+    async (
+      id: string,
+      topic: string,
+      nodeOverride?: GraphNode,
+      depth?: number,
+      options: { suppressToast?: boolean } = {}
+    ): Promise<boolean> => {
+      if (wikidataExpansionInFlightRef.current.has(id)) return false;
+      wikidataExpansionInFlightRef.current.add(id);
+
+      setExpandingNodeIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+
+      const sourceNode = nodeOverride || nodes.find((n) => n.id === id);
+      if (!sourceNode) {
+        setExpandingNodeIds((prev) => prev.filter((nId) => nId !== id));
+        wikidataExpansionInFlightRef.current.delete(id);
+        return false;
+      }
+
+      const depthToUse =
+        depth !== undefined ? depth : sourceNode.autoExpandDepth || 1;
+
+      try {
+        const subtopics = await fetchWikidataSubtopics(topic, {
+          language: "en",
+          resultLimit: WIKIDATA_SUBTOPIC_LIMIT,
+        });
+
+        if (subtopics.length === 0) {
+          if (!options.suppressToast) {
+            setToast({
+              visible: true,
+              message: `No Wikidata subtopics found for "${topic}".`,
+            });
+          }
+          return false;
+        }
+
+        const parentNodeId = id;
+        const parentNodeX = sourceNode.x;
+        const parentNodeY = sourceNode.y;
+
+        const nodesToAdd: GraphNode[] = [];
+        const edgesToAdd: GraphEdge[] = [];
+
+        const existingNodesInScope = nodes.filter(
+          (n) => n.parentId == currentScopeId
+        );
+
+        const existingByLowerLabel = new Map<string, GraphNode>();
+        for (const existingNode of existingNodesInScope) {
+          existingByLowerLabel.set(
+            existingNode.content.trim().toLowerCase(),
+            existingNode
+          );
+        }
+
+        const subtopicsToCreate = subtopics.filter((st) => {
+          const lower = st.label.trim().toLowerCase();
+          return !existingByLowerLabel.has(lower);
+        });
+
+        const fixedRadius = 500; // Standardized Edge Length
+        const startAngle = Math.random() * Math.PI;
+
+        const createdNodes: GraphNode[] = subtopicsToCreate.map((st, i) => {
+          const angle =
+            startAngle +
+            (i / Math.max(subtopicsToCreate.length, 1)) * 2 * Math.PI;
+
+          return {
+            id: crypto.randomUUID(),
+            type: NodeType.CHAT,
+            x: parentNodeX + fixedRadius * Math.cos(angle),
+            y: parentNodeY + fixedRadius * Math.sin(angle),
+            content: st.label,
+            width: DEFAULT_NODE_WIDTH,
+            height: DEFAULT_NODE_HEIGHT,
+            link: st.wikidataUrl,
+            parentId: currentScopeId || undefined,
+            summary: st.description,
+            autoExpandDepth: sourceNode.autoExpandDepth,
+            messages: st.description
+              ? [
+                  {
+                    role: "model",
+                    text: st.description,
+                    timestamp: Date.now(),
+                  },
+                ]
+              : [],
+          };
+        });
+
+        nodesToAdd.push(...createdNodes);
+
+        for (const newNode of createdNodes) {
+          edgesToAdd.push({
+            id: crypto.randomUUID(),
+            source: parentNodeId,
+            target: newNode.id,
+            label: "subtopic",
+            parentId: currentScopeId || undefined,
+          });
+        }
+
+        for (const st of subtopics) {
+          const lower = st.label.trim().toLowerCase();
+          const existingNode = existingByLowerLabel.get(lower);
+          if (!existingNode) continue;
+
+          edgesToAdd.push({
+            id: crypto.randomUUID(),
+            source: parentNodeId,
+            target: existingNode.id,
+            label: "subtopic",
+            parentId: currentScopeId || undefined,
+          });
+        }
+
+        setNodes((prev) => [...prev, ...nodesToAdd]);
+        setEdges((prev) => [...prev, ...edgesToAdd]);
+
+        if (dirHandle || user?.storagePath) {
+          nodesToAdd.forEach((n) => saveNodeToDisk(n));
+        }
+
+        if (nodesToAdd.length > 0) {
+          let minX = sourceNode.x;
+          let maxX = sourceNode.x + (sourceNode.width || DEFAULT_NODE_WIDTH);
+          let minY = sourceNode.y;
+          let maxY = sourceNode.y + (sourceNode.height || DEFAULT_NODE_HEIGHT);
+
+          nodesToAdd.forEach((n) => {
+            minX = Math.min(minX, n.x);
+            maxX = Math.max(maxX, n.x + (n.width || DEFAULT_NODE_WIDTH));
+            minY = Math.min(minY, n.y);
+            maxY = Math.max(maxY, n.y + (n.height || DEFAULT_NODE_HEIGHT));
+          });
+
+          const padding = 200;
+          const width = maxX - minX + padding * 2;
+          const height = maxY - minY + padding * 2;
+
+          const centerX = (minX + maxX) / 2;
+          const centerY = (minY + maxY) / 2;
+
+          const scaleX = window.innerWidth / width;
+          const scaleY = window.innerHeight / height;
+          let newK = Math.min(scaleX, scaleY, 1);
+          newK = Math.max(newK, 0.1);
+
+          setViewTransform({
+            x: window.innerWidth / 2 - centerX * newK,
+            y: window.innerHeight / 2 - centerY * newK,
+            k: newK,
+          });
+        }
+
+        if (depthToUse > 1 && createdNodes.length > 0) {
+          const nodesForRecursion = createdNodes.slice(
+            0,
+            WIKIDATA_MAX_RECURSIVE_NODES_PER_LEVEL
+          );
+          Promise.all(
+            nodesForRecursion.map((node) =>
+              handleExpandNodeFromWikidata(
+                node.id,
+                node.content,
+                node,
+                depthToUse - 1
+              )
+            )
+          );
+        }
+        return true;
+      } catch (e: any) {
+        console.error("Failed to expand from Wikidata:", e);
+        if (!options.suppressToast) {
+          setToast({
+            visible: true,
+            message: `Wikidata request failed for "${topic}".`,
+          });
+        }
+        return false;
+      } finally {
+        setExpandingNodeIds((prev) => prev.filter((nId) => nId !== id));
+        wikidataExpansionInFlightRef.current.delete(id);
+      }
+    },
+    [nodes, currentScopeId, dirHandle, user, saveNodeToDisk]
+  );
+
   const handleExpandNode = useCallback(
     async (
       id: string,
@@ -875,6 +1184,21 @@ const App: React.FC = () => {
             });
           });
         } else {
+          // --- Wikidata Check ---
+          // Try to expand from Wikidata first
+          const wikidataSuccess = await handleExpandNodeFromWikidata(
+            id,
+            topic,
+            sourceNode,
+            depth,
+            { suppressToast: true }
+          );
+
+          if (wikidataSuccess) return;
+
+          // Restart spinner if fallback (it was removed by handleExpandNodeFromWikidata)
+          setExpandingNodeIds((prev) => [...prev, id]);
+
           // --- Gemini API Mode ---
           const existingNodeNames = nodes
             .filter((n) => n.parentId === currentScopeId)
@@ -1032,193 +1356,6 @@ const App: React.FC = () => {
     [nodes, currentScopeId, dirHandle, user, saveNodeToDisk]
   );
 
-  const handleExpandNodeFromWikidata = useCallback(
-    async (
-      id: string,
-      topic: string,
-      nodeOverride?: GraphNode,
-      depth?: number
-    ) => {
-      if (wikidataExpansionInFlightRef.current.has(id)) return;
-      wikidataExpansionInFlightRef.current.add(id);
-
-      setExpandingNodeIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
-
-      const sourceNode = nodeOverride || nodes.find((n) => n.id === id);
-      if (!sourceNode) {
-        setExpandingNodeIds((prev) => prev.filter((nId) => nId !== id));
-        wikidataExpansionInFlightRef.current.delete(id);
-        return;
-      }
-
-      const depthToUse =
-        depth !== undefined ? depth : sourceNode.autoExpandDepth || 1;
-
-      try {
-        const subtopics = await fetchWikidataSubtopics(topic, {
-          language: "en",
-          resultLimit: WIKIDATA_SUBTOPIC_LIMIT,
-        });
-
-        if (subtopics.length === 0) {
-          setToast({
-            visible: true,
-            message: `No Wikidata subtopics found for "${topic}".`,
-          });
-          return;
-        }
-
-        const parentNodeId = id;
-        const parentNodeX = sourceNode.x;
-        const parentNodeY = sourceNode.y;
-
-        const nodesToAdd: GraphNode[] = [];
-        const edgesToAdd: GraphEdge[] = [];
-
-        const existingNodesInScope = nodes.filter(
-          (n) => n.parentId == currentScopeId
-        );
-
-        const existingByLowerLabel = new Map<string, GraphNode>();
-        for (const existingNode of existingNodesInScope) {
-          existingByLowerLabel.set(
-            existingNode.content.trim().toLowerCase(),
-            existingNode
-          );
-        }
-
-        const subtopicsToCreate = subtopics.filter((st) => {
-          const lower = st.label.trim().toLowerCase();
-          return !existingByLowerLabel.has(lower);
-        });
-
-        const fixedRadius = 500; // Standardized Edge Length
-        const startAngle = Math.random() * Math.PI;
-
-        const createdNodes: GraphNode[] = subtopicsToCreate.map((st, i) => {
-          const angle =
-            startAngle +
-            (i / Math.max(subtopicsToCreate.length, 1)) * 2 * Math.PI;
-
-          return {
-            id: crypto.randomUUID(),
-            type: NodeType.CHAT,
-            x: parentNodeX + fixedRadius * Math.cos(angle),
-            y: parentNodeY + fixedRadius * Math.sin(angle),
-            content: st.label,
-            width: DEFAULT_NODE_WIDTH,
-            height: DEFAULT_NODE_HEIGHT,
-            link: st.wikidataUrl,
-            parentId: currentScopeId || undefined,
-            summary: st.description,
-            autoExpandDepth: sourceNode.autoExpandDepth,
-            messages: st.description
-              ? [
-                  {
-                    role: "model",
-                    text: st.description,
-                    timestamp: Date.now(),
-                  },
-                ]
-              : [],
-          };
-        });
-
-        nodesToAdd.push(...createdNodes);
-
-        for (const newNode of createdNodes) {
-          edgesToAdd.push({
-            id: crypto.randomUUID(),
-            source: parentNodeId,
-            target: newNode.id,
-            label: "subtopic",
-            parentId: currentScopeId || undefined,
-          });
-        }
-
-        for (const st of subtopics) {
-          const lower = st.label.trim().toLowerCase();
-          const existingNode = existingByLowerLabel.get(lower);
-          if (!existingNode) continue;
-
-          edgesToAdd.push({
-            id: crypto.randomUUID(),
-            source: parentNodeId,
-            target: existingNode.id,
-            label: "subtopic",
-            parentId: currentScopeId || undefined,
-          });
-        }
-
-        setNodes((prev) => [...prev, ...nodesToAdd]);
-        setEdges((prev) => [...prev, ...edgesToAdd]);
-
-        if (dirHandle || user?.storagePath) {
-          nodesToAdd.forEach((n) => saveNodeToDisk(n));
-        }
-
-        if (nodesToAdd.length > 0) {
-          let minX = sourceNode.x;
-          let maxX = sourceNode.x + (sourceNode.width || DEFAULT_NODE_WIDTH);
-          let minY = sourceNode.y;
-          let maxY = sourceNode.y + (sourceNode.height || DEFAULT_NODE_HEIGHT);
-
-          nodesToAdd.forEach((n) => {
-            minX = Math.min(minX, n.x);
-            maxX = Math.max(maxX, n.x + (n.width || DEFAULT_NODE_WIDTH));
-            minY = Math.min(minY, n.y);
-            maxY = Math.max(maxY, n.y + (n.height || DEFAULT_NODE_HEIGHT));
-          });
-
-          const padding = 200;
-          const width = maxX - minX + padding * 2;
-          const height = maxY - minY + padding * 2;
-
-          const centerX = (minX + maxX) / 2;
-          const centerY = (minY + maxY) / 2;
-
-          const scaleX = window.innerWidth / width;
-          const scaleY = window.innerHeight / height;
-          let newK = Math.min(scaleX, scaleY, 1);
-          newK = Math.max(newK, 0.1);
-
-          setViewTransform({
-            x: window.innerWidth / 2 - centerX * newK,
-            y: window.innerHeight / 2 - centerY * newK,
-            k: newK,
-          });
-        }
-
-        if (depthToUse > 1 && createdNodes.length > 0) {
-          const nodesForRecursion = createdNodes.slice(
-            0,
-            WIKIDATA_MAX_RECURSIVE_NODES_PER_LEVEL
-          );
-          Promise.all(
-            nodesForRecursion.map((node) =>
-              handleExpandNodeFromWikidata(
-                node.id,
-                node.content,
-                node,
-                depthToUse - 1
-              )
-            )
-          );
-        }
-      } catch (e: any) {
-        console.error("Failed to expand from Wikidata:", e);
-        setToast({
-          visible: true,
-          message: `Wikidata request failed for "${topic}".`,
-        });
-      } finally {
-        setExpandingNodeIds((prev) => prev.filter((nId) => nId !== id));
-        wikidataExpansionInFlightRef.current.delete(id);
-      }
-    },
-    [nodes, currentScopeId, dirHandle, user, saveNodeToDisk]
-  );
-
   const handleMaximizeNode = useCallback(
     (id: string) => {
       if (activeSidePane?.type === "node" && activeSidePane.data === id) {
@@ -1236,6 +1373,21 @@ const App: React.FC = () => {
 
   const handleCloseSidePane = useCallback(() => {
     setActiveSidePane(null);
+    setSidePanelLayout(null);
+
+    // Compensate for closing
+    const deltaX = 0 - prevPanelLeftShiftRef.current;
+    const deltaY = 0 - prevPanelTopShiftRef.current;
+
+    if (Math.abs(deltaX) > 1 || Math.abs(deltaY) > 1) {
+      setViewTransform((prev) => ({
+        ...prev,
+        x: prev.x - deltaX,
+        y: prev.y - deltaY,
+      }));
+    }
+    prevPanelLeftShiftRef.current = 0;
+    prevPanelTopShiftRef.current = 0;
   }, []);
 
   const handleFocusNode = useCallback(
@@ -1289,6 +1441,137 @@ const App: React.FC = () => {
       setConnectingNodeId(null);
     },
     [currentScopeId]
+  );
+
+  const handleCreateFromSelection = useCallback(
+    async (type: NodeType) => {
+      if (!selectionTooltip) return;
+      let newNodeX = 0,
+        newNodeY = 0;
+      const sourceNode = nodes.find((n) => n.id === selectionTooltip.sourceId);
+      if (sourceNode) {
+        newNodeX = sourceNode.x + (sourceNode.width || DEFAULT_NODE_WIDTH) + 50;
+        newNodeY = sourceNode.y;
+      } else {
+        const canvasX =
+          (selectionTooltip.x - viewTransform.x) / viewTransform.k;
+        const canvasY =
+          (selectionTooltip.y - viewTransform.y) / viewTransform.k;
+        newNodeX = canvasX + 100;
+        newNodeY = canvasY + 50;
+      }
+
+      const promptTemplate = getTopicSummaryPrompt(selectionTooltip.text);
+      const initialMessages: ChatMessage[] =
+        type === NodeType.CHAT
+          ? [
+              {
+                role: "user",
+                text: selectionTooltip.text,
+                timestamp: Date.now(),
+              },
+            ]
+          : [];
+      const initialModelMsg: ChatMessage | undefined =
+        type === NodeType.CHAT
+          ? { role: "model", text: "", timestamp: Date.now() }
+          : undefined;
+      const startMessages =
+        type === NodeType.CHAT && initialModelMsg
+          ? [...initialMessages, initialModelMsg]
+          : initialMessages;
+
+      const newNode: GraphNode = {
+        id: crypto.randomUUID(),
+        type,
+        x: newNodeX,
+        y: newNodeY,
+        content:
+          type === NodeType.NOTE
+            ? selectionTooltip.text
+            : selectionTooltip.text.length > 30
+            ? selectionTooltip.text.substring(0, 30) + "..."
+            : selectionTooltip.text,
+        messages: startMessages,
+        width: DEFAULT_NODE_WIDTH,
+        height: DEFAULT_NODE_HEIGHT,
+        parentId: currentScopeId || undefined,
+      };
+
+      setNodes((prev) => [...prev, newNode]);
+      setSelectedNodeIds(new Set([newNode.id]));
+
+      if (selectionTooltip.sourceId) {
+        const labelText =
+          selectionTooltip.text.length > 20
+            ? selectionTooltip.text.substring(0, 20) + "..."
+            : selectionTooltip.text;
+        setEdges((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            source: selectionTooltip.sourceId!,
+            target: newNode.id,
+            label: labelText,
+            parentId: currentScopeId || undefined,
+          },
+        ]);
+      }
+      setSelectionTooltip(null);
+      window.getSelection()?.removeAllRanges();
+
+      if (type === NodeType.CHAT) {
+        try {
+          let currentText = "";
+          const result = await sendChatMessage([], promptTemplate, (chunk) => {
+            currentText += chunk;
+            setNodes((prev) =>
+              prev.map((n) =>
+                n.id === newNode.id && n.messages
+                  ? {
+                      ...n,
+                      messages: [
+                        ...n.messages.slice(0, -1),
+                        {
+                          ...n.messages[n.messages.length - 1],
+                          text: currentText,
+                        },
+                      ],
+                    }
+                  : n
+              )
+            );
+          });
+          setNodes((prev) =>
+            prev.map((n) =>
+              n.id === newNode.id && n.messages
+                ? {
+                    ...n,
+                    messages: [
+                      ...n.messages.slice(0, -1),
+                      {
+                        ...n.messages[n.messages.length - 1],
+                        text: result.text,
+                      },
+                    ],
+                  }
+                : n
+            )
+          );
+        } catch (e) {
+          console.error("Failed to generate initial response", e);
+        }
+      }
+    },
+    [
+      selectionTooltip,
+      nodes,
+      viewTransform,
+      setNodes,
+      setEdges,
+      currentScopeId,
+      setSelectedNodeIds,
+    ]
   );
 
   const handleSearchSelect = useCallback(
@@ -1665,11 +1948,75 @@ const App: React.FC = () => {
       ? nodes.find((n) => n.id === activeSidePane.data)
       : null;
 
+  const sidePanelContent = useMemo(() => {
+    if (!activeSidePane) return null;
+    return (
+      <ErrorBoundary>
+        {activeSidePane.type === "web" ? (
+          <WebContent url={activeSidePane.data} onClose={handleCloseSidePane} />
+        ) : sidebarNode ? (
+          <GraphNodeComponent
+            node={sidebarNode}
+            viewMode="sidebar"
+            onUpdate={handleUpdateNode}
+            onExpand={handleExpandNode}
+            onExpandFromWikidata={handleExpandNodeFromWikidata}
+            onDelete={handleDeleteNode}
+            onToggleMaximize={handleMaximizeNode}
+            onOpenLink={handleOpenLink}
+            autoGraphEnabled={autoGraphEnabled}
+            onSetAutoGraphEnabled={setAutoGraphEnabled}
+          />
+        ) : (
+          <div className="p-4 text-slate-500">Node not found.</div>
+        )}
+      </ErrorBoundary>
+    );
+  }, [
+    activeSidePane,
+    sidebarNode,
+    handleCloseSidePane,
+    handleUpdateNode,
+    handleExpandNode,
+    handleExpandNodeFromWikidata,
+    handleDeleteNode,
+    handleMaximizeNode,
+    handleOpenLink,
+    autoGraphEnabled,
+    setAutoGraphEnabled,
+  ]);
+
   return (
     <div className="flex w-screen h-screen overflow-hidden bg-slate-900 text-slate-200 font-sans">
       <div className="flex-1 relative min-w-0 flex flex-col">
-        {/* Auth/Folder Buttons */}
-        <div className="absolute top-4 right-4 z-[60] flex gap-3 items-center pointer-events-none">
+        {/* Auth/Folder/Search Buttons */}
+        <div
+          className={`absolute top-4 right-4 z-[60] flex gap-3 items-center pointer-events-none transition-all duration-200 ${
+            activeSidePane ? "opacity-0 invisible" : "opacity-100 visible"
+          }`}
+        >
+          {/* Search Button */}
+          <button
+            id="search-trigger-icon"
+            onClick={() => setIsSearchOpen((prev) => !prev)}
+            className="p-2 text-slate-400 hover:text-white bg-slate-800/80 backdrop-blur rounded-lg border border-slate-700 pointer-events-auto transition-all shadow-lg"
+            title="Search"
+          >
+            <svg
+              className="h-5 w-5"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+          </button>
+
           {!user ? (
             <>
               <button
@@ -1692,7 +2039,26 @@ const App: React.FC = () => {
               </button>
             </>
           ) : (
-            <></>
+            <button
+              onClick={() => setShowProfile(true)}
+              className="w-10 h-10 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 hover:text-white hover:border-slate-500 transition-all shadow-lg pointer-events-auto"
+              title={user.username}
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+              </svg>
+            </button>
           )}
         </div>
 
@@ -1775,6 +2141,7 @@ const App: React.FC = () => {
             onSelect={handleSearchSelect}
             onNavigate={handleFocusNode}
             onClose={() => setIsSearchOpen(false)}
+            onPreview={handleOpenLink}
             isCloud={!!user}
           />
         )}
@@ -1813,12 +2180,9 @@ const App: React.FC = () => {
             viewTransform={viewTransform}
             onViewTransformChange={setViewTransform}
             onOpenStorage={handleOpenStorage}
-            onOpenSearch={() => setIsSearchOpen(true)}
             storageConnected={!!dirName}
             storageDirName={dirName}
             isSaving={isSaving}
-            profileButtonTitle={user ? user.username : undefined}
-            onOpenProfile={user ? () => setShowProfile(true) : undefined}
             onOpenLink={handleOpenLink}
             onMaximizeNode={handleMaximizeNode}
             onExpandNode={handleExpandNode}
@@ -1839,6 +2203,8 @@ const App: React.FC = () => {
             selectedNodeIds={selectedNodeIds}
             onNodeSelect={handleNodeSelect}
             onMultiSelect={handleBoxSelect}
+            sidePanelLayout={sidePanelLayout}
+            onSelectionTooltipChange={setSelectionTooltip}
           />
         </ErrorBoundary>
       </div>
@@ -1847,31 +2213,33 @@ const App: React.FC = () => {
         <SidePanel
           onClose={handleCloseSidePane}
           hideDefaultDragHandle={!!sidebarNode}
+          onLayoutChange={handleSidePanelLayoutChange}
         >
-          <ErrorBoundary>
-            {activeSidePane.type === "web" ? (
-              <WebContent
-                url={activeSidePane.data}
-                onClose={handleCloseSidePane}
-              />
-            ) : sidebarNode ? (
-              <GraphNodeComponent
-                node={sidebarNode}
-                viewMode="sidebar"
-                onUpdate={handleUpdateNode}
-                onExpand={handleExpandNode}
-                onExpandFromWikidata={handleExpandNodeFromWikidata}
-                onDelete={handleDeleteNode}
-                onToggleMaximize={handleMaximizeNode}
-                onOpenLink={handleOpenLink}
-                autoGraphEnabled={autoGraphEnabled}
-                onSetAutoGraphEnabled={setAutoGraphEnabled}
-              />
-            ) : (
-              <div className="p-4 text-slate-500">Node not found.</div>
-            )}
-          </ErrorBoundary>
+          {sidePanelContent}
         </SidePanel>
+      )}
+
+      {selectionTooltip && !connectingNodeId && (
+        <SelectionTooltip
+          tooltip={selectionTooltip}
+          onClose={() => setSelectionTooltip(null)}
+          onCreateNote={() => handleCreateFromSelection(NodeType.NOTE)}
+          onCreateChat={() => handleCreateFromSelection(NodeType.CHAT)}
+          onExpandGraph={() => {
+            if (selectionTooltip.sourceId) {
+              handleExpandNode(
+                selectionTooltip.sourceId,
+                selectionTooltip.text
+              );
+              setSelectionTooltip(null);
+              window.getSelection()?.removeAllRanges();
+            }
+          }}
+          isMobile={
+            typeof window !== "undefined" &&
+            window.matchMedia("(max-width: 768px)").matches
+          }
+        />
       )}
 
       {showAuth && (

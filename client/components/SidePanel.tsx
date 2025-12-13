@@ -27,23 +27,32 @@ export const SidePanelContext = createContext<SidePanelContextType | null>(
 
 export const useSidePanel = () => useContext(SidePanelContext);
 
+export interface SidePanelLayout {
+  width: number; // percentage
+  dockPosition: SidePanelDockPosition;
+  isMobile: boolean;
+  isResizing: boolean;
+}
+
 interface SidePanelProps {
   onClose: () => void;
   children: React.ReactNode;
   title?: string;
   initialWidthPercent?: number;
   hideDefaultDragHandle?: boolean;
+  onLayoutChange?: (layout: SidePanelLayout) => void;
 }
 
 const SIDEBAR_WIDTH = 64;
 
-export const SidePanel: React.FC<SidePanelProps> = ({
+const SidePanelBase = ({
   onClose,
   children,
   title,
-  initialWidthPercent = 50,
+  initialWidthPercent = 33,
   hideDefaultDragHandle = false,
-}) => {
+  onLayoutChange,
+}: SidePanelProps) => {
   const [dimension, setDimension] = useState(() => {
     if (typeof window !== "undefined" && window.innerWidth < 768) return 100;
     return initialWidthPercent;
@@ -74,6 +83,26 @@ export const SidePanel: React.FC<SidePanelProps> = ({
     window.addEventListener("resize", checkMobile);
     return () => window.removeEventListener("resize", checkMobile);
   }, [initialWidthPercent]);
+
+  useEffect(() => {
+    // Determine effective width/state for layout reporting
+    let reportedWidth = dimension;
+    if (
+      dockPosition === "top-left" ||
+      dockPosition === "top-right" ||
+      dockPosition === "bottom-left" ||
+      dockPosition === "bottom-right"
+    ) {
+      reportedWidth = 50; // Corner docks are always 50% width
+    }
+
+    onLayoutChange?.({
+      width: reportedWidth,
+      dockPosition,
+      isMobile,
+      isResizing: isResizingRef.current || isDockDraggingRef.current,
+    });
+  }, [dimension, dockPosition, isMobile, onLayoutChange, isDockDragging]); // Added isDockDragging dependency to trigger updates during dock drag if needed
 
   const getDockPositionFromPoint = (
     clientX: number,
@@ -131,7 +160,13 @@ export const SidePanel: React.FC<SidePanelProps> = ({
           height: "50vh",
         };
       case "bottom-right":
-        return { ...base, right: 0, bottom: 0, width: "50vw", height: "50vh" };
+        return {
+          ...base,
+          right: 0,
+          bottom: 0,
+          width: "50vw",
+          height: "50vh",
+        };
       default: {
         const _exhaustive: never = dock;
         return base;
@@ -222,7 +257,9 @@ export const SidePanel: React.FC<SidePanelProps> = ({
     };
 
     document.addEventListener("mousemove", handleDockMove);
-    document.addEventListener("touchmove", handleDockMove, { passive: false });
+    document.addEventListener("touchmove", handleDockMove, {
+      passive: false,
+    });
     document.addEventListener("mouseup", handleDockEnd);
     document.addEventListener("touchend", handleDockEnd);
     document.addEventListener("touchcancel", handleDockEnd);
@@ -415,13 +452,13 @@ export const SidePanel: React.FC<SidePanelProps> = ({
         {(isMobile || dockPosition === "left" || dockPosition === "right") && (
           <div
             className={`absolute z-50 group hover:bg-sky-500/50 transition-colors
-              ${
-                isMobile
-                  ? "top-0 left-0 right-0 h-2 cursor-ns-resize"
-                  : dockPosition === "left"
-                  ? "right-0 top-0 bottom-0 w-1 cursor-ew-resize"
-                  : "left-0 top-0 bottom-0 w-1 cursor-ew-resize"
-              }`}
+            ${
+              isMobile
+                ? "top-0 left-0 right-0 h-2 cursor-ns-resize"
+                : dockPosition === "left"
+                ? "right-0 top-0 bottom-0 w-1 cursor-ew-resize"
+                : "left-0 top-0 bottom-0 w-1 cursor-ew-resize"
+            }`}
             onMouseDown={(e) => {
               e.preventDefault();
               if (
@@ -444,13 +481,13 @@ export const SidePanel: React.FC<SidePanelProps> = ({
             {/* Visual Indicator */}
             <div
               className={`absolute bg-slate-600/50 group-hover:bg-sky-400 opacity-0 group-hover:opacity-100 transition-all rounded-full
-                ${
-                  isMobile
-                    ? "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-12 h-1"
-                    : dockPosition === "left"
-                    ? "right-0 top-1/2 -translate-y-1/2 -mr-1 w-2 h-12"
-                    : "left-0 top-1/2 -translate-y-1/2 -ml-1 w-2 h-12"
-                }`}
+              ${
+                isMobile
+                  ? "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-12 h-1"
+                  : dockPosition === "left"
+                  ? "right-0 top-1/2 -translate-y-1/2 -mr-1 w-2 h-12"
+                  : "left-0 top-1/2 -translate-y-1/2 -ml-1 w-2 h-12"
+              }`}
             />
           </div>
         )}
@@ -460,6 +497,8 @@ export const SidePanel: React.FC<SidePanelProps> = ({
     </SidePanelContext.Provider>
   );
 };
+
+export const SidePanel = React.memo(SidePanelBase);
 
 // Web Content Component for reuse inside the panel
 export const WebContent: React.FC<{ url: string; onClose: () => void }> = ({

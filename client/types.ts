@@ -48,6 +48,14 @@ export interface ViewportTransform {
   k: number;
 }
 
+export interface SelectionTooltipState {
+  x: number;
+  y: number;
+  bottom?: number;
+  text: string;
+  sourceId?: string;
+}
+
 export interface ExpandResponse {
   mainTopic?: string; // For summary of long text inputs
   nodes: {

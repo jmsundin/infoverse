@@ -12,6 +12,7 @@ interface SearchBarProps {
   onSelect: (topic: string, expand: boolean, isWiki?: boolean) => void;
   onNavigate: (id: string) => void;
   onClose: () => void;
+  onPreview?: (url: string) => void;
   isCloud?: boolean;
 }
 
@@ -20,6 +21,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   onSelect,
   onNavigate,
   onClose,
+  onPreview,
   isCloud = false,
 }) => {
   const [query, setQuery] = useState("");
@@ -53,15 +55,21 @@ export const SearchBar: React.FC<SearchBarProps> = ({
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      const trigger = document.getElementById("search-trigger-icon");
+
       if (
         wrapperRef.current &&
-        !wrapperRef.current.contains(event.target as Node)
+        !wrapperRef.current.contains(target) &&
+        (!trigger || !trigger.contains(target))
       ) {
         onClose();
       }
     };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    // Use capture phase to detect clicks even if stopPropagation is used (e.g. on Nodes)
+    document.addEventListener("mousedown", handleClickOutside, true);
+    return () =>
+      document.removeEventListener("mousedown", handleClickOutside, true);
   }, [onClose]);
 
   useEffect(() => {
@@ -378,16 +386,23 @@ export const SearchBar: React.FC<SearchBarProps> = ({
                 key={result.title}
                 className="flex border-b border-slate-700/50 last:border-0 hover:bg-slate-700/30 transition-colors group/item"
               >
-                {/* Main Click: Add Single Node */}
+                {/* Main Click: Preview / Open in SidePanel */}
                 <button
                   className="flex-1 text-left px-4 py-3 flex items-center gap-3 min-w-0 focus:outline-none focus:bg-slate-700/50"
                   onClick={() => {
-                    onSelect(result.title, false, true);
+                    if (onPreview) {
+                      const url = `https://en.wikipedia.org/wiki/${encodeURIComponent(
+                        result.title.replace(/ /g, "_")
+                      )}`;
+                      onPreview(url);
+                    } else {
+                      onSelect(result.title, false, true);
+                    }
                     setQuery("");
                     setIsOpen(false);
                     onClose();
                   }}
-                  title="Add as single node"
+                  title="Open in Side Panel"
                 >
                   {result.thumbnail?.url ? (
                     <img

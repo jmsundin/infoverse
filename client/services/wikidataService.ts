@@ -53,7 +53,7 @@ const buildSubtopicsSparqlQuery = (
     PREFIX bd: <http://www.bigdata.com/rdf#>
     PREFIX mwapi: <https://www.mediawiki.org/ontology#API/>
 
-    SELECT ?child ?childLabel ?childDescription WHERE {
+    SELECT ?child ?childLabel ?childDescription ?article WHERE {
   {
     SELECT ?topic WHERE {
       SERVICE wikibase:mwapi {
@@ -73,6 +73,11 @@ const buildSubtopicsSparqlQuery = (
   OPTIONAL {
     ?child schema:description ?childDescription .
     FILTER(LANG(?childDescription) = "${safeLanguage}")
+  }
+
+  OPTIONAL {
+    ?article schema:about ?child .
+    ?article schema:isPartOf <https://${safeLanguage}.wikipedia.org/> .
   }
 
   SERVICE wikibase:label { bd:serviceParam wikibase:language "${safeLanguage}" . }
@@ -132,7 +137,7 @@ export const fetchWikidataSubtopics = async (
     const payload = (await response.json()) as any;
     const bindings: any[] = payload?.results?.bindings || [];
 
-    const subtopics: WikidataSubtopic[] = [];
+      const subtopics: WikidataSubtopic[] = [];
     for (const row of bindings) {
       const childUri = row?.child?.value;
       const childLabel = row?.childLabel?.value;
@@ -141,11 +146,13 @@ export const fetchWikidataSubtopics = async (
       const entityId = extractWikidataEntityId(childUri);
       if (!entityId) continue;
 
+      const wikipediaUrl = row?.article?.value;
+
       subtopics.push({
         id: entityId,
         label: childLabel,
         description: row?.childDescription?.value,
-        wikidataUrl: `https://www.wikidata.org/wiki/${entityId}`,
+        wikidataUrl: wikipediaUrl || `https://www.wikidata.org/wiki/${entityId}`,
       });
     }
 
@@ -153,6 +160,45 @@ export const fetchWikidataSubtopics = async (
   } finally {
     window.clearTimeout(timeoutId);
   }
+};
+
+export const fetchWikipediaUrl = async (
+  topicLabel: string,
+  language: string = "en"
+): Promise<string | null> => {
+  const normalized = normalizeTopicLabelForEntitySearch(topicLabel);
+  if (!normalized) return null;
+
+  const endpoint = `https://${language}.wikipedia.org/w/api.php`;
+  // Use action=query with redirects=1 to properly resolve redirects to the final article URL
+  const params = new URLSearchParams({
+    action: "query",
+    titles: normalized,
+    prop: "info",
+    inprop: "url",
+    redirects: "1",
+    format: "json",
+    origin: "*",
+  });
+
+  try {
+    const res = await fetch(`${endpoint}?${params.toString()}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    
+    if (data?.query?.pages) {
+      const pages = data.query.pages;
+      const pageId = Object.keys(pages)[0];
+      const page = pages[pageId];
+
+      if (page && !page.missing && page.fullurl) {
+        return page.fullurl;
+      }
+    }
+  } catch (e) {
+    console.error("Wikipedia lookup failed:", e);
+  }
+  return null;
 };
 
 

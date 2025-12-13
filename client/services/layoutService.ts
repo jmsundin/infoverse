@@ -1,14 +1,14 @@
 import * as d3 from "d3";
 import { GraphNode, GraphEdge } from "../types";
-import { DEFAULT_NODE_WIDTH, DEFAULT_NODE_HEIGHT } from "../constants";
+import { DEFAULT_NODE_WIDTH, DEFAULT_NODE_HEIGHT, PARENT_NODE_WIDTH, PARENT_NODE_HEIGHT } from "../constants";
 
 interface LayoutOptions {
   width: number;
   height: number;
 }
 
-const TREE_NODE_SIZE_TB: [number, number] = [320, 220];
-const TREE_NODE_SIZE_LR: [number, number] = [320, 250];
+const TREE_NODE_SIZE_TB: [number, number] = [PARENT_NODE_WIDTH + 50, PARENT_NODE_HEIGHT + 50];
+const TREE_NODE_SIZE_LR: [number, number] = [PARENT_NODE_HEIGHT + 50, PARENT_NODE_WIDTH + 50];
 
 export const applyForceLayout = (
   nodes: GraphNode[],
@@ -229,6 +229,153 @@ export const applyHybridLayout = (
     console.warn("Hybrid layout failed (likely cyclical), falling back to force", e);
     return applyForceLayout(nodes, edges);
   }
+};
+
+const getSubgraphIds = (rootId: string, edges: GraphEdge[]): Set<string> => {
+  const ids = new Set<string>();
+  const queue = [rootId];
+  ids.add(rootId);
+  
+  // Build adjacency list (directed)
+  const adj = new Map<string, string[]>();
+  edges.forEach(e => {
+    const s = typeof e.source === 'object' ? (e.source as any).id : e.source;
+    const t = typeof e.target === 'object' ? (e.target as any).id : e.target;
+    if (!adj.has(s)) adj.set(s, []);
+    adj.get(s)!.push(t);
+  });
+  
+  while(queue.length > 0) {
+    const curr = queue.shift()!;
+    const children = adj.get(curr) || [];
+    for (const child of children) {
+      if (!ids.has(child)) {
+        ids.add(child);
+        queue.push(child);
+      }
+    }
+  }
+  return ids;
+};
+
+export const applySubgraphIsolationLayout = (
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  focusNodeId: string
+): GraphNode[] => {
+  if (nodes.length === 0) return nodes;
+
+  const subgraphIds = getSubgraphIds(focusNodeId, edges);
+  
+  const innerCount = subgraphIds.size;
+  // Radius estimation
+  const nodeDiameter = 400; 
+  const estimatedInnerRadius = Math.max(200, Math.sqrt(innerCount) * nodeDiameter * 0.6);
+  
+  const separationBuffer = 1200;
+  const outerRingRadius = estimatedInnerRadius + separationBuffer;
+
+  const simNodes = nodes.map((n) => {
+    const isInner = subgraphIds.has(n.id);
+    let { x, y } = n;
+
+    // Smart Initialization: Teleport misplaced nodes to their target zones
+    // This ensures immediate visual separation even before simulation ticks
+    const dist = Math.sqrt(x * x + y * y);
+    
+    if (!isInner) {
+        // If outer node is too close to center, push to ring
+        if (dist < outerRingRadius) {
+            const angle = Math.atan2(y, x) + (Math.random() - 0.5) * 0.5;
+            x = Math.cos(angle) * outerRingRadius;
+            y = Math.sin(angle) * outerRingRadius;
+        }
+    } else {
+        // If inner node is too far, pull to center
+        if (dist > estimatedInnerRadius + 500) {
+             const angle = Math.atan2(y, x);
+             x = Math.cos(angle) * estimatedInnerRadius;
+             y = Math.sin(angle) * estimatedInnerRadius;
+        }
+    }
+
+    return { 
+      ...n,
+      x,
+      y,
+      effectiveW: n.width || DEFAULT_NODE_WIDTH,
+      effectiveH: n.height || DEFAULT_NODE_HEIGHT,
+      isInner
+    };
+  });
+  
+  const simEdges = edges.map((e) => ({ ...e }));
+  
+  const simulation = d3
+    .forceSimulation(simNodes as any)
+    .force("charge", d3.forceManyBody().strength(-3000))
+    .force(
+      "link",
+      d3
+        .forceLink(simEdges)
+        .id((d: any) => d.id)
+        .distance((d: any) => {
+           const sIn = subgraphIds.has(typeof d.source === 'object' ? d.source.id : d.source);
+           const tIn = subgraphIds.has(typeof d.target === 'object' ? d.target.id : d.target);
+           
+           if (sIn && tIn) return 300;
+           if (!sIn && !tIn) return 300;
+           // Cross-boundary links
+           return separationBuffer;
+        })
+    )
+    .force(
+      "collide",
+      d3
+        .forceCollide()
+        .radius((d: any) => {
+           return Math.sqrt(d.effectiveW * d.effectiveW + d.effectiveH * d.effectiveH) / 2 + 80;
+        })
+        .strength(0.9)
+    )
+    .force(
+      "radial",
+      d3.forceRadial(
+        (d: any) => d.isInner ? 0 : outerRingRadius,
+        0, 
+        0
+      ).strength((d: any) => d.isInner ? 0.05 : 0.6)
+    )
+    // Custom Force: Enforce Exclusion Zone
+    .force("isolation", (alpha) => {
+        const k = alpha * 0.8; // High strength
+        for (const d of simNodes) {
+             const dist = Math.sqrt(d.x! * d.x! + d.y! * d.y!);
+             if (d.isInner) {
+                 // Keep inner nodes bounded
+                 if (dist > estimatedInnerRadius + 400) {
+                     d.vx! -= d.x! * k * 0.05;
+                     d.vy! -= d.y! * k * 0.05;
+                 }
+             } else {
+                 // Push outer nodes out of the exclusion zone
+                 if (dist < outerRingRadius - 100) {
+                     const angle = Math.atan2(d.y!, d.x!);
+                     d.vx! += Math.cos(angle) * k * 5;
+                     d.vy! += Math.sin(angle) * k * 5;
+                 }
+             }
+        }
+    })
+    .stop();
+
+  simulation.tick(300);
+
+  return nodes.map((n, i) => ({
+    ...n,
+    x: (simNodes[i] as any).x,
+    y: (simNodes[i] as any).y,
+  }));
 };
 
 export const resolveCollisions = (

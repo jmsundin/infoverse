@@ -21,6 +21,7 @@ import { NODE_HEADER_HEIGHT, NODE_COLORS } from "../constants";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { SidePanelContext } from "./SidePanel";
+import { fetchWikipediaUrl } from "../services/wikidataService";
 
 interface GraphNodeProps {
   node: GraphNode;
@@ -192,6 +193,23 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
       };
     }, []);
+
+    // Check for Wikipedia article on selection
+    useEffect(() => {
+      if (
+        isSelected &&
+        node.content &&
+        (!node.link || node.link.includes("wikidata.org"))
+      ) {
+        const checkWiki = async () => {
+          const url = await fetchWikipediaUrl(node.content);
+          if (url && url !== node.link) {
+            onUpdate(node.id, { link: url });
+          }
+        };
+        checkWiki();
+      }
+    }, [isSelected, node.content, node.link, node.id, onUpdate]);
 
     const handleSendMessage = async () => {
       if (!input.trim()) return;
@@ -551,25 +569,48 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
               {node.link && (
                 <button
                   onClick={(e) => handleLinkClick(e, node.link!)}
-                  className="min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 text-slate-400 hover:text-blue-400 hover:bg-slate-700/50 rounded transition-colors flex items-center justify-center"
-                  title="Open Wiki Link"
+                  className={`min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 rounded transition-colors flex items-center justify-center ${
+                    node.link.includes("wikipedia.org")
+                      ? "text-slate-400 hover:text-white hover:bg-slate-700/50"
+                      : "text-slate-400 hover:text-blue-400 hover:bg-slate-700/50"
+                  }`}
+                  title={
+                    node.link.includes("wikipedia.org")
+                      ? "Open Wikipedia Article"
+                      : "Open Wiki Link"
+                  }
                   onMouseDown={(e) => e.stopPropagation()}
                   onTouchStart={(e) => e.stopPropagation()}
                 >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                    <polyline points="15 3 21 3 21 9" />
-                    <line x1="10" y1="14" x2="21" y2="3" />
-                  </svg>
+                  {node.link.includes("wikipedia.org") ? (
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M3 5l5 14l4-10l4 10l5-14" />
+                    </svg>
+                  ) : (
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                      <polyline points="15 3 21 3 21 9" />
+                      <line x1="10" y1="14" x2="21" y2="3" />
+                    </svg>
+                  )}
                 </button>
               )}
 
@@ -995,24 +1036,48 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                 {node.link && (
                   <button
                     onClick={(e) => handleLinkClick(e, node.link!)}
-                    className="p-1 text-slate-400 hover:text-sky-400 hover:bg-slate-700/50 rounded"
-                    title="Open Wiki Link"
+                    className={`p-1 rounded hover:bg-slate-700/50 ${
+                      node.link.includes("wikipedia.org")
+                        ? "text-slate-400 hover:text-white"
+                        : "text-slate-400 hover:text-sky-400"
+                    }`}
+                    title={
+                      node.link.includes("wikipedia.org")
+                        ? "Open Wikipedia Article"
+                        : "Open Wiki Link"
+                    }
                   >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      width="16"
-                      height="16"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                      <polyline points="15 3 21 3 21 9" />
-                      <line x1="10" y1="14" x2="21" y2="3" />
-                    </svg>
+                    {node.link.includes("wikipedia.org") ? (
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M3 5l5 14l4-10l4 10l5-14" />
+                      </svg>
+                    ) : (
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                        <polyline points="15 3 21 3 21 9" />
+                        <line x1="10" y1="14" x2="21" y2="3" />
+                      </svg>
+                    )}
                   </button>
                 )}
 
