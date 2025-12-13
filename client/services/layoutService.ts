@@ -265,6 +265,12 @@ export const applySubgraphIsolationLayout = (
 ): GraphNode[] => {
   if (nodes.length === 0) return nodes;
 
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  if (!nodeIds.has(focusNodeId)) {
+    console.warn("applySubgraphIsolationLayout: focus node missing", focusNodeId);
+    return nodes;
+  }
+
   const subgraphIds = getSubgraphIds(focusNodeId, edges);
   
   const innerCount = subgraphIds.size;
@@ -309,7 +315,13 @@ export const applySubgraphIsolationLayout = (
     };
   });
   
-  const simEdges = edges.map((e) => ({ ...e }));
+  const filteredEdges = edges
+    .filter(
+      (e) =>
+        nodeIds.has(typeof e.source === "object" ? (e.source as any).id : e.source) &&
+        nodeIds.has(typeof e.target === "object" ? (e.target as any).id : e.target)
+    )
+    .map((e) => ({ ...e }));
   
   const simulation = d3
     .forceSimulation(simNodes as any)
@@ -317,7 +329,7 @@ export const applySubgraphIsolationLayout = (
     .force(
       "link",
       d3
-        .forceLink(simEdges)
+        .forceLink(filteredEdges)
         .id((d: any) => d.id)
         .distance((d: any) => {
            const sIn = subgraphIds.has(typeof d.source === 'object' ? d.source.id : d.source);
@@ -438,4 +450,3 @@ export const resolveCollisions = (
     y: (simNodes[i] as any).y,
   }));
 };
-

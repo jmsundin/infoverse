@@ -91,6 +91,33 @@ const createDefaultGraphNodes = (): GraphNode[] => {
   ];
 };
 
+const getFirstNonEmptyLine = (text?: string | null) => {
+  if (!text) return "";
+  for (const rawLine of text.split("\n")) {
+    const trimmed = rawLine.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  return "";
+};
+
+const getNodeTitleForBreadcrumb = (node: GraphNode) => {
+  if (!node) return "Untitled";
+  if (node.type === NodeType.CHAT) {
+    return (node.content || "").trim() || "Chat";
+  }
+
+  let title = getFirstNonEmptyLine(node.content);
+  const headingMatch = title.match(/^#+\s*(.*)$/);
+  if (headingMatch) {
+    title = headingMatch[1].trim();
+  }
+
+  if (title) return title;
+
+  const summaryLine = getFirstNonEmptyLine(node.summary);
+  return summaryLine || "Untitled";
+};
+
 type LocalGraphSnapshot = {
   nodes?: GraphNode[];
   edges?: GraphEdge[];
@@ -1424,6 +1451,51 @@ const App: React.FC = () => {
     setActiveSidePane({ type: "web", data: url });
   }, []);
 
+  const handleNavigateToNodeLink = useCallback(
+    (rawTitle: string) => {
+      const normalize = (value?: string | null) =>
+        value ? value.trim().toLowerCase() : "";
+      const target = normalize(rawTitle);
+      if (!target) return;
+
+      const matchesNode = (graphNode: GraphNode) => {
+        if (normalize(graphNode.content) === target) return true;
+        if (normalize(graphNode.summary) === target) return true;
+        if (
+          graphNode.aliases?.some((alias) => normalize(alias) === target)
+        )
+          return true;
+        if (graphNode.type === NodeType.NOTE) {
+          const noteTitle = normalize(
+            (graphNode.content || "").split("\n")[0] || ""
+          );
+          if (noteTitle === target) return true;
+        }
+        return false;
+      };
+
+      const matchedNode = nodes.find(matchesNode);
+      if (!matchedNode) return;
+
+      setCurrentScopeId(matchedNode.parentId ?? null);
+      setSelectedNodeIds(new Set([matchedNode.id]));
+      if (typeof window === "undefined") return;
+      setViewTransform((prev) => {
+        const k = prev.k;
+        const nodeCenterX =
+          matchedNode.x + (matchedNode.width || DEFAULT_NODE_WIDTH) / 2;
+        const nodeCenterY =
+          matchedNode.y + (matchedNode.height || DEFAULT_NODE_HEIGHT) / 2;
+        return {
+          x: window.innerWidth / 2 - nodeCenterX * k,
+          y: window.innerHeight / 2 - nodeCenterY * k,
+          k,
+        };
+      });
+    },
+    [nodes, setCurrentScopeId, setSelectedNodeIds, setViewTransform]
+  );
+
   const handleCloseSidePane = useCallback(() => {
     setActiveSidePane(null);
     setSidePanelLayout(null);
@@ -1818,28 +1890,69 @@ const App: React.FC = () => {
     window.location.reload();
   }, [user]);
 
+  const nodeMap = useMemo(
+    () => new Map(nodes.map((n) => [n.id, n])),
+    [nodes]
+  );
+
   // Breadcrumbs: Use BFS to find shortest path from Root to Selected Node
   const getBreadcrumbs = () => {
-    // 1. Build Scope Path (Vertical Hierarchy)
-    const crumbs = [];
-    let currScope = currentScopeId;
-    while (currScope) {
-      const node = nodes.find((n) => n.id === currScope);
-      if (node) {
-        crumbs.unshift({ id: node.id, name: node.content, type: "scope" });
-        currScope = node.parentId || null;
-      } else {
-        break;
-      }
-    }
-
     const rootName = dirName || "Home";
     const combinedCrumbs: { id: string | null; name: string; type: string }[] =
-      [{ id: null, name: rootName, type: "root" }, ...crumbs];
+      [];
+    const seenIds = new Set<string | null>();
+    const pushCrumb = (crumb: {
+      id: string | null;
+      name: string;
+      type: string;
+    }) => {
+      const key = crumb.id ?? null;
+      if (seenIds.has(key)) return;
+      combinedCrumbs.push(crumb);
+      seenIds.add(key);
+    };
 
-    // 2. Build Graph Path (Horizontal Connections within Scope)
+    pushCrumb({ id: null, name: rootName, type: "root" });
+
     const activeId =
       selectedNodeIds.size > 0 ? Array.from(selectedNodeIds)[0] : null;
+    const activeNode = activeId ? nodeMap.get(activeId) : null;
+
+    const appendParentChain = (node?: GraphNode | null) => {
+      if (!node) return;
+      const ancestorStack: GraphNode[] = [];
+      const visited = new Set<string>();
+      let current: GraphNode | undefined | null = node;
+      while (current?.parentId) {
+        if (visited.has(current.parentId)) break;
+        const parent = nodeMap.get(current.parentId);
+        if (!parent) break;
+        ancestorStack.unshift(parent);
+        visited.add(parent.id);
+        current = parent;
+      }
+      ancestorStack.forEach((ancestor) =>
+        pushCrumb({
+          id: ancestor.id,
+          name: getNodeTitleForBreadcrumb(ancestor),
+          type: "scope",
+        })
+      );
+    };
+
+    if (activeNode) {
+      appendParentChain(activeNode);
+    } else if (currentScopeId) {
+      const scopeNode = nodeMap.get(currentScopeId);
+      appendParentChain(scopeNode);
+      if (scopeNode) {
+        pushCrumb({
+          id: scopeNode.id,
+          name: getNodeTitleForBreadcrumb(scopeNode),
+          type: "scope",
+        });
+      }
+    }
 
     if (activeId) {
       const currentNodes = nodes.filter((n) => n.parentId == currentScopeId);
@@ -1852,9 +1965,9 @@ const App: React.FC = () => {
 
         // If selected node IS the root, just show it
         if (activeId === rootNode.id) {
-          combinedCrumbs.push({
+          pushCrumb({
             id: rootNode.id,
-            name: rootNode.content,
+            name: getNodeTitleForBreadcrumb(rootNode),
             type: "node",
           });
         } else {
@@ -1888,22 +2001,39 @@ const App: React.FC = () => {
             }
           }
 
+          let appendedPath = false;
           if (found) {
-            const path: { id: string; name: string; type: string }[] = [];
+            const pathNodes: GraphNode[] = [];
             let curr: string | undefined = activeId;
             while (curr) {
-              const n = currentNodes.find((node) => node.id === curr);
-              if (n) path.unshift({ id: n.id, name: n.content, type: "node" });
+              const node = nodeMap.get(curr);
+              if (node) pathNodes.unshift(node);
               curr = parentMap.get(curr);
             }
-            combinedCrumbs.push(...path);
-          } else {
-            // Disconnected node (Island)
-            const n = currentNodes.find((node) => node.id === activeId);
-            if (n)
-              combinedCrumbs.push({ id: n.id, name: n.content, type: "node" });
+            pathNodes.forEach((n) =>
+              pushCrumb({
+                id: n.id,
+                name: getNodeTitleForBreadcrumb(n),
+                type: "node",
+              })
+            );
+            appendedPath = true;
+          }
+
+          if (!appendedPath && activeNode) {
+            pushCrumb({
+              id: activeNode.id,
+              name: getNodeTitleForBreadcrumb(activeNode),
+              type: "node",
+            });
           }
         }
+      } else if (activeNode) {
+        pushCrumb({
+          id: activeNode.id,
+          name: getNodeTitleForBreadcrumb(activeNode),
+          type: "node",
+        });
       }
     }
     return combinedCrumbs;
@@ -2011,6 +2141,7 @@ const App: React.FC = () => {
           <GraphNodeComponent
             key={sidebarNode.id}
             node={sidebarNode}
+            allNodes={nodes}
             viewMode="sidebar"
             onUpdate={handleUpdateNode}
             onExpand={handleExpandNode}
@@ -2018,6 +2149,7 @@ const App: React.FC = () => {
             onDelete={handleDeleteNode}
             onToggleMaximize={handleMaximizeNode}
             onOpenLink={handleOpenLink}
+            onNavigateToNode={handleNavigateToNodeLink}
             autoGraphEnabled={autoGraphEnabled}
             onSetAutoGraphEnabled={setAutoGraphEnabled}
           />
@@ -2036,6 +2168,7 @@ const App: React.FC = () => {
     handleDeleteNode,
     handleMaximizeNode,
     handleOpenLink,
+    handleNavigateToNodeLink,
     autoGraphEnabled,
     setAutoGraphEnabled,
   ]);
@@ -2228,6 +2361,7 @@ const App: React.FC = () => {
         <ErrorBoundary>
           <Canvas
             nodes={filteredNodes}
+            allNodes={nodes}
             edges={filteredEdges}
             setNodes={setNodes}
             setEdges={setEdges}
@@ -2238,6 +2372,7 @@ const App: React.FC = () => {
             storageDirName={dirName}
             isSaving={isSaving}
             onOpenLink={handleOpenLink}
+            onNavigateToNode={handleNavigateToNodeLink}
             onMaximizeNode={handleMaximizeNode}
             onExpandNode={handleExpandNode}
             onExpandNodeFromWikidata={handleExpandNodeFromWikidata}

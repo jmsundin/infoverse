@@ -23,9 +23,15 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { SidePanelContext } from "./SidePanel";
 import { fetchWikipediaUrl } from "../services/wikidataService";
+import {
+  INTERNAL_NODE_LINK_PREFIX,
+  extractInternalNodeTitle,
+  formatInternalNodeLinks,
+} from "../utils/wikiLinks";
 
 interface GraphNodeProps {
   node: GraphNode;
+  allNodes?: GraphNode[];
   isSelected?: boolean;
   isDragging?: boolean;
   viewMode?: "canvas" | "sidebar";
@@ -44,6 +50,7 @@ interface GraphNodeProps {
   ) => void;
   onToggleMaximize?: (id: string) => void;
   onOpenLink?: (url: string) => void;
+  onNavigateToNode?: (title: string) => void;
   onConnectStart?: (id: string) => void;
   onViewSubgraph?: (id: string) => void;
   autoGraphEnabled?: boolean;
@@ -54,6 +61,7 @@ interface GraphNodeProps {
 export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
   ({
     node,
+    allNodes,
     isSelected = false,
     isDragging = false,
     viewMode = "canvas",
@@ -68,6 +76,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     onResizeStart,
     onToggleMaximize,
     onOpenLink,
+    onNavigateToNode,
     onConnectStart,
     onViewSubgraph,
     autoGraphEnabled,
@@ -281,20 +290,40 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       openNodeInSidePaneForMobileInput();
     };
 
-    const handleLinkClick = (e: React.MouseEvent, url: string) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (onOpenLink) {
-        onOpenLink(url);
-      } else {
-        window.open(url, "_blank");
-      }
-    };
+    const handleLinkClick = useCallback(
+      (e: React.MouseEvent, url: string) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (url?.startsWith(INTERNAL_NODE_LINK_PREFIX)) {
+          const targetTitle = extractInternalNodeTitle(url);
+          if (targetTitle && onNavigateToNode) {
+            onNavigateToNode(targetTitle);
+          }
+          return;
+        }
+        if (onOpenLink) {
+          onOpenLink(url);
+        } else {
+          window.open(url, "_blank");
+        }
+      },
+      [onNavigateToNode, onOpenLink]
+    );
 
     const noteTitleLine = useMemo(() => {
       if (node.type !== NodeType.NOTE) return "";
       return (node.content || "").split("\n")[0] || "";
     }, [node.type, node.content]);
+
+    const formattedNoteContent = useMemo(
+      () => formatInternalNodeLinks(node.content || ""),
+      [node.content]
+    );
+
+    const formattedNoteTitleLine = useMemo(
+      () => formatInternalNodeLinks(noteTitleLine),
+      [noteTitleLine]
+    );
 
     const markdownComponents = useMemo(
       () => ({
@@ -366,7 +395,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         },
         pre: (props: any) => <div className="not-prose" {...props} />,
       }),
-      []
+      [handleLinkClick]
     );
 
     const titleMarkdownComponents = useMemo(
@@ -395,11 +424,19 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         code: ({ node, ...props }: any) => (
           <code className="bg-black/30 px-1 rounded text-[0.85em]" {...props} />
         ),
-        a: ({ node, ...props }: any) => (
-          <span className="underline" {...props} />
+        a: ({ node, href, ...props }: any) => (
+          <a
+            href={href}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleLinkClick(e, href || "");
+            }}
+            className="underline cursor-pointer"
+            {...props}
+          />
         ),
       }),
-      []
+      [handleLinkClick]
     );
 
     const transitionStyle = isDragging
@@ -747,6 +784,36 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                 </button>
               )}
             </div>
+
+            <div className="flex justify-end pt-2 border-t border-slate-700">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowSettings(false);
+                  onDelete(node.id);
+                }}
+                className="flex items-center gap-1.5 text-[10px] uppercase font-bold text-red-400 hover:text-red-300 hover:bg-red-500/10 px-2 py-1 rounded transition-colors"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+                  <path d="M10 11v6" />
+                  <path d="M14 11v6" />
+                  <path d="M5 6l1-3h12l1 3" />
+                </svg>
+                Delete Node
+              </button>
+            </div>
           </div>
         )}
 
@@ -1023,7 +1090,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                           unwrapDisallowed
                           className="inline"
                         >
-                          {noteTitleLine}
+                          {formattedNoteTitleLine}
                         </ReactMarkdown>
                       )
                     ) : (
@@ -1192,6 +1259,8 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     <MarkdownEditor
                       initialContent={node.content || ""}
                       onChange={handleNoteEditorChange}
+                      onNavigateToNode={onNavigateToNode}
+                      allNodes={allNodes}
                       className={`w-full h-full ${
                         colorTheme.text
                       } ${
@@ -1227,7 +1296,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                         className="prose prose-invert prose-sm max-w-none"
                         components={markdownComponents}
                       >
-                        {node.content}
+                        {formattedNoteContent}
                       </ReactMarkdown>
                     )}
                   </div>
@@ -1285,7 +1354,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                             }`}
                           >
                             <ReactMarkdown components={markdownComponents}>
-                              {msg.text}
+                              {formatInternalNodeLinks(msg.text)}
                             </ReactMarkdown>
                           </div>
                         </div>
@@ -1307,7 +1376,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                             } rounded-tl-none border ${colorTheme.border}`}
                           >
                             <ReactMarkdown components={markdownComponents}>
-                              {streamingContent + " ▍"}
+                              {formatInternalNodeLinks(streamingContent + " ▍")}
                             </ReactMarkdown>
                           </div>
                         </div>

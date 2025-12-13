@@ -1,10 +1,15 @@
-import React, { useEffect, useRef } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { GraphNode } from "../types";
+import { NODE_COLORS } from "../constants";
+import { INTERNAL_NODE_LINK_REGEX, getNodeTitle } from "../utils/wikiLinks";
 
 interface MarkdownEditorProps {
   initialContent: string;
   onChange: (content: string) => void;
   className?: string;
   placeholder?: string;
+  onNavigateToNode?: (title: string) => void;
+  allNodes?: GraphNode[];
 }
 
 type LoadedCodeMirror = {
@@ -27,6 +32,13 @@ type LoadedCodeMirror = {
   defaultHighlightStyle: any;
   hljs: any;
 };
+
+type LinkDropdownState = {
+  position: { left: number; top: number };
+  query: string;
+};
+
+const INLINE_LINK_DROPDOWN_WIDTH = 320;
 
 const cmImport = (specifier: string) =>
   `https://esm.sh/${specifier}?target=esnext`;
@@ -88,7 +100,10 @@ const escapeHtml = (value: string) =>
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 
-const createLivePreviewPlugin = (cm: LoadedCodeMirror) => {
+const createLivePreviewPlugin = (
+  cm: LoadedCodeMirror,
+  getNavigateToNode?: () => ((title: string) => void) | undefined
+) => {
   const { ViewPlugin, Decoration, WidgetType, syntaxTree, hljs } = cm;
 
   const getActiveLineNumbers = (state: any) => {
@@ -160,11 +175,48 @@ const createLivePreviewPlugin = (cm: LoadedCodeMirror) => {
     }
   }
 
+  class WikiLinkWidget extends WidgetType {
+    label: string;
+    target: string;
+    getNavigate?: () => ((title: string) => void) | undefined;
+
+    constructor(
+      label: string,
+      target: string,
+      getNavigate?: () => ((title: string) => void) | undefined
+    ) {
+      super();
+      this.label = label;
+      this.target = target;
+      this.getNavigate = getNavigate;
+    }
+
+    eq(other: WikiLinkWidget) {
+      return other.label === this.label && other.target === this.target;
+    }
+
+    toDOM() {
+      const anchor = document.createElement("span");
+      anchor.className = "cm-md-internal-link";
+      anchor.textContent = this.label;
+      anchor.title = `Jump to ${this.target}`;
+      anchor.addEventListener("mousedown", (e) => e.preventDefault());
+      anchor.addEventListener("click", (e) => {
+        e.preventDefault();
+        const navigate = this.getNavigate?.();
+        navigate?.(this.target);
+      });
+      return anchor;
+    }
+  }
+
   const computeDecorations = (view: any) => {
     const ranges: any[] = [];
     const activeLines = getActiveLineNumbers(view.state);
     const processedLines = new Set<number>();
     const suppressedRanges: Array<{ from: number; to: number }> = [];
+    const isSuppressed = (pos: number) =>
+      suppressedRanges.some((range) => pos >= range.from && pos < range.to);
 
     class BulletWidget extends WidgetType {
       bulletChar: string;
@@ -339,10 +391,8 @@ const createLivePreviewPlugin = (cm: LoadedCodeMirror) => {
       let line = view.state.doc.lineAt(from);
       while (true) {
         if (!processedLines.has(line.number)) {
-          const isSuppressed = suppressedRanges.some(
-            (range) => line.from >= range.from && line.from < range.to
-          );
-          if (isSuppressed) {
+          const lineSuppressed = isSuppressed(line.from);
+          if (lineSuppressed) {
             processedLines.add(line.number);
             if (line.to >= to || line.number >= view.state.doc.lines) break;
             line = view.state.doc.line(line.number + 1);
@@ -365,6 +415,33 @@ const createLivePreviewPlugin = (cm: LoadedCodeMirror) => {
                 bulletEnd
               )
             );
+          }
+
+          if (!activeLines.has(line.number)) {
+            const wikiRegex = new RegExp(
+              INTERNAL_NODE_LINK_REGEX.source,
+              "g"
+            );
+            let wikiMatch;
+            while ((wikiMatch = wikiRegex.exec(line.text)) !== null) {
+              if (wikiMatch.index == null) continue;
+              const rawTarget = wikiMatch[1] || "";
+              const [target, display] = rawTarget.split("|");
+              const trimmedTarget = target?.trim();
+              if (!trimmedTarget) continue;
+              const label = (display ?? target)?.trim() || trimmedTarget;
+              const start = line.from + wikiMatch.index;
+              const end = start + wikiMatch[0].length;
+              ranges.push(
+                Decoration.replace({
+                  widget: new WikiLinkWidget(
+                    label,
+                    trimmedTarget,
+                    getNavigateToNode
+                  ),
+                }).range(start, end)
+              );
+            }
           }
           processedLines.add(line.number);
         }
@@ -464,28 +541,239 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
   onChange,
   className,
   placeholder,
+  onNavigateToNode,
+  allNodes,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<{ view: any; cm: LoadedCodeMirror } | null>(null);
   const onChangeRef = useRef(onChange);
+  const onNavigateToNodeRef = useRef(onNavigateToNode);
+  const allNodesRef = useRef<GraphNode[] | undefined>(allNodes);
+  const activeLinkStartRef = useRef<number | null>(null);
+  const [linkDropdown, setLinkDropdown] = useState<LinkDropdownState | null>(
+    null
+  );
+  const [linkResults, setLinkResults] = useState<GraphNode[]>([]);
+  const [activeResultIndex, setActiveResultIndex] = useState(0);
 
   useEffect(() => {
     onChangeRef.current = onChange;
   }, [onChange]);
 
   useEffect(() => {
+    onNavigateToNodeRef.current = onNavigateToNode;
+  }, [onNavigateToNode]);
+
+  useEffect(() => {
+    allNodesRef.current = allNodes;
+  }, [allNodes]);
+
+  const closeLinkSearch = useCallback(() => {
+    setLinkDropdown(null);
+    setLinkResults([]);
+    setActiveResultIndex(0);
+    activeLinkStartRef.current = null;
+  }, []);
+
+  const computeLinkMatches = useCallback((query: string) => {
+    const nodes = allNodesRef.current || [];
+    if (!nodes.length) return [];
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) {
+      return nodes
+        .slice()
+        .sort((a, b) =>
+          getNodeTitle(a).localeCompare(getNodeTitle(b), undefined, {
+            sensitivity: "base",
+          })
+        )
+        .slice(0, 6);
+    }
+
+    type ScoredNode = { node: GraphNode; score: number };
+    const scored = nodes
+      .map<ScoredNode | null>((node) => {
+        const title = getNodeTitle(node);
+        const titleLower = title.toLowerCase();
+        const summaryLower = (node.summary || node.content || "").toLowerCase();
+        const aliasHit = node.aliases?.find((alias) =>
+          alias.toLowerCase().includes(normalized)
+        );
+
+        if (titleLower.startsWith(normalized)) {
+          return { node, score: titleLower.indexOf(normalized) };
+        }
+        if (titleLower.includes(normalized)) {
+          return { node, score: 50 + titleLower.indexOf(normalized) };
+        }
+        if (aliasHit) {
+          return { node, score: 200 };
+        }
+        if (summaryLower.includes(normalized)) {
+          return { node, score: 500 };
+        }
+        return null;
+      })
+      .filter((entry): entry is ScoredNode => !!entry)
+      .sort((a, b) => a.score - b.score)
+      .slice(0, 6)
+      .map((entry) => entry.node);
+
+    return scored;
+  }, []);
+
+  const evaluateLinkSearch = useCallback(
+    (view: any) => {
+      if (!view) return;
+      const selection = view.state.selection?.main;
+      if (!selection || !selection.empty) {
+        closeLinkSearch();
+        return;
+      }
+
+      const cursorPos = selection.head;
+      const textBefore = view.state.doc.sliceString(0, cursorPos);
+      const start = textBefore.lastIndexOf("[[");
+      if (start === -1) {
+        closeLinkSearch();
+        return;
+      }
+      const closingIndex = textBefore.indexOf("]]", start + 2);
+      if (closingIndex !== -1) {
+        closeLinkSearch();
+        return;
+      }
+
+      const rawQuery = view.state.doc.sliceString(start + 2, cursorPos);
+      if (rawQuery.includes("|") || rawQuery.includes("\n")) {
+        closeLinkSearch();
+        return;
+      }
+      activeLinkStartRef.current = start;
+      const query = rawQuery;
+      const coords = view.coordsAtPos(cursorPos);
+      const containerRect = containerRef.current?.getBoundingClientRect();
+      if (!coords || !containerRect) {
+        closeLinkSearch();
+        return;
+      }
+
+      const matches = computeLinkMatches(query);
+      setLinkResults(matches);
+      setActiveResultIndex((prev) =>
+            matches.length === 0 ? 0 : Math.min(prev, matches.length - 1)
+          );
+      const rawLeft = coords.left - containerRect.left;
+      const rawTop = coords.bottom - containerRect.top + 4;
+      const maxLeft =
+        containerRect.width - INLINE_LINK_DROPDOWN_WIDTH - 8;
+      const clampedLeft = Math.max(
+        0,
+        Math.min(rawLeft, Math.max(maxLeft, 0))
+      );
+      setLinkDropdown({
+        position: {
+          left: clampedLeft,
+          top: rawTop,
+        },
+        query,
+      });
+    },
+    [closeLinkSearch, computeLinkMatches]
+  );
+
+  const insertInternalLink = useCallback(
+    (title: string) => {
+      const view = viewRef.current?.view;
+      const start = activeLinkStartRef.current;
+      if (!view || start == null) return;
+      const head = view.state.selection.main.head;
+      const insertText = `[[${title}]]`;
+
+      view.dispatch({
+        changes: { from: start, to: head, insert: insertText },
+        selection: { anchor: start + insertText.length },
+        scrollIntoView: true,
+      });
+      view.focus();
+      closeLinkSearch();
+    },
+    [closeLinkSearch]
+  );
+
+  const handleResultSelect = useCallback(
+    (node: GraphNode) => {
+      insertInternalLink(getNodeTitle(node));
+    },
+    [insertInternalLink]
+  );
+
+  const selectActiveResult = useCallback(() => {
+    if (!linkResults.length) {
+      closeLinkSearch();
+      return;
+    }
+    const index = Math.min(activeResultIndex, linkResults.length - 1);
+    const node = linkResults[index];
+    if (node) {
+      handleResultSelect(node);
+    }
+  }, [activeResultIndex, linkResults, handleResultSelect, closeLinkSearch]);
+
+  useEffect(() => {
+    if (!linkDropdown) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setActiveResultIndex((prev) =>
+          Math.min(prev + 1, Math.max(linkResults.length - 1, 0))
+        );
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setActiveResultIndex((prev) => Math.max(prev - 1, 0));
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        selectActiveResult();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        closeLinkSearch();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [linkDropdown, linkResults.length, closeLinkSearch, selectActiveResult]);
+
+  useEffect(() => {
     let disposed = false;
     let viewInstance: any = null;
     let cmModules: LoadedCodeMirror | null = null;
+    let blurHandler: (() => void) | null = null;
 
     const init = async () => {
       try {
         cmModules = await loadCodeMirror();
         if (disposed || !containerRef.current) return;
 
-        const livePreview = createLivePreviewPlugin(cmModules);
+        const livePreview = createLivePreviewPlugin(
+          cmModules,
+          () => onNavigateToNodeRef.current
+        );
         const editorKeymap = createEditorKeymap(cmModules);
         const tripleBacktickHandler = createTripleBacktickHandler(cmModules);
+        const updateListener = cmModules.EditorView.updateListener.of(
+          (update: any) => {
+            if (update.docChanged) {
+              onChangeRef.current(update.state.doc.toString());
+            }
+            if (
+              update.docChanged ||
+              update.selectionSet ||
+              update.viewportChanged
+            ) {
+              evaluateLinkSearch(update.view);
+            }
+          }
+        );
         const extensions = [
           cmModules.history(),
           cmModules.keymap.of([
@@ -503,11 +791,7 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
           cmModules.EditorView.lineWrapping,
           tripleBacktickHandler,
           livePreview,
-          cmModules.EditorView.updateListener.of((update: any) => {
-            if (update.docChanged) {
-              onChangeRef.current(update.state.doc.toString());
-            }
-          }),
+          updateListener,
           cmModules.EditorView.theme({
             "&": {
               backgroundColor: "transparent",
@@ -588,6 +872,11 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
               width: "1.25rem",
               color: "rgba(248,250,252,0.9)",
             },
+            ".cm-md-internal-link": {
+              color: "#7dd3fc",
+              textDecoration: "underline",
+              cursor: "pointer",
+            },
             ".cm-md-block-hidden": {
               display: "none",
             },
@@ -624,6 +913,9 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
           state,
           parent: containerRef.current,
         });
+        blurHandler = () => closeLinkSearch();
+        viewInstance.dom.addEventListener("blur", blurHandler);
+        evaluateLinkSearch(viewInstance);
         viewRef.current = { view: viewInstance, cm: cmModules };
       } catch (err) {
         console.error("Failed to load CodeMirror", err);
@@ -635,11 +927,14 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
     return () => {
       disposed = true;
       if (viewInstance) {
+        if (blurHandler) {
+          viewInstance.dom.removeEventListener("blur", blurHandler);
+        }
         viewInstance.destroy();
       }
       viewRef.current = null;
     };
-  }, [placeholder]);
+  }, [placeholder, evaluateLinkSearch, closeLinkSearch]);
 
   useEffect(() => {
     if (!viewRef.current) return;
@@ -653,9 +948,77 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
   }, [initialContent]);
 
   return (
-    <div
-      ref={containerRef}
-      className={`h-full w-full ${className ?? ""}`}
-    />
+    <div className="relative h-full w-full">
+      <div
+        ref={containerRef}
+        className={`h-full w-full ${className ?? ""}`}
+      />
+      {linkDropdown && (
+        <div
+          className="absolute z-50 rounded-xl border border-slate-700 bg-slate-900/95 text-slate-100 shadow-2xl pointer-events-auto backdrop-blur"
+          style={{
+            left: linkDropdown.position.left,
+            top: linkDropdown.position.top,
+            width: INLINE_LINK_DROPDOWN_WIDTH,
+          }}
+        >
+          <div className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400 border-b border-slate-800">
+            Link to existing node
+          </div>
+          <div className="max-h-64 overflow-y-auto">
+            {linkResults.length === 0 ? (
+              <div className="px-3 py-3 text-xs text-slate-500">
+                {allNodesRef.current?.length
+                  ? "No nodes match that title."
+                  : "No nodes available yet."}
+              </div>
+            ) : (
+              linkResults.map((result, index) => {
+                const title = getNodeTitle(result);
+                const description =
+                  result.summary || (result.content || "").slice(0, 120);
+                const colorClass =
+                  (result.color && NODE_COLORS[result.color]?.indicator) ||
+                  NODE_COLORS.slate.indicator;
+                const isActive = index === activeResultIndex;
+                return (
+                  <button
+                    key={result.id}
+                    type="button"
+                    className={`w-full px-3 py-2 flex gap-3 text-left items-center transition-colors ${
+                      isActive
+                        ? "bg-sky-700/30 text-white"
+                        : "hover:bg-slate-800/70"
+                    }`}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      handleResultSelect(result);
+                    }}
+                  >
+                    <span
+                      className={`w-2 h-2 rounded-full shrink-0 ${colorClass}`}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-semibold truncate">
+                        {title}
+                      </div>
+                      {description && (
+                        <div className="text-xs text-slate-400 truncate">
+                          {description}
+                        </div>
+                      )}
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </div>
+          <div className="px-3 py-1.5 text-[10px] text-slate-500 border-t border-slate-800">
+            Type to filter • Enter to select • Esc to dismiss
+          </div>
+        </div>
+      )}
+    </div>
   );
 };
