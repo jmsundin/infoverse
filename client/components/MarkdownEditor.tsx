@@ -25,6 +25,7 @@ type LoadedCodeMirror = {
   languages: any;
   syntaxHighlighting: any;
   defaultHighlightStyle: any;
+  hljs: any;
 };
 
 const cmImport = (specifier: string) =>
@@ -42,6 +43,7 @@ const loadCodeMirror = async (): Promise<LoadedCodeMirror> => {
         markdownModule,
         languageModule,
         languageDataModule,
+        highlightModule,
       ] = await Promise.all([
         import(/* @vite-ignore */ cmImport("@codemirror/view@6.39.3")),
         import(/* @vite-ignore */ cmImport("@codemirror/state@6.5.2")),
@@ -49,7 +51,9 @@ const loadCodeMirror = async (): Promise<LoadedCodeMirror> => {
         import(/* @vite-ignore */ cmImport("@codemirror/lang-markdown@6.5.0")),
         import(/* @vite-ignore */ cmImport("@codemirror/language@6.11.3")),
         import(/* @vite-ignore */ cmImport("@codemirror/language-data@6.5.2")),
+        import(/* @vite-ignore */ cmImport("highlight.js@11.9.0")),
       ]);
+      const hljs = (highlightModule.default || highlightModule) as any;
 
       return {
         EditorView: viewModule.EditorView,
@@ -69,6 +73,7 @@ const loadCodeMirror = async (): Promise<LoadedCodeMirror> => {
         languages: languageDataModule.languages,
         syntaxHighlighting: languageModule.syntaxHighlighting,
         defaultHighlightStyle: languageModule.defaultHighlightStyle,
+        hljs,
       };
     })();
   }
@@ -76,8 +81,15 @@ const loadCodeMirror = async (): Promise<LoadedCodeMirror> => {
   return loadPromise;
 };
 
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
 const createLivePreviewPlugin = (cm: LoadedCodeMirror) => {
-  const { ViewPlugin, Decoration, WidgetType, syntaxTree } = cm;
+  const { ViewPlugin, Decoration, WidgetType, syntaxTree, hljs } = cm;
 
   const getActiveLineNumbers = (state: any) => {
     const lines = new Set<number>();
@@ -107,10 +119,52 @@ const createLivePreviewPlugin = (cm: LoadedCodeMirror) => {
     return false;
   };
 
+  const highlightCode = (code: string, lang?: string | null) => {
+    if (!code) return "";
+    if (!hljs || typeof hljs.highlight !== "function") return escapeHtml(code);
+    try {
+      if (lang && hljs.getLanguage?.(lang)) {
+        return hljs.highlight(code, { language: lang }).value;
+      }
+      return hljs.highlightAuto(code).value;
+    } catch {
+      return escapeHtml(code);
+    }
+  };
+
+  class CodeBlockWidget extends WidgetType {
+    html: string;
+    langLabel: string | null;
+    constructor(html: string, langLabel: string | null) {
+      super();
+      this.html = html;
+      this.langLabel = langLabel;
+    }
+    eq(other: CodeBlockWidget) {
+      return other.html === this.html && other.langLabel === this.langLabel;
+    }
+    toDOM() {
+      const wrapper = document.createElement("div");
+      wrapper.className = "cm-md-codeblock";
+      if (this.langLabel) {
+        const badge = document.createElement("span");
+        badge.className = "cm-md-codeblock-lang";
+        badge.textContent = this.langLabel.toUpperCase();
+        wrapper.appendChild(badge);
+      }
+      const pre = document.createElement("pre");
+      pre.className = "hljs";
+      pre.innerHTML = this.html;
+      wrapper.appendChild(pre);
+      return wrapper;
+    }
+  }
+
   const computeDecorations = (view: any) => {
     const ranges: any[] = [];
     const activeLines = getActiveLineNumbers(view.state);
     const processedLines = new Set<number>();
+    const suppressedRanges: Array<{ from: number; to: number }> = [];
 
     class BulletWidget extends WidgetType {
       bulletChar: string;
@@ -245,45 +299,37 @@ const createLivePreviewPlugin = (cm: LoadedCodeMirror) => {
             }
           } else if (node.name === "FencedCode") {
             if (nodeTouchesActiveLine(view.state, node, activeLines)) return;
-            const startLine = view.state.doc.lineAt(node.from);
-            const endLine = view.state.doc.lineAt(Math.max(node.to - 1, node.from));
-            const startLineHasBreak =
-              startLine.number < view.state.doc.lines ? startLine.to + 1 : startLine.to;
-            let contentStart = node.from;
+            const fenceLine = view.state.doc.lineAt(node.from);
+            const langMatch = fenceLine.text.match(/^```([^\s]*)?/);
+            const langLabel = langMatch?.[1]?.trim() || null;
+            const afterFenceStart =
+              fenceLine.number < view.state.doc.lines
+                ? fenceLine.to + 1
+                : fenceLine.to;
+            const endLine = view.state.doc.lineAt(
+              Math.max(node.to - 1, node.from)
+            );
+            let contentStart = Math.min(afterFenceStart, node.to);
             let contentEnd = node.to;
-
-            if (startLine.text.trimStart().startsWith("```")) {
-              const hideEnd = Math.min(node.to, startLineHasBreak);
-              ranges.push(
-                Decoration.mark({ class: "cm-md-hidden" }).range(
-                  startLine.from,
-                  hideEnd
-                )
-              );
-              contentStart = Math.min(hideEnd, node.to);
+            if (endLine.number !== fenceLine.number) {
+              if (endLine.text.trim().startsWith("```")) {
+                contentEnd = Math.max(contentStart, endLine.from);
+              }
             }
-
-            if (
-              endLine.number !== startLine.number &&
-              endLine.text.trim().startsWith("```")
-            ) {
-              ranges.push(
-                Decoration.mark({ class: "cm-md-hidden" }).range(
-                  endLine.from,
-                  endLine.to
-                )
-              );
-              contentEnd = Math.max(contentStart, endLine.from);
-            }
-
-            if (contentStart < contentEnd) {
-              ranges.push(
-                Decoration.mark({ class: "cm-md-codeblock" }).range(
-                  contentStart,
-                  contentEnd
-                )
-              );
-            }
+            const code = view.state.sliceDoc(contentStart, contentEnd);
+            const html = highlightCode(code, langLabel?.toLowerCase());
+            ranges.push(
+              Decoration.widget({
+                widget: new CodeBlockWidget(html, langLabel),
+              }).range(fenceLine.from, fenceLine.from)
+            );
+            ranges.push(
+              Decoration.mark({ class: "cm-md-block-hidden" }).range(
+                fenceLine.from,
+                node.to
+              )
+            );
+            suppressedRanges.push({ from: fenceLine.from, to: node.to });
           }
         },
       });
@@ -293,6 +339,15 @@ const createLivePreviewPlugin = (cm: LoadedCodeMirror) => {
       let line = view.state.doc.lineAt(from);
       while (true) {
         if (!processedLines.has(line.number)) {
+          const isSuppressed = suppressedRanges.some(
+            (range) => line.from >= range.from && line.from < range.to
+          );
+          if (isSuppressed) {
+            processedLines.add(line.number);
+            if (line.to >= to || line.number >= view.state.doc.lines) break;
+            line = view.state.doc.line(line.number + 1);
+            continue;
+          }
           const match = line.text.match(/^(\s*)([-*])\s+/);
           if (match) {
             const indentLength = match[1].length;
@@ -389,6 +444,21 @@ const createEditorKeymap = (cm: LoadedCodeMirror) => {
   ];
 };
 
+const createTripleBacktickHandler = (cm: LoadedCodeMirror) =>
+  cm.EditorView.inputHandler.of((view: any, from: number, to: number, text: string) => {
+    if (text !== "`" || from !== to) return false;
+    if (from < 2) return false;
+    const prevTwo = view.state.doc.sliceString(from - 2, from);
+    if (prevTwo !== "``") return false;
+    const insertText = "`\n\n```";
+    view.dispatch({
+      changes: { from, to, insert: insertText },
+      selection: { anchor: from + 2 },
+      scrollIntoView: true,
+    });
+    return true;
+  });
+
 export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
   initialContent,
   onChange,
@@ -415,6 +485,7 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
 
         const livePreview = createLivePreviewPlugin(cmModules);
         const editorKeymap = createEditorKeymap(cmModules);
+        const tripleBacktickHandler = createTripleBacktickHandler(cmModules);
         const extensions = [
           cmModules.history(),
           cmModules.keymap.of([
@@ -430,6 +501,7 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
             fallback: true,
           }),
           cmModules.EditorView.lineWrapping,
+          tripleBacktickHandler,
           livePreview,
           cmModules.EditorView.updateListener.of((update: any) => {
             if (update.docChanged) {
@@ -492,6 +564,7 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
             },
             ".cm-md-codeblock": {
               display: "block",
+              position: "relative",
               backgroundColor: "rgba(15,23,42,0.75)",
               borderRadius: "0.5rem",
               padding: "0.75rem",
@@ -501,10 +574,39 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
               margin: "0.25rem 0",
               whiteSpace: "pre",
             },
+            ".cm-md-codeblock-lang": {
+              position: "absolute",
+              top: "0.35rem",
+              right: "0.5rem",
+              fontSize: "0.65rem",
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "rgba(148, 163, 184, 0.9)",
+            },
             ".cm-md-bullet": {
               display: "inline-block",
               width: "1.25rem",
               color: "rgba(248,250,252,0.9)",
+            },
+            ".cm-md-block-hidden": {
+              display: "none",
+            },
+            ".hljs": {
+              color: "#e2e8f0",
+              background: "transparent",
+            },
+            ".hljs-keyword, .hljs-selector-tag, .hljs-literal": {
+              color: "#93c5fd",
+            },
+            ".hljs-string, .hljs-title, .hljs-section, .hljs-attribute": {
+              color: "#bef264",
+            },
+            ".hljs-number, .hljs-name, .hljs-type": {
+              color: "#f472b6",
+            },
+            ".hljs-comment": {
+              color: "#94a3b8",
+              fontStyle: "italic",
             },
           }),
         ];

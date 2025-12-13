@@ -291,6 +291,11 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       }
     };
 
+    const noteTitleLine = useMemo(() => {
+      if (node.type !== NodeType.NOTE) return "";
+      return (node.content || "").split("\n")[0] || "";
+    }, [node.type, node.content]);
+
     const markdownComponents = useMemo(
       () => ({
         ul: ({ node, ...props }: any) => (
@@ -360,6 +365,39 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
           );
         },
         pre: (props: any) => <div className="not-prose" {...props} />,
+      }),
+      []
+    );
+
+    const titleMarkdownComponents = useMemo(
+      () => ({
+        h1: ({ node, ...props }: any) => (
+          <span className="font-bold text-[1.05em]" {...props} />
+        ),
+        h2: ({ node, ...props }: any) => (
+          <span className="font-semibold" {...props} />
+        ),
+        h3: ({ node, ...props }: any) => (
+          <span className="font-medium" {...props} />
+        ),
+        h4: ({ node, ...props }: any) => (
+          <span className="font-medium" {...props} />
+        ),
+        h5: ({ node, ...props }: any) => (
+          <span className="font-medium" {...props} />
+        ),
+        h6: ({ node, ...props }: any) => (
+          <span className="font-medium" {...props} />
+        ),
+        p: ({ node, ...props }: any) => <span {...props} />,
+        strong: ({ node, ...props }: any) => <strong {...props} />,
+        em: ({ node, ...props }: any) => <em {...props} />,
+        code: ({ node, ...props }: any) => (
+          <code className="bg-black/30 px-1 rounded text-[0.85em]" {...props} />
+        ),
+        a: ({ node, ...props }: any) => (
+          <span className="underline" {...props} />
+        ),
       }),
       []
     );
@@ -933,10 +971,6 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
             }}
           >
             <div className={`flex items-center gap-2 overflow-hidden flex-1`}>
-              <span className={isSidebar ? "text-xl" : "text-lg"}>
-                {node.type === NodeType.CHAT ? "💬" : "📝"}
-              </span>
-
               {isEditingTitle ? (
                 <input
                   type="text"
@@ -956,7 +990,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                   <span
                     className={`font-bold ${
                       colorTheme.text
-                    } uppercase tracking-wider truncate cursor-text hover:underline decoration-slate-500/50 underline-offset-2 ${
+                    } truncate cursor-text hover:underline decoration-slate-500/50 underline-offset-2 ${
                       isSidebar ? "text-lg" : "text-xs"
                     }`}
                     onDoubleClick={(e) => {
@@ -966,12 +1000,35 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     }}
                     title={"Double click to rename"}
                   >
-                    {node.type === NodeType.NOTE && !node.content
-                      ? "Empty Note"
-                      : node.type === NodeType.NOTE
-                      ? node.content.split("\n")[0].substring(0, 25) +
-                        (node.content.length > 25 ? "..." : "")
-                      : node.content}
+                    {node.type === NodeType.NOTE ? (
+                      !noteTitleLine.trim() ? (
+                        "Empty Note"
+                      ) : (
+                        <ReactMarkdown
+                          components={titleMarkdownComponents}
+                          allowedElements={[
+                            "p",
+                            "strong",
+                            "em",
+                            "code",
+                            "span",
+                            "h1",
+                            "h2",
+                            "h3",
+                            "h4",
+                            "h5",
+                            "h6",
+                            "a",
+                          ]}
+                          unwrapDisallowed
+                          className="inline"
+                        >
+                          {noteTitleLine}
+                        </ReactMarkdown>
+                      )
+                    ) : (
+                      node.content
+                    )}
                   </span>
                 </>
               )}
