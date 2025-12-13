@@ -1,6 +1,6 @@
 
 import React, { useState, useMemo } from 'react';
-import { GraphNode } from '../types';
+import { GraphNode, NodeType } from '../types';
 import { NODE_COLORS } from '../constants';
 
 interface NodeListDrawerProps {
@@ -15,21 +15,39 @@ export const NodeListDrawer: React.FC<NodeListDrawerProps> = ({ nodes, isOpen, o
   const [searchTerm, setSearchTerm] = useState('');
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
+  const [typeFilter, setTypeFilter] = useState<'ALL' | NodeType>('ALL');
+  const filterOptions = useMemo<{ label: string; value: 'ALL' | NodeType }[]>(() => [
+    { label: 'All', value: 'ALL' },
+    { label: 'Chat', value: NodeType.CHAT },
+    { label: 'Note', value: NodeType.NOTE },
+  ], []);
+
+  const filterCounts = useMemo<Record<'ALL' | NodeType, number>>(() => {
+    const chatCount = nodes.filter(node => node.type === NodeType.CHAT).length;
+    const noteCount = nodes.filter(node => node.type === NodeType.NOTE).length;
+    return {
+      ALL: nodes.length,
+      [NodeType.CHAT]: chatCount,
+      [NodeType.NOTE]: noteCount,
+    };
+  }, [nodes]);
 
   const filteredNodes = useMemo(() => {
+    const scopedNodes = typeFilter === 'ALL' ? nodes : nodes.filter(node => node.type === typeFilter);
+
     if (!searchTerm.trim()) {
-      return [...nodes].sort((a, b) => (a.content || 'Untitled').localeCompare(b.content || 'Untitled'));
+      return [...scopedNodes].sort((a, b) => (a.content || 'Untitled').localeCompare(b.content || 'Untitled'));
     }
-    
+
     const lowerTerm = searchTerm.toLowerCase();
     const terms = lowerTerm.split(/\s+/).filter(t => t.length > 0);
 
-    return nodes.filter(node => {
+    return scopedNodes.filter(node => {
       const content = (node.content || '').toLowerCase();
       // "Fuzzy" check: all typed terms must appear in the content
       return terms.every(term => content.includes(term));
     }).sort((a, b) => (a.content || 'Untitled').localeCompare(b.content || 'Untitled'));
-  }, [nodes, searchTerm]);
+  }, [nodes, searchTerm, typeFilter]);
 
   const handleStartEdit = (e: React.MouseEvent | React.TouchEvent, node: GraphNode) => {
       e.stopPropagation();
@@ -68,18 +86,41 @@ export const NodeListDrawer: React.FC<NodeListDrawerProps> = ({ nodes, isOpen, o
           </div>
           
           {/* Drawer Search */}
-          <div className="relative">
-             <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none">
-                <svg className="h-3.5 w-3.5 text-slate-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-             </div>
-             <input 
-                type="text"
-                placeholder="Find a node..."
-                className="w-full bg-slate-800 border border-slate-700 text-slate-200 text-sm rounded-lg py-1.5 pl-8 pr-3 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-all placeholder-slate-500"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                autoFocus={!editingNodeId}
-             />
+          <div className="space-y-2">
+            <div className="relative">
+               <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none">
+                  <svg className="h-3.5 w-3.5 text-slate-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+               </div>
+               <input 
+                  type="text"
+                  placeholder="Find a node..."
+                  className="w-full bg-slate-800 border border-slate-700 text-slate-200 text-sm rounded-lg py-1.5 pl-8 pr-3 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-all placeholder-slate-500"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  autoFocus={!editingNodeId}
+               />
+            </div>
+            <div className="grid grid-cols-3 gap-1.5 text-[11px] font-bold uppercase w-full max-w-[180px]">
+              {filterOptions.map(option => {
+                const isActive = typeFilter === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    onClick={() => setTypeFilter(option.value)}
+                    className={`px-2 py-1 rounded-md border transition-colors flex items-center justify-between gap-1 ${
+                      isActive
+                        ? 'border-sky-500 bg-sky-900/40 text-sky-300'
+                        : 'border-slate-700 bg-slate-800/80 text-slate-400 hover:border-slate-600'
+                    }`}
+                  >
+                    <span className="text-[10px] font-normal tracking-wide text-slate-500">
+                      {filterCounts[option.value]}
+                    </span>
+                    <span>{option.label}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
         
@@ -90,6 +131,11 @@ export const NodeListDrawer: React.FC<NodeListDrawerProps> = ({ nodes, isOpen, o
                  <>
                    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="opacity-50"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                    <p className="text-sm">No nodes found for "{searchTerm}"</p>
+                 </>
+               ) : typeFilter !== 'ALL' ? (
+                 <>
+                   <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="opacity-50"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                   <p className="text-sm">No {typeFilter.toLowerCase()} nodes yet.</p>
                  </>
                ) : (
                  <>

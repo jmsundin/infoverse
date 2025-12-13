@@ -94,7 +94,8 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     const isSidebar = viewMode === "sidebar";
 
     const sidePanelContext = useContext(SidePanelContext);
-    const dragListeners = isSidebar && sidePanelContext ? sidePanelContext.dragListeners : {};
+    const dragListeners =
+      isSidebar && sidePanelContext ? sidePanelContext.dragListeners : undefined;
 
     // Semantic Zoom Modes
     const isClusterMode = lodLevel === "CLUSTER" && !isSelected && !isSidebar && !isClusterParent;
@@ -259,13 +260,12 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       setIsEditingTitle(false);
     };
 
-    // Hybrid Editing Logic for Notes
-    const handleNoteContentChange = (
-      e: React.ChangeEvent<HTMLTextAreaElement>
-    ) => {
-      const newVal = e.target.value;
-      onUpdate(node.id, { content: newVal });
-    };
+    const handleNoteEditorChange = useCallback(
+      (content: string) => {
+        onUpdate(node.id, { content });
+      },
+      [node.id, onUpdate]
+    );
 
     const openNodeInSidePaneForMobileInput = useCallback(() => {
       if (isSidebar) return;
@@ -274,7 +274,9 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       onToggleMaximize(node.id);
     }, [isSidebar, onToggleMaximize, node.id]);
 
-    const handleNoteFocus = (e: React.MouseEvent) => {
+    const handleNotePointerDown = (
+      e: React.MouseEvent | React.TouchEvent
+    ) => {
       e.stopPropagation();
       openNodeInSidePaneForMobileInput();
     };
@@ -908,18 +910,22 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
             } 
             ${!isSidebar ? "border-b " + colorTheme.border : ""} 
             ${
-              !isSidebar || dragListeners.onMouseDown ? (isDragging || dragListeners.onMouseDown ? "cursor-grabbing" : "cursor-grab") : ""
+              !isSidebar || dragListeners?.onMouseDown
+                ? isDragging || dragListeners?.onMouseDown
+                  ? "cursor-grabbing"
+                  : "cursor-grab"
+                : ""
             } select-none relative touch-none shrink-0`}
             style={{ height: NODE_HEADER_HEIGHT }}
             onDoubleClick={handleDoubleClick}
             onTouchStart={(e) => {
-               if (dragListeners.onTouchStart) dragListeners.onTouchStart(e);
+               if (dragListeners?.onTouchStart) dragListeners.onTouchStart(e);
                handleTouchStart(e);
             }}
             onTouchEnd={handleTouchEnd}
             onTouchMove={handleTouchMove}
             onMouseDown={(e) => {
-               if (dragListeners.onMouseDown) {
+               if (dragListeners?.onMouseDown) {
                  dragListeners.onMouseDown(e);
                } else if (!isSidebar && onMouseDown) {
                  onMouseDown(e, node.id);
@@ -979,7 +985,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
 
             {isSidebar && (
               <div className="flex items-center gap-2">
-                {dragListeners.onMouseDown && (
+                {dragListeners?.onMouseDown && (
                    <div 
                       className="cursor-grab active:cursor-grabbing p-1 text-slate-400 hover:text-white mr-1"
                       {...dragListeners}
@@ -1122,16 +1128,23 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
               {node.type === NodeType.NOTE ? (
                 isSelected || isSidebar ? (
                   <div
-                    className={`w-full h-full ${
-                      colorTheme.text
-                    } ${
-                      isSidebar
-                        ? "text-base p-6 leading-relaxed"
-                        : "text-sm p-3"
-                    } pointer-events-auto`}
-                    placeholder="Write a note (Markdown supported)..."
-                    onMouseDown={(e) => e.stopPropagation()}
-                  />
+                    className="w-full h-full pointer-events-auto"
+                    onMouseDown={handleNotePointerDown}
+                    onTouchStart={handleNotePointerDown}
+                  >
+                    <MarkdownEditor
+                      initialContent={node.content || ""}
+                      onChange={handleNoteEditorChange}
+                      className={`w-full h-full ${
+                        colorTheme.text
+                      } ${
+                        isSidebar
+                          ? "text-base p-6 leading-relaxed"
+                          : "text-sm p-3"
+                      }`}
+                      placeholder="Write a note (Markdown supported)..."
+                    />
+                  </div>
                 ) : (
                   <div
                     className={`w-full h-full overflow-y-auto overflow-x-hidden ${

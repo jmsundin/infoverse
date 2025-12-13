@@ -58,6 +58,49 @@ const LOCAL_STORAGE_KEY = "wiki-graph-data";
 const WIKIDATA_SUBTOPIC_LIMIT = 12;
 const WIKIDATA_MAX_RECURSIVE_NODES_PER_LEVEL = 5;
 
+const getDefaultNodePosition = () => {
+  if (typeof window === "undefined") {
+    return { x: 0, y: 0 };
+  }
+
+  return {
+    x: window.innerWidth / 2 - DEFAULT_NODE_WIDTH / 2,
+    y: window.innerHeight / 2 - DEFAULT_NODE_HEIGHT / 2,
+  };
+};
+
+const createDefaultGraphNodes = (): GraphNode[] => {
+  const { x, y } = getDefaultNodePosition();
+  return [
+    {
+      id: "1",
+      type: NodeType.CHAT,
+      x,
+      y,
+      content: "Infoverse",
+      messages: [
+        {
+          role: "model",
+          text: "Welcome to Infoverse! \n\nI am an infinite, AI-powered knowledge canvas. \n\nAsk me anything to visualize a topic, or click the expand icon (top right) to discover related concepts.",
+          timestamp: Date.now(),
+        },
+      ],
+      width: DEFAULT_NODE_WIDTH,
+      height: DEFAULT_NODE_HEIGHT,
+    },
+  ];
+};
+
+type LocalGraphSnapshot = {
+  nodes?: GraphNode[];
+  edges?: GraphEdge[];
+  autoGraphEnabled?: boolean;
+  viewTransform?: ViewportTransform;
+  currentScopeId?: string | null;
+  selectedNodeIds?: string[];
+  selectedNodeId?: string;
+};
+
 // Helper to parse text into nodes locally without API call
 const parseTextToNodes = (text: string) => {
   const subNodes: { name: string; description: string; indent: number }[] = [];
@@ -105,107 +148,90 @@ const parseTextToNodes = (text: string) => {
 };
 
 const App: React.FC = () => {
-  // Initial State with LocalStorage check
-  const [nodes, setNodes] = useState<GraphNode[]>(() => {
-    try {
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.nodes && Array.isArray(parsed.nodes)) return parsed.nodes;
-      }
-    } catch (e) {
-      console.error("Failed to load from local storage", e);
-    }
-
-    // Default Welcome Node
-    return [
-      {
-        id: "1",
-        type: NodeType.CHAT,
-        x: window.innerWidth / 2 - DEFAULT_NODE_WIDTH / 2,
-        y: window.innerHeight / 2 - DEFAULT_NODE_HEIGHT / 2,
-        content: "Infoverse",
-        messages: [
-          {
-            role: "model",
-            text: "Welcome to Infoverse! \n\nI am an infinite, AI-powered knowledge canvas. \n\nAsk me anything to visualize a topic, or click the expand icon (top right) to discover related concepts.",
-            timestamp: Date.now(),
-          },
-        ],
-        width: DEFAULT_NODE_WIDTH,
-        height: DEFAULT_NODE_HEIGHT,
-      },
-    ];
-  });
-
-  const [edges, setEdges] = useState<GraphEdge[]>(() => {
-    try {
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.edges && Array.isArray(parsed.edges)) return parsed.edges;
-      }
-    } catch (e) {
-      console.error("Failed to load edges from local storage", e);
-    }
-    return [];
-  });
-
-  const [autoGraphEnabled, setAutoGraphEnabled] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return parsed.autoGraphEnabled !== undefined
-          ? !!parsed.autoGraphEnabled
-          : true;
-      }
-    } catch (e) {}
-    return true;
-  });
-
+  const [nodes, setNodes] = useState<GraphNode[]>(createDefaultGraphNodes);
+  const [edges, setEdges] = useState<GraphEdge[]>([]);
+  const [autoGraphEnabled, setAutoGraphEnabled] = useState<boolean>(true);
   // Viewport State (lifted from Canvas)
-  const [viewTransform, setViewTransform] = useState<ViewportTransform>(() => {
-    try {
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.viewTransform) return parsed.viewTransform;
-      }
-    } catch (e) {
-      console.error("Failed to load viewTransform from local storage", e);
-    }
-    return { x: 0, y: 0, k: 1 };
+  const [viewTransform, setViewTransform] = useState<ViewportTransform>({
+    x: 0,
+    y: 0,
+    k: 1,
   });
 
   // UI State
-  const [currentScopeId, setCurrentScopeId] = useState<string | null>(() => {
-    try {
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return parsed.currentScopeId || null;
-      }
-    } catch (e) {}
-    return null;
-  });
+  const [currentScopeId, setCurrentScopeId] = useState<string | null>(null);
 
-  const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => {
+  const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(
+    () => new Set()
+  );
+
+  const [localStorageReady, setLocalStorageReady] = useState(false);
+
+  const resetGraphState = useCallback(() => {
+    setNodes(createDefaultGraphNodes());
+    setEdges([]);
+    setViewTransform({ x: 0, y: 0, k: 1 });
+    setCurrentScopeId(null);
+    setSelectedNodeIds(new Set());
+    setAutoGraphEnabled(true);
+  }, []);
+
+  const loadGraphFromLocalStorage = useCallback(() => {
+    if (typeof window === "undefined") return;
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        // Migration: Check for old selectedNodeId (string) or new selectedNodeIds (array)
-        if (parsed.selectedNodeIds && Array.isArray(parsed.selectedNodeIds)) {
-          return new Set(parsed.selectedNodeIds);
-        }
-        if (parsed.selectedNodeId) {
-          return new Set([parsed.selectedNodeId]);
-        }
+      if (!saved) {
+        resetGraphState();
+        return;
       }
-    } catch (e) {}
-    return new Set();
-  });
+
+      const parsed: LocalGraphSnapshot & {
+        viewTransform?: ViewportTransform;
+        autoGraphEnabled?: boolean;
+      } = JSON.parse(saved);
+
+      if (parsed.nodes && Array.isArray(parsed.nodes)) {
+        setNodes(parsed.nodes);
+      } else {
+        setNodes(createDefaultGraphNodes());
+      }
+
+      if (parsed.edges && Array.isArray(parsed.edges)) {
+        setEdges(parsed.edges);
+      } else {
+        setEdges([]);
+      }
+
+      if (parsed.viewTransform) {
+        setViewTransform(parsed.viewTransform);
+      } else {
+        setViewTransform({ x: 0, y: 0, k: 1 });
+      }
+
+      if (parsed.currentScopeId !== undefined) {
+        setCurrentScopeId(parsed.currentScopeId || null);
+      } else {
+        setCurrentScopeId(null);
+      }
+
+      if (parsed.selectedNodeIds && Array.isArray(parsed.selectedNodeIds)) {
+        setSelectedNodeIds(new Set(parsed.selectedNodeIds));
+      } else if (parsed.selectedNodeId) {
+        setSelectedNodeIds(new Set([parsed.selectedNodeId]));
+      } else {
+        setSelectedNodeIds(new Set());
+      }
+
+      setAutoGraphEnabled(
+        parsed.autoGraphEnabled !== undefined
+          ? !!parsed.autoGraphEnabled
+          : true
+      );
+    } catch (e) {
+      console.error("Failed to load from local storage", e);
+      resetGraphState();
+    }
+  }, [resetGraphState]);
 
   const selectedNodeId =
     selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null;
@@ -238,6 +264,8 @@ const App: React.FC = () => {
     edges: GraphEdge[];
     timer: number | null;
   } | null>(null);
+  const hasLoadedLocalGraphRef = useRef(false);
+  const hasCenteredOnStoredSelectionRef = useRef(false);
 
   // File System State
   const [dirHandle, setDirHandle] = useState<FileSystemDirectoryHandle | null>(
@@ -299,6 +327,25 @@ const App: React.FC = () => {
 
   const [showLimitModal, setShowLimitModal] = useState(false);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    if (!user) {
+      hasLoadedLocalGraphRef.current = false;
+      hasCenteredOnStoredSelectionRef.current = false;
+      setLocalStorageReady(false);
+      resetGraphState();
+      return;
+    }
+
+    if (!hasLoadedLocalGraphRef.current) {
+      loadGraphFromLocalStorage();
+      hasLoadedLocalGraphRef.current = true;
+      hasCenteredOnStoredSelectionRef.current = false;
+    }
+    setLocalStorageReady(true);
+  }, [user, loadGraphFromLocalStorage, resetGraphState]);
 
   const prevNodesRef = useRef<GraphNode[]>(nodes);
   const prevEdgesRef = useRef<GraphEdge[]>(edges);
@@ -489,6 +536,9 @@ const App: React.FC = () => {
 
   // --- Local Storage Auto-Save ---
   useEffect(() => {
+    if (!localStorageReady) return;
+    if (typeof window === "undefined") return;
+
     const timeoutId = setTimeout(() => {
       const data = {
         nodes,
@@ -509,6 +559,7 @@ const App: React.FC = () => {
     autoGraphEnabled,
     currentScopeId,
     selectedNodeIds,
+    localStorageReady,
   ]);
 
   // --- File System Sync Effects ---
@@ -646,12 +697,13 @@ const App: React.FC = () => {
 
   // --- Initial Center on Selected Node ---
   useEffect(() => {
-    // If we have a selected node from storage, center on it
+    if (!localStorageReady) return;
+    if (hasCenteredOnStoredSelectionRef.current) return;
+
     if (selectedNodeIds.size > 0) {
       const primaryId = Array.from(selectedNodeIds)[0];
       const node = nodes.find((n) => n.id === primaryId);
       if (node) {
-        // Use k=1 for focus view
         const k = 1;
         const nodeW = node.width || DEFAULT_NODE_WIDTH;
         const nodeH = node.height || DEFAULT_NODE_HEIGHT;
@@ -663,9 +715,10 @@ const App: React.FC = () => {
         const newY = window.innerHeight / 2 - nodeCenterY * k;
 
         setViewTransform({ x: newX, y: newY, k });
+        hasCenteredOnStoredSelectionRef.current = true;
       }
     }
-  }, []); // Run once on mount
+  }, [localStorageReady, nodes, selectedNodeIds]);
 
   // --- Node Operations ---
   const handleNodeSelect = useCallback(
@@ -1956,6 +2009,7 @@ const App: React.FC = () => {
           <WebContent url={activeSidePane.data} onClose={handleCloseSidePane} />
         ) : sidebarNode ? (
           <GraphNodeComponent
+            key={sidebarNode.id}
             node={sidebarNode}
             viewMode="sidebar"
             onUpdate={handleUpdateNode}
@@ -2249,6 +2303,7 @@ const App: React.FC = () => {
               initialMode={authMode}
               onLogin={async (user) => {
                 setUser(user);
+                setShowAuth(false);
 
                 // Helper to sync local data to cloud on login
                 const syncToCloud = async () => {
@@ -2327,7 +2382,6 @@ const App: React.FC = () => {
                       setIsGraphLoaded(true);
                     });
                 }
-                setShowAuth(false);
                 // Redirect to app subdomain upon login
                 if (
                   window.location.hostname === "infoverse.ai" &&
