@@ -9,6 +9,11 @@ const rateLimiter = async (req, res, next) => {
     // 1. Identify User
     const userId = req.isAuthenticated() ? req.user.id : null;
 
+    // Unlimited access for admin/specific user
+    if (req.isAuthenticated() && req.user.isAdmin) {
+        return next();
+    }
+
     // 2. Identify IP
     // Handling proxies (Vercel, Nginx, etc.)
     const rawIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;

@@ -45,12 +45,16 @@ interface CanvasProps {
   viewTransform: ViewportTransform;
   onViewTransformChange: (transform: ViewportTransform) => void;
   onOpenStorage?: () => void;
+  onOpenSearch?: () => void;
   storageConnected?: boolean;
   storageDirName?: string | null;
   isSaving?: boolean;
+  profileButtonTitle?: string;
+  onOpenProfile?: () => void;
   onOpenLink: (url: string) => void;
   onMaximizeNode: (id: string) => void;
   onExpandNode: (id: string, topic: string) => void;
+  onExpandNodeFromWikidata?: (id: string, topic: string) => void;
   onDeleteNode: (id: string) => void;
   onUpdateNode: (id: string, updates: Partial<GraphNode>) => void;
   expandingNodeIds: string[];
@@ -77,6 +81,83 @@ const LOD_THRESHOLD_CLUSTER = 0.25;
 const LOD_THRESHOLD_TITLE = 0.5;
 const LOD_THRESHOLD_SEMANTIC_SHIFT = 0.05; // Trigger scope up very far out
 
+const CHILD_SURROUND_GAP_PX = 20;
+const CHILD_SURROUND_MIN_RING_SPACING_PX = 100;
+
+const getEffectiveNodeSize = (node: GraphNode) => {
+  return {
+    width: node.width ?? DEFAULT_NODE_WIDTH,
+    height: node.height ?? DEFAULT_NODE_HEIGHT,
+  };
+};
+
+const computeSurroundChildPositions = (parentNode: GraphNode, childNodes: GraphNode[]) => {
+  console.assert(!!parentNode?.id, "computeSurroundChildPositions: missing parentNode.id");
+  if (childNodes.length === 0) return new Map<string, { x: number; y: number }>();
+
+  const { width: parentWidth, height: parentHeight } = getEffectiveNodeSize(parentNode);
+  const parentCenterX = parentNode.x + parentWidth / 2;
+  const parentCenterY = parentNode.y + parentHeight / 2;
+
+  let maxChildDiagonal = 0;
+  for (const childNode of childNodes) {
+    const { width, height } = getEffectiveNodeSize(childNode);
+    const diagonal = Math.sqrt(width * width + height * height);
+    if (diagonal > maxChildDiagonal) maxChildDiagonal = diagonal;
+  }
+  const maxChildRadius = maxChildDiagonal / 2;
+
+  const baseRadius =
+    Math.max(parentWidth, parentHeight) / 2 + CHILD_SURROUND_GAP_PX + maxChildRadius;
+  const minPackingRadius =
+    (childNodes.length * (maxChildDiagonal + CHILD_SURROUND_GAP_PX)) / (2 * Math.PI);
+  const radius = Math.max(baseRadius, minPackingRadius);
+
+  const positionsById = new Map<string, { x: number; y: number }>();
+  const orderedChildren = [...childNodes].sort((a, b) => a.id.localeCompare(b.id));
+  for (let i = 0; i < orderedChildren.length; i++) {
+    const childNode = orderedChildren[i];
+    const { width: childWidth, height: childHeight } = getEffectiveNodeSize(childNode);
+
+    const ringIndex = Math.floor(i / 12);
+    const ringRadius = radius + ringIndex * CHILD_SURROUND_MIN_RING_SPACING_PX;
+    const indexWithinRing = i - ringIndex * 12;
+    const itemsInRing = Math.min(12, orderedChildren.length - ringIndex * 12);
+    const angle =
+      itemsInRing <= 1 ? 0 : (2 * Math.PI * indexWithinRing) / itemsInRing;
+
+    const childCenterX = parentCenterX + ringRadius * Math.cos(angle);
+    const childCenterY = parentCenterY + ringRadius * Math.sin(angle);
+    positionsById.set(childNode.id, {
+      x: childCenterX - childWidth / 2,
+      y: childCenterY - childHeight / 2,
+    });
+  }
+
+  return positionsById;
+};
+
+const resolveCollisionsInScope = (
+  allNodes: GraphNode[],
+  scopeEdges: GraphEdge[],
+  fixedNodeId: string | null,
+  currentScopeId: string | null | undefined
+) => {
+  const scopeNodes = allNodes.filter((n) => n.parentId == currentScopeId);
+  if (scopeNodes.length === 0) return allNodes;
+
+  const resolvedScopeNodes = resolveCollisionsService(
+    scopeNodes,
+    scopeEdges,
+    fixedNodeId ?? undefined
+  );
+  const resolvedById = new Map<string, GraphNode>(
+    resolvedScopeNodes.map((n) => [n.id, n])
+  );
+
+  return allNodes.map((node) => resolvedById.get(node.id) ?? node);
+};
+
 export const Canvas: React.FC<CanvasProps> = ({
   nodes,
   edges,
@@ -85,12 +166,16 @@ export const Canvas: React.FC<CanvasProps> = ({
   viewTransform,
   onViewTransformChange,
   onOpenStorage,
+  onOpenSearch,
   storageConnected = false,
   storageDirName,
   isSaving = false,
+  profileButtonTitle,
+  onOpenProfile,
   onOpenLink,
   onMaximizeNode,
   onExpandNode,
+  onExpandNodeFromWikidata,
   onDeleteNode,
   onUpdateNode,
   expandingNodeIds,
@@ -110,6 +195,9 @@ export const Canvas: React.FC<CanvasProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const longPressContextMenuTimerRef = useRef<number | null>(null);
+  const longPressContextMenuStartPointRef = useRef<{ x: number; y: number } | null>(null);
+  const longPressContextMenuOpenedRef = useRef(false);
   
   // Derived state
   const selectedNodeId = useMemo(() => 
@@ -152,6 +240,8 @@ export const Canvas: React.FC<CanvasProps> = ({
   const dragStartRef = useRef<{
     mouseX: number;
     mouseY: number;
+    lastX: number;
+    lastY: number;
     initialPositions: Map<string, { x: number; y: number }>;
     // Specifics for resize (which is always single node)
     nodeWidth?: number;
@@ -387,25 +477,34 @@ export const Canvas: React.FC<CanvasProps> = ({
     selection.call(zoom).on("dblclick.zoom", null);
     zoomBehaviorRef.current = zoom;
 
-    selection.on("wheel.pan", (event) => {
+    const wheelHandler = (event: WheelEvent) => {
       if (event.ctrlKey) return;
-      if (draggingIdRef.current || resizingIdRef.current) return;
+      if (draggingIdRef.current || resizingIdRef.current) {
+        event.preventDefault();
+        return;
+      }
+
       const target = event.target as HTMLElement;
       const nodeElement = target.closest(".graph-node") as HTMLElement;
       if (nodeElement && nodeElement.dataset.selected === "true") return;
 
       event.preventDefault();
+      event.stopPropagation();
+
       const currentK = d3.zoomTransform(selection.node()!).k;
       zoom.translateBy(
         selection,
         -event.deltaX / currentK,
         -event.deltaY / currentK
       );
-    });
+    };
+
+    const containerEl = containerRef.current;
+    containerEl.addEventListener("wheel", wheelHandler, { passive: false });
 
     return () => {
       selection.on(".zoom", null);
-      selection.on(".pan", null);
+      containerEl.removeEventListener("wheel", wheelHandler);
     };
   }, [onViewTransformChange, onNavigateDown, onNavigateUp, currentScopeId]);
 
@@ -441,10 +540,15 @@ export const Canvas: React.FC<CanvasProps> = ({
           // If we are dragging, the mouse move updates state -> triggers render.
           // If we call resolveCollisions inside the mouse move handler, it stacks up.
           
-          return resolveCollisionsService(currentNodes, edges, fixedNodeId);
+          return resolveCollisionsInScope(
+            currentNodes,
+            edges,
+            fixedNodeId ?? null,
+            currentScopeId ?? null
+          );
       });
     },
-    [setNodes, edges]
+    [setNodes, edges, currentScopeId]
   );
 
   const prevNodesLength = useRef(nodes.length);
@@ -750,15 +854,10 @@ export const Canvas: React.FC<CanvasProps> = ({
         
         if (dist < 5) {
              const isShift = (e as MouseEvent).shiftKey;
-             const isMobile = window.matchMedia("(max-width: 768px)").matches;
              
              // If we clicked a selected node without shift, we deferred the clear-others logic. Do it now.
              if (!isShift && selectedNodeIds.has(draggingId)) {
                   onNodeSelect(draggingId, false);
-             }
-
-             if (isMobile) {
-                onMaximizeNode(draggingId);
              }
         }
       }
@@ -790,25 +889,125 @@ export const Canvas: React.FC<CanvasProps> = ({
       if (e.type === "touchmove" && (draggingId || resizingId))
         e.preventDefault();
 
-      const { mouseX, mouseY, initialPositions, nodeWidth, nodeHeight } =
+      const { mouseX, mouseY, initialPositions, nodeWidth, nodeHeight, lastX, lastY } =
         dragStartRef.current;
       const dx = (clientX - mouseX) / viewTransform.k;
       const dy = (clientY - mouseY) / viewTransform.k;
+      
+      const incDx = (clientX - lastX) / viewTransform.k;
+      const incDy = (clientY - lastY) / viewTransform.k;
+      
+      dragStartRef.current.lastX = clientX;
+      dragStartRef.current.lastY = clientY;
 
       if (draggingId) {
-        // Update position of the dragged node(s) immediately
         setNodes((prev) => {
-          const nextNodes = prev.map((n) => {
-            const initPos = initialPositions.get(n.id);
-            if (initPos) {
-              return { ...n, x: initPos.x + dx, y: initPos.y + dy };
+          const nodeMap = new Map(prev.map((n) => [n.id, n]));
+          const deltas = new Map<string, { dx: number; dy: number }>();
+          const processed = new Set<string>();
+          const roots = new Set(initialPositions.keys());
+
+          // 1. Calculate deltas for dragged nodes (roots of movement)
+          roots.forEach((id) => {
+            const init = initialPositions.get(id);
+            const current = nodeMap.get(id);
+            if (init && current) {
+              const targetX = init.x + dx;
+              const targetY = init.y + dy;
+              deltas.set(id, {
+                dx: targetX - current.x,
+                dy: targetY - current.y,
+              });
+              processed.add(id);
             }
-            return n;
           });
-          // Run collision on the NEW state immediately to push others away
-          // We use the draggingId as the "fixed" node. 
-          // Note: If dragging multiple, this only fixes one, but others move in lockstep so it's mostly fine.
-          return resolveCollisionsService(nextNodes, edges, draggingId);
+
+          const queue = Array.from(roots);
+
+          while (queue.length > 0) {
+            const pid = queue.shift()!;
+            const parentNode = nodeMap.get(pid);
+            if (!parentNode) continue;
+
+            const pDelta = deltas.get(pid)!;
+
+            // Find children (Unprocessed only)
+            const children: GraphNode[] = [];
+            const childrenIds = new Set<string>();
+
+            // Edges
+            edges.forEach((e) => {
+              if (e.source === pid && !processed.has(e.target)) {
+                childrenIds.add(e.target);
+              }
+            });
+
+            // Hierarchy
+            prev.forEach((n) => {
+              if (n.parentId === pid && !processed.has(n.id)) {
+                childrenIds.add(n.id);
+              }
+            });
+
+            childrenIds.forEach((cid) => {
+              const c = nodeMap.get(cid);
+              if (c) children.push(c);
+            });
+
+            if (children.length === 0) continue;
+
+            // Determine Deltas for Children
+            if (roots.has(pid)) {
+              // This is a dragged root -> Surround Logic for immediate children
+              // Calculate parent's NEW position
+              const parentNewPos = {
+                ...parentNode,
+                x: parentNode.x + pDelta.dx,
+                y: parentNode.y + pDelta.dy,
+              };
+
+              const surroundPositions = computeSurroundChildPositions(
+                parentNewPos,
+                children
+              );
+
+              children.forEach((c) => {
+                const target = surroundPositions.get(c.id);
+                if (target) {
+                  const cDelta = {
+                    dx: target.x - c.x,
+                    dy: target.y - c.y,
+                  };
+                  deltas.set(c.id, cDelta);
+                  processed.add(c.id);
+                  queue.push(c.id);
+                }
+              });
+            } else {
+              // Rigid move (inherit parent delta) for descendants
+              children.forEach((c) => {
+                // Since we checked processed earlier, we can just add
+                deltas.set(c.id, pDelta);
+                processed.add(c.id);
+                queue.push(c.id);
+              });
+            }
+          }
+
+          const movedNodes = prev.map((node) => {
+            const d = deltas.get(node.id);
+            if (d) {
+              return { ...node, x: node.x + d.dx, y: node.y + d.dy };
+            }
+            return node;
+          });
+
+          return resolveCollisionsInScope(
+            movedNodes,
+            edges,
+            draggingId,
+            currentScopeId ?? null
+          );
         });
       } else if (resizingId && resizeDirection) {
         const initPos = initialPositions.get(resizingId);
@@ -931,6 +1130,8 @@ export const Canvas: React.FC<CanvasProps> = ({
       dragStartRef.current = {
         mouseX: clientX,
         mouseY: clientY,
+        lastX: clientX,
+        lastY: clientY,
         initialPositions,
       };
     },
@@ -980,6 +1181,29 @@ export const Canvas: React.FC<CanvasProps> = ({
     [connectingNodeId, onCancelConnect, onNodeSelect, contextMenu]
   );
 
+  const openContextMenuAtClientPoint = useCallback(
+    (clientX: number, clientY: number) => {
+      const canvasX = (clientX - viewTransform.x) / viewTransform.k;
+      const canvasY = (clientY - viewTransform.y) / viewTransform.k;
+
+      setContextMenu({
+        x: clientX,
+        y: clientY,
+        canvasX,
+        canvasY,
+      });
+    },
+    [viewTransform]
+  );
+
+  const cancelLongPressContextMenu = useCallback(() => {
+    if (longPressContextMenuTimerRef.current) {
+      clearTimeout(longPressContextMenuTimerRef.current);
+      longPressContextMenuTimerRef.current = null;
+    }
+    longPressContextMenuStartPointRef.current = null;
+  }, []);
+
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
@@ -993,44 +1217,88 @@ export const Canvas: React.FC<CanvasProps> = ({
         return;
       }
 
-      const clientX = e.clientX;
-      const clientY = e.clientY;
-      const canvasX = (clientX - viewTransform.x) / viewTransform.k;
-      const canvasY = (clientY - viewTransform.y) / viewTransform.k;
-
-      setContextMenu({
-        x: clientX,
-        y: clientY,
-        canvasX,
-        canvasY,
-      });
+      openContextMenuAtClientPoint(e.clientX, e.clientY);
     },
-    [viewTransform, draggingId, resizingId, connectingNodeId]
+    [openContextMenuAtClientPoint, draggingId, resizingId, connectingNodeId]
+  );
+
+  const handleBackgroundTouchStart = useCallback(
+    (e: React.TouchEvent) => {
+      if (draggingId || resizingId || connectingNodeId) return;
+      const target = e.target as HTMLElement;
+      if (target.closest(".graph-node")) return;
+
+      // Two-finger tap: open context menu at midpoint
+      if (e.touches.length === 2) {
+        const t1 = e.touches[0];
+        const t2 = e.touches[1];
+        const clientX = (t1.clientX + t2.clientX) / 2;
+        const clientY = (t1.clientY + t2.clientY) / 2;
+        longPressContextMenuOpenedRef.current = true;
+        cancelLongPressContextMenu();
+        openContextMenuAtClientPoint(clientX, clientY);
+        return;
+      }
+
+      // One-finger long press
+      if (e.touches.length !== 1) return;
+      const touch = e.touches[0];
+      longPressContextMenuOpenedRef.current = false;
+      longPressContextMenuStartPointRef.current = { x: touch.clientX, y: touch.clientY };
+      cancelLongPressContextMenu();
+      longPressContextMenuTimerRef.current = window.setTimeout(() => {
+        const start = longPressContextMenuStartPointRef.current;
+        if (!start) return;
+        longPressContextMenuOpenedRef.current = true;
+        openContextMenuAtClientPoint(start.x, start.y);
+      }, 500);
+    },
+    [
+      draggingId,
+      resizingId,
+      connectingNodeId,
+      cancelLongPressContextMenu,
+      openContextMenuAtClientPoint,
+    ]
+  );
+
+  const handleBackgroundTouchMove = useCallback(
+    (e: React.TouchEvent) => {
+      const start = longPressContextMenuStartPointRef.current;
+      if (!start) return;
+      if (e.touches.length !== 1) {
+        cancelLongPressContextMenu();
+        return;
+      }
+      const touch = e.touches[0];
+      const dist = Math.hypot(touch.clientX - start.x, touch.clientY - start.y);
+      if (dist > 10) {
+        cancelLongPressContextMenu();
+      }
+    },
+    [cancelLongPressContextMenu]
   );
 
   const handleTouchEnd = useCallback(
     (e: React.TouchEvent) => {
+      // Long-press menu opened: consume end so we don't also trigger double-tap logic
+      cancelLongPressContextMenu();
+      if (longPressContextMenuOpenedRef.current) {
+        longPressContextMenuOpenedRef.current = false;
+        return;
+      }
+
       const now = Date.now();
       if (now - lastTapRef.current < 300) {
         // Double tap
         if (e.changedTouches.length > 0) {
           const touch = e.changedTouches[0];
-          const clientX = touch.clientX;
-          const clientY = touch.clientY;
-          const canvasX = (clientX - viewTransform.x) / viewTransform.k;
-          const canvasY = (clientY - viewTransform.y) / viewTransform.k;
-
-          setContextMenu({
-            x: clientX,
-            y: clientY,
-            canvasX,
-            canvasY,
-          });
+          openContextMenuAtClientPoint(touch.clientX, touch.clientY);
         }
       }
       lastTapRef.current = now;
     },
-    [viewTransform]
+    [cancelLongPressContextMenu, openContextMenuAtClientPoint]
   );
 
 
@@ -1210,6 +1478,8 @@ export const Canvas: React.FC<CanvasProps> = ({
     typeof window !== "undefined" &&
     window.matchMedia("(max-width: 768px)").matches;
 
+  const shouldShowProfileButton = !!(onOpenProfile && profileButtonTitle);
+
   return (
     <div className="flex flex-col-reverse md:flex-row w-full h-full overflow-hidden bg-slate-950">
       {/* Toolbar */}
@@ -1235,6 +1505,25 @@ export const Canvas: React.FC<CanvasProps> = ({
               <line x1="4" y1="12" x2="20" y2="12" />
               <line x1="4" y1="6" x2="20" y2="6" />
               <line x1="4" y1="18" x2="20" y2="18" />
+            </svg>
+          </button>
+          <button
+            onClick={() => onOpenSearch && onOpenSearch()}
+            className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-all"
+            title="Search"
+          >
+            <svg
+              className="h-6 w-6"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
             </svg>
           </button>
           <button
@@ -1419,12 +1708,34 @@ export const Canvas: React.FC<CanvasProps> = ({
               <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
             </svg>
           </button>
+          {shouldShowProfileButton && (
+            <button
+              onClick={() => onOpenProfile && onOpenProfile()}
+              className="w-10 h-10 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 hover:text-white hover:border-slate-500 transition-all shadow-lg"
+              title={profileButtonTitle}
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
 
       <div
         ref={containerRef}
-        className={`flex-1 relative overflow-hidden cursor-default canvas-background min-w-0 touch-none ${
+        className={`flex-1 relative overflow-hidden overscroll-none cursor-default canvas-background min-w-0 touch-none ${
           connectingNodeId ? "cursor-crosshair" : ""
         }`}
         style={{
@@ -1436,6 +1747,8 @@ export const Canvas: React.FC<CanvasProps> = ({
         onMouseDown={handleBackgroundMouseDown}
         onClick={handleBackgroundClick}
         onContextMenu={handleContextMenu}
+        onTouchStart={handleBackgroundTouchStart}
+        onTouchMove={handleBackgroundTouchMove}
         onTouchEnd={handleTouchEnd}
       >
         {/* Mobile Hamburger - Fixed Top Left */}
@@ -1575,14 +1888,14 @@ export const Canvas: React.FC<CanvasProps> = ({
                 onMouseDown={handleNodeMouseDown}
                 onUpdate={onUpdateNode}
                 onExpand={onExpandNode}
+                onExpandFromWikidata={onExpandNodeFromWikidata}
                 onDelete={onDeleteNode}
                 onResizeStart={handleResizeStart}
                 onToggleMaximize={onMaximizeNode}
                 onOpenLink={onOpenLink}
                 onConnectStart={onConnectStart}
                 onViewSubgraph={(id) => {
-                  const n = nodes.find((node) => node.id === id);
-                  if (n) onExpandNode(id, n.content);
+                  if (onNavigateDown) onNavigateDown(id);
                 }}
                 autoGraphEnabled={autoGraphEnabled}
                 onSetAutoGraphEnabled={onSetAutoGraphEnabled}

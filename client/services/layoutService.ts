@@ -55,16 +55,35 @@ export const applyTreeLayout = (
 ): GraphNode[] => {
   if (nodes.length === 0) return nodes;
 
-  const rootId = nodes[0].id;
   const nodeIds = new Set(nodes.map((n) => n.id));
-  
+  const filteredEdges = edges.filter(
+    (e) => nodeIds.has(e.source) && nodeIds.has(e.target)
+  );
+
+  const indegreeByNodeId = new Map<string, number>();
+  const parentByTargetId = new Map<string, string>();
+  for (const node of nodes) indegreeByNodeId.set(node.id, 0);
+  for (const edge of filteredEdges) {
+    indegreeByNodeId.set(
+      edge.target,
+      (indegreeByNodeId.get(edge.target) ?? 0) + 1
+    );
+    if (!parentByTargetId.has(edge.target)) parentByTargetId.set(edge.target, edge.source);
+  }
+
+  const rootCandidate = nodes.find(
+    (n) => (indegreeByNodeId.get(n.id) ?? 0) === 0
+  );
+  const rootId = (rootCandidate?.id ?? nodes[0]?.id) as string;
+
   const stratify = d3
     .stratify<GraphNode>()
     .id((d) => d.id)
     .parentId((d) => {
-      // Only use edges where the source is also in the current set of nodes
-      const edge = edges.find((e) => e.target === d.id && nodeIds.has(e.source));
-      return edge ? edge.source : d.id === rootId ? null : rootId;
+      // d3.stratify requires exactly one root (parentId === null).
+      // If the chosen root has incoming edges (or the graph is cyclical), force it to be the root.
+      if (d.id === rootId) return null;
+      return parentByTargetId.get(d.id) ?? rootId;
     });
 
   try {
@@ -100,16 +119,35 @@ export const applyHybridLayout = (
   if (nodes.length === 0) return nodes;
 
   // 1. Initial Tree Layout to get ideal ranks
-  const rootId = nodes[0].id;
   const nodeIds = new Set(nodes.map((n) => n.id));
+  const filteredEdges = edges.filter(
+    (e) => nodeIds.has(e.source) && nodeIds.has(e.target)
+  );
+
+  const indegreeByNodeId = new Map<string, number>();
+  const parentByTargetId = new Map<string, string>();
+  for (const node of nodes) indegreeByNodeId.set(node.id, 0);
+  for (const edge of filteredEdges) {
+    indegreeByNodeId.set(
+      edge.target,
+      (indegreeByNodeId.get(edge.target) ?? 0) + 1
+    );
+    if (!parentByTargetId.has(edge.target)) parentByTargetId.set(edge.target, edge.source);
+  }
+
+  const rootCandidate = nodes.find(
+    (n) => (indegreeByNodeId.get(n.id) ?? 0) === 0
+  );
+  const rootId = (rootCandidate?.id ?? nodes[0]?.id) as string;
 
   const stratify = d3
     .stratify<GraphNode>()
     .id((d) => d.id)
     .parentId((d) => {
-      // Only use edges where the source is also in the current set of nodes
-      const edge = edges.find((e) => e.target === d.id && nodeIds.has(e.source));
-      return edge ? edge.source : d.id === rootId ? null : rootId;
+      // d3.stratify requires exactly one root (parentId === null).
+      // If the chosen root has incoming edges (or the graph is cyclical), force it to be the root.
+      if (d.id === rootId) return null;
+      return parentByTargetId.get(d.id) ?? rootId;
     });
 
   try {
@@ -198,13 +236,8 @@ export const resolveCollisions = (
   edges: GraphEdge[],
   fixedNodeId?: string
 ): GraphNode[] => {
-  if (!fixedNodeId) return nodes;
-
-  const fixedNode = nodes.find((n) => n.id === fixedNodeId);
-  if (!fixedNode) return nodes;
-
-  // STRICT OVERLAP RESOLUTION
-  // We want ZERO movement unless nodes physically overlap.
+  // If no fixed node, we allow all nodes to move to resolve overlaps.
+  // If fixed node exists, it stays pinned (via fx/fy in simNodes below).
   
   const simNodes = nodes.map((n) => ({
     ...n,

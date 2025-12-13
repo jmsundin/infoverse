@@ -85,7 +85,8 @@ passport.use(new LocalStrategy(async (username, password, done) => {
         const isMatch = await bcrypt.compare(password, user.password);
         if (isMatch) {
             user.storagePath = user.storage_path;
-            user.isPaid = user.is_paid;
+            user.isAdmin = user.is_admin;
+            user.isPaid = user.is_paid || user.is_admin;
             return done(null, user);
         } else {
             return done(null, false, { message: 'Incorrect password.' });
@@ -106,7 +107,8 @@ passport.deserializeUser(async (id, done) => {
         const user = result.rows[0];
         if (user) {
             user.storagePath = user.storage_path;
-            user.isPaid = user.is_paid;
+            user.isAdmin = user.is_admin;
+            user.isPaid = user.is_paid || user.is_admin;
             done(null, user);
         } else {
             // User not found in DB (maybe deleted), treat as logged out
@@ -319,7 +321,8 @@ app.post('/api/auth/signup', async (req, res) => {
         // Auto login after signup
         req.login(newUser, (err) => {
             if (err) return res.status(500).json({ message: 'Login failed after signup' });
-            return res.json({ user: { id: newUser.id.toString(), username: newUser.username, email: newUser.email, storagePath: newUser.storagePath, isPaid: newUser.is_paid } });
+            // New users are not admins by default
+            return res.json({ user: { id: newUser.id.toString(), username: newUser.username, email: newUser.email, storagePath: newUser.storagePath, isPaid: newUser.is_paid, isAdmin: false } });
         });
 
     } catch (err) {
@@ -354,7 +357,7 @@ app.post('/api/user/settings', async (req, res) => {
         // Update session user
         req.login(updatedUser, (err) => {
             if (err) return res.status(500).json({ message: 'Failed to update session' });
-            res.json({ user: { id: updatedUser.id.toString(), username: updatedUser.username, email: updatedUser.email, storagePath: updatedUser.storagePath, isPaid: updatedUser.is_paid } });
+            res.json({ user: { id: updatedUser.id.toString(), username: updatedUser.username, email: updatedUser.email, storagePath: updatedUser.storagePath, isPaid: updatedUser.is_paid || updatedUser.is_admin, isAdmin: updatedUser.is_admin } });
         });
 
     } catch (err) {
@@ -369,7 +372,7 @@ app.post('/api/auth/login', (req, res, next) => {
         if (!user) return res.status(401).json({ message: info.message });
         req.login(user, (err) => {
             if (err) return next(err);
-            return res.json({ user: { id: user.id.toString(), username: user.username, email: user.email, storagePath: user.storagePath, isPaid: user.isPaid } });
+            return res.json({ user: { id: user.id.toString(), username: user.username, email: user.email, storagePath: user.storagePath, isPaid: user.isPaid, isAdmin: user.isAdmin } });
         });
     })(req, res, next);
 });
@@ -440,7 +443,7 @@ app.put('/api/user/profile', async (req, res) => {
 
         // Finalize query
         updateQuery = updateQuery.slice(0, -2); // Remove trailing comma
-        updateQuery += ` WHERE id = $${paramCount} RETURNING id, username, email, is_paid, storage_path`;
+        updateQuery += ` WHERE id = $${paramCount} RETURNING id, username, email, is_paid, storage_path, is_admin`;
         values.push(req.user.id);
 
         const result = await db.query(updateQuery, values);
@@ -457,7 +460,8 @@ app.put('/api/user/profile', async (req, res) => {
                     id: updatedUser.id.toString(), 
                     username: updatedUser.username, 
                     email: updatedUser.email,
-                    isPaid: updatedUser.is_paid,
+                    isPaid: updatedUser.is_paid || updatedUser.is_admin,
+                    isAdmin: updatedUser.is_admin,
                     storagePath: updatedUser.storage_path
                 } 
             });
@@ -478,7 +482,8 @@ app.get('/api/auth/check', (req, res) => {
                 username: req.user.username, 
                 email: req.user.email, // Include email in check
                 storagePath: req.user.storagePath, 
-                isPaid: req.user.isPaid 
+                isPaid: req.user.isPaid,
+                isAdmin: req.user.isAdmin
             } 
         });
     } else {

@@ -213,7 +213,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   return (
     <div
       ref={wrapperRef}
-      className={`absolute z-50 transition-all duration-200 pointer-events-none
+      className={`absolute z-[90] transition-all duration-200 pointer-events-none
          ${
            isMobile
              ? "top-16 left-4 right-4" // Mobile Expanded Position

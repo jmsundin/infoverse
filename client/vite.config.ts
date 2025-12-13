@@ -26,6 +26,17 @@ export default defineConfig(({ mode }) => {
         devOptions: {
           enabled: true,
         },
+        workbox: {
+          runtimeCaching: [
+            {
+              urlPattern: ({ url }) => url.pathname === "/manifest.webmanifest",
+              handler: "CacheFirst",
+              options: {
+                cacheName: "infoverse-manifest",
+              },
+            },
+          ],
+        },
         includeAssets: ["favicon.ico", "apple-touch-icon.png", "mask-icon.svg"],
         manifest: {
           name: "Infoverse",

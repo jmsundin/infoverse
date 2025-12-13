@@ -54,6 +54,6 @@ export const NODE_COLORS = {
 
 // For Edges
 export const COLORS = {
-  edgeStroke: '#64748b', // Slate 500
-  activeEdgeStroke: '#38bdf8', // Sky 400
+  edgeStroke: '#1e252c', // Slate 600 (Lighter/Subtle than Slate 500)
+  activeEdgeStroke: '#5a9ebe', // Sky 400
 };

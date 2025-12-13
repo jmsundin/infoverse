@@ -39,8 +39,11 @@ import {
   getTopicSummaryPrompt,
   findRelationships,
 } from "./services/geminiService";
+import { fetchWikidataSubtopics } from "./services/wikidataService";
 
 const LOCAL_STORAGE_KEY = "wiki-graph-data";
+const WIKIDATA_SUBTOPIC_LIMIT = 12;
+const WIKIDATA_MAX_RECURSIVE_NODES_PER_LEVEL = 5;
 
 // Helper to parse text into nodes locally without API call
 const parseTextToNodes = (text: string) => {
@@ -212,6 +215,8 @@ const App: React.FC = () => {
     message: string;
     action?: () => void;
   }>({ visible: false, message: "" });
+
+  const wikidataExpansionInFlightRef = useRef<Set<string>>(new Set());
 
   const deletedNodeRef = useRef<{
     nodes: GraphNode[];
@@ -1027,6 +1032,193 @@ const App: React.FC = () => {
     [nodes, currentScopeId, dirHandle, user, saveNodeToDisk]
   );
 
+  const handleExpandNodeFromWikidata = useCallback(
+    async (
+      id: string,
+      topic: string,
+      nodeOverride?: GraphNode,
+      depth?: number
+    ) => {
+      if (wikidataExpansionInFlightRef.current.has(id)) return;
+      wikidataExpansionInFlightRef.current.add(id);
+
+      setExpandingNodeIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+
+      const sourceNode = nodeOverride || nodes.find((n) => n.id === id);
+      if (!sourceNode) {
+        setExpandingNodeIds((prev) => prev.filter((nId) => nId !== id));
+        wikidataExpansionInFlightRef.current.delete(id);
+        return;
+      }
+
+      const depthToUse =
+        depth !== undefined ? depth : sourceNode.autoExpandDepth || 1;
+
+      try {
+        const subtopics = await fetchWikidataSubtopics(topic, {
+          language: "en",
+          resultLimit: WIKIDATA_SUBTOPIC_LIMIT,
+        });
+
+        if (subtopics.length === 0) {
+          setToast({
+            visible: true,
+            message: `No Wikidata subtopics found for "${topic}".`,
+          });
+          return;
+        }
+
+        const parentNodeId = id;
+        const parentNodeX = sourceNode.x;
+        const parentNodeY = sourceNode.y;
+
+        const nodesToAdd: GraphNode[] = [];
+        const edgesToAdd: GraphEdge[] = [];
+
+        const existingNodesInScope = nodes.filter(
+          (n) => n.parentId == currentScopeId
+        );
+
+        const existingByLowerLabel = new Map<string, GraphNode>();
+        for (const existingNode of existingNodesInScope) {
+          existingByLowerLabel.set(
+            existingNode.content.trim().toLowerCase(),
+            existingNode
+          );
+        }
+
+        const subtopicsToCreate = subtopics.filter((st) => {
+          const lower = st.label.trim().toLowerCase();
+          return !existingByLowerLabel.has(lower);
+        });
+
+        const fixedRadius = 500; // Standardized Edge Length
+        const startAngle = Math.random() * Math.PI;
+
+        const createdNodes: GraphNode[] = subtopicsToCreate.map((st, i) => {
+          const angle =
+            startAngle +
+            (i / Math.max(subtopicsToCreate.length, 1)) * 2 * Math.PI;
+
+          return {
+            id: crypto.randomUUID(),
+            type: NodeType.CHAT,
+            x: parentNodeX + fixedRadius * Math.cos(angle),
+            y: parentNodeY + fixedRadius * Math.sin(angle),
+            content: st.label,
+            width: DEFAULT_NODE_WIDTH,
+            height: DEFAULT_NODE_HEIGHT,
+            link: st.wikidataUrl,
+            parentId: currentScopeId || undefined,
+            summary: st.description,
+            autoExpandDepth: sourceNode.autoExpandDepth,
+            messages: st.description
+              ? [
+                  {
+                    role: "model",
+                    text: st.description,
+                    timestamp: Date.now(),
+                  },
+                ]
+              : [],
+          };
+        });
+
+        nodesToAdd.push(...createdNodes);
+
+        for (const newNode of createdNodes) {
+          edgesToAdd.push({
+            id: crypto.randomUUID(),
+            source: parentNodeId,
+            target: newNode.id,
+            label: "subtopic",
+            parentId: currentScopeId || undefined,
+          });
+        }
+
+        for (const st of subtopics) {
+          const lower = st.label.trim().toLowerCase();
+          const existingNode = existingByLowerLabel.get(lower);
+          if (!existingNode) continue;
+
+          edgesToAdd.push({
+            id: crypto.randomUUID(),
+            source: parentNodeId,
+            target: existingNode.id,
+            label: "subtopic",
+            parentId: currentScopeId || undefined,
+          });
+        }
+
+        setNodes((prev) => [...prev, ...nodesToAdd]);
+        setEdges((prev) => [...prev, ...edgesToAdd]);
+
+        if (dirHandle || user?.storagePath) {
+          nodesToAdd.forEach((n) => saveNodeToDisk(n));
+        }
+
+        if (nodesToAdd.length > 0) {
+          let minX = sourceNode.x;
+          let maxX = sourceNode.x + (sourceNode.width || DEFAULT_NODE_WIDTH);
+          let minY = sourceNode.y;
+          let maxY = sourceNode.y + (sourceNode.height || DEFAULT_NODE_HEIGHT);
+
+          nodesToAdd.forEach((n) => {
+            minX = Math.min(minX, n.x);
+            maxX = Math.max(maxX, n.x + (n.width || DEFAULT_NODE_WIDTH));
+            minY = Math.min(minY, n.y);
+            maxY = Math.max(maxY, n.y + (n.height || DEFAULT_NODE_HEIGHT));
+          });
+
+          const padding = 200;
+          const width = maxX - minX + padding * 2;
+          const height = maxY - minY + padding * 2;
+
+          const centerX = (minX + maxX) / 2;
+          const centerY = (minY + maxY) / 2;
+
+          const scaleX = window.innerWidth / width;
+          const scaleY = window.innerHeight / height;
+          let newK = Math.min(scaleX, scaleY, 1);
+          newK = Math.max(newK, 0.1);
+
+          setViewTransform({
+            x: window.innerWidth / 2 - centerX * newK,
+            y: window.innerHeight / 2 - centerY * newK,
+            k: newK,
+          });
+        }
+
+        if (depthToUse > 1 && createdNodes.length > 0) {
+          const nodesForRecursion = createdNodes.slice(
+            0,
+            WIKIDATA_MAX_RECURSIVE_NODES_PER_LEVEL
+          );
+          Promise.all(
+            nodesForRecursion.map((node) =>
+              handleExpandNodeFromWikidata(
+                node.id,
+                node.content,
+                node,
+                depthToUse - 1
+              )
+            )
+          );
+        }
+      } catch (e: any) {
+        console.error("Failed to expand from Wikidata:", e);
+        setToast({
+          visible: true,
+          message: `Wikidata request failed for "${topic}".`,
+        });
+      } finally {
+        setExpandingNodeIds((prev) => prev.filter((nId) => nId !== id));
+        wikidataExpansionInFlightRef.current.delete(id);
+      }
+    },
+    [nodes, currentScopeId, dirHandle, user, saveNodeToDisk]
+  );
+
   const handleMaximizeNode = useCallback(
     (id: string) => {
       if (activeSidePane?.type === "node" && activeSidePane.data === id) {
@@ -1478,25 +1670,6 @@ const App: React.FC = () => {
       <div className="flex-1 relative min-w-0 flex flex-col">
         {/* Auth/Folder Buttons */}
         <div className="absolute top-4 right-4 z-[60] flex gap-3 items-center pointer-events-none">
-          <button
-            onClick={() => setIsSearchOpen(true)}
-            className="w-10 h-10 flex items-center justify-center bg-slate-800 border border-slate-700 rounded-full shadow-lg text-slate-200 hover:text-white hover:bg-slate-700 transition-all pointer-events-auto"
-            title="Search"
-          >
-            <svg
-              className="h-5 w-5"
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <circle cx="11" cy="11" r="8" />
-              <line x1="21" y1="21" x2="16.65" y2="16.65" />
-            </svg>
-          </button>
           {!user ? (
             <>
               <button
@@ -1519,26 +1692,7 @@ const App: React.FC = () => {
               </button>
             </>
           ) : (
-            <button
-              onClick={() => setShowProfile(true)}
-              className="w-10 h-10 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 hover:text-white hover:border-slate-500 transition-all shadow-lg pointer-events-auto"
-              title={user.username}
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="20"
-                height="20"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                <circle cx="12" cy="7" r="4" />
-              </svg>
-            </button>
+            <></>
           )}
         </div>
 
@@ -1659,12 +1813,16 @@ const App: React.FC = () => {
             viewTransform={viewTransform}
             onViewTransformChange={setViewTransform}
             onOpenStorage={handleOpenStorage}
+            onOpenSearch={() => setIsSearchOpen(true)}
             storageConnected={!!dirName}
             storageDirName={dirName}
             isSaving={isSaving}
+            profileButtonTitle={user ? user.username : undefined}
+            onOpenProfile={user ? () => setShowProfile(true) : undefined}
             onOpenLink={handleOpenLink}
             onMaximizeNode={handleMaximizeNode}
             onExpandNode={handleExpandNode}
+            onExpandNodeFromWikidata={handleExpandNodeFromWikidata}
             onUpdateNode={handleUpdateNode}
             onDeleteNode={handleDeleteNode}
             expandingNodeIds={expandingNodeIds}
@@ -1686,7 +1844,10 @@ const App: React.FC = () => {
       </div>
 
       {activeSidePane && (
-        <SidePanel onClose={handleCloseSidePane}>
+        <SidePanel
+          onClose={handleCloseSidePane}
+          hideDefaultDragHandle={!!sidebarNode}
+        >
           <ErrorBoundary>
             {activeSidePane.type === "web" ? (
               <WebContent
@@ -1699,6 +1860,7 @@ const App: React.FC = () => {
                 viewMode="sidebar"
                 onUpdate={handleUpdateNode}
                 onExpand={handleExpandNode}
+                onExpandFromWikidata={handleExpandNodeFromWikidata}
                 onDelete={handleDeleteNode}
                 onToggleMaximize={handleMaximizeNode}
                 onOpenLink={handleOpenLink}

@@ -11,6 +11,7 @@ interface EdgeProps {
   targetIsParent?: boolean;
   sourceIsSelected?: boolean;
   targetIsSelected?: boolean;
+  highlightToChildren?: boolean;
 }
 
 // Helper to find intersection of line from center to target with box
@@ -61,7 +62,8 @@ export const Edge: React.FC<EdgeProps> = ({
     sourceIsParent = false,
     targetIsParent = false,
     sourceIsSelected = false,
-    targetIsSelected = false
+    targetIsSelected = false,
+    highlightToChildren = false
 }) => {
   if (!sourceNode || !targetNode) return null;
 
@@ -77,6 +79,10 @@ export const Edge: React.FC<EdgeProps> = ({
   // Hub Nodes in Cluster Mode are text only, effectively 0 size for connection purposes (point to center)
   // or small area. Let's treat them as point connections or small circle.
   const hubSize = 10; 
+  // TITLE-mode nodes render a centered title badge; use a smaller effective box so edges touch the badge,
+  // not the full (invisible) node container bounds.
+  const titleBadgeHeight = 64;
+  const titleBadgeMaxWidth = 320;
 
   let sH = sourceNode.height || 200;
   let tH = targetNode.height || 200;
@@ -127,10 +133,16 @@ export const Edge: React.FC<EdgeProps> = ({
   } 
   // --- Adjust for Title Mode ---
   else if (isTitle) {
-      // All nodes are Title Boxes.
-      // Assuming GraphNode renders them full width/height or reduced?
-      // GraphNode TitleOnly: left: node.x, top: node.y, width: node.width, height: node.height.
-      // So default center/size works.
+      // Non-selected nodes in TITLE mode render a centered title badge; use that size for intersection.
+      // Selected nodes can still be expanded, so keep full bounds for selected.
+      if (!sourceIsSelected) {
+          sW = Math.min(sW, titleBadgeMaxWidth);
+          sH = titleBadgeHeight;
+      }
+      if (!targetIsSelected) {
+          tW = Math.min(tW, titleBadgeMaxWidth);
+          tH = titleBadgeHeight;
+      }
   }
   // --- Adjust for Detail Mode (Compact vs Full) ---
   else {
@@ -139,8 +151,8 @@ export const Edge: React.FC<EdgeProps> = ({
       // If compact, height is HEADER_HEIGHT.
       // Note: Edge component doesn't know if GraphNode decided to be compact.
       // We replicate logic:
-      const sourceCompact = !sourceIsParent && !sourceIsSelected;
-      const targetCompact = !targetIsParent && !targetIsSelected;
+      const sourceCompact = !sourceIsSelected;
+      const targetCompact = !targetIsSelected;
 
       if (sourceCompact) {
           sH = NODE_HEADER_HEIGHT;
@@ -197,13 +209,25 @@ export const Edge: React.FC<EdgeProps> = ({
     ? midY 
     : 0.25 * start.y + 0.5 * cpY + 0.25 * end.y;
 
+  const isHighlighted = highlightToChildren;
+  const isMediumHighlight = sourceIsSelected && !targetIsSelected && !highlightToChildren;
+  
+  const strokeColor = isHighlighted 
+    ? COLORS.activeEdgeStroke 
+    : isMediumHighlight 
+      ? COLORS.activeEdgeStroke // Or a lighter shade if available in COLORS, but usually opacity handles 'medium' feel or width
+      : COLORS.edgeStroke;
+      
+  const strokeWidth = isHighlighted ? 3 : isMediumHighlight ? 2.5 : 2;
+  const opacity = isMediumHighlight ? 0.6 : 1;
+
   return (
-    <g className="group pointer-events-auto">
+    <g className="group pointer-events-auto" style={{ opacity }}>
       <path
         d={pathD}
         fill="none"
-        stroke={COLORS.edgeStroke}
-        strokeWidth="2"
+        stroke={strokeColor}
+        strokeWidth={strokeWidth}
         className="edge-path transition-all duration-300 group-hover:stroke-sky-400 group-hover:stroke-[3px]"
       />
       
@@ -211,7 +235,17 @@ export const Edge: React.FC<EdgeProps> = ({
       {edge.label && !isTitle && (
         <foreignObject x={labelX - 50} y={labelY - 12} width={100} height={24} className="overflow-visible pointer-events-none">
           <div className="flex items-center justify-center">
-            <span className="bg-slate-900 text-slate-300 text-[10px] px-1.5 py-0.5 rounded border border-slate-700 shadow-sm whitespace-nowrap group-hover:border-sky-400 group-hover:text-sky-400 transition-colors pointer-events-auto">
+            <span
+              className="bg-slate-900 text-slate-300 text-[10px] px-1.5 py-0.5 rounded border border-slate-700 shadow-sm whitespace-nowrap group-hover:border-sky-400 group-hover:text-sky-400 transition-colors pointer-events-auto"
+              style={
+                isHighlighted
+                  ? {
+                      borderColor: COLORS.activeEdgeStroke,
+                      color: COLORS.activeEdgeStroke,
+                    }
+                  : undefined
+              }
+            >
               {edge.label}
             </span>
           </div>

@@ -5,6 +5,7 @@ import React, {
   memo,
   useMemo,
   useCallback,
+  useContext,
 } from "react";
 import ReactMarkdown from "react-markdown";
 import {
@@ -19,6 +20,7 @@ import { sendChatMessage, generateTitle } from "../services/geminiService";
 import { NODE_HEADER_HEIGHT, NODE_COLORS } from "../constants";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { SidePanelContext } from "./SidePanel";
 
 interface GraphNodeProps {
   node: GraphNode;
@@ -31,6 +33,7 @@ interface GraphNodeProps {
   onMouseDown?: (e: React.MouseEvent | React.TouchEvent, id: string) => void;
   onUpdate: (id: string, updates: Partial<GraphNode>) => void;
   onExpand: (id: string, topic: string) => void;
+  onExpandFromWikidata?: (id: string, topic: string) => void;
   onDelete: (id: string) => void;
   onResizeStart?: (
     e: React.MouseEvent | React.TouchEvent,
@@ -58,6 +61,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     onMouseDown,
     onUpdate,
     onExpand,
+    onExpandFromWikidata,
     onDelete,
     onResizeStart,
     onToggleMaximize,
@@ -91,12 +95,15 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     const colorTheme = NODE_COLORS[node.color || "slate"];
     const isSidebar = viewMode === "sidebar";
 
+    const sidePanelContext = useContext(SidePanelContext);
+    const dragListeners = isSidebar && sidePanelContext ? sidePanelContext.dragListeners : {};
+
     // Semantic Zoom Modes
     const isClusterMode = lodLevel === "CLUSTER" && !isSelected && !isSidebar && !isClusterParent;
     const isClusterParentMode = lodLevel === "CLUSTER" && !isSelected && !isSidebar && isClusterParent;
     const isTitleOnly = lodLevel === "TITLE" && !isSelected && !isSidebar;
     const isCompact =
-      !isSidebar && lodLevel === "DETAIL" && !isClusterParent && !isSelected;
+      !isSidebar && !isSelected;
 
     const titleText =
       node.type === NodeType.CHAT ? node.content : node.summary || node.content;
@@ -263,8 +270,16 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       setIsEditingNote(false);
     };
 
+    const openNodeInSidePaneForMobileInput = useCallback(() => {
+      if (isSidebar) return;
+      if (!onToggleMaximize) return;
+      if (!window.matchMedia("(max-width: 768px)").matches) return;
+      onToggleMaximize(node.id);
+    }, [isSidebar, onToggleMaximize, node.id]);
+
     const handleNoteFocus = (e: React.MouseEvent) => {
       e.stopPropagation();
+      openNodeInSidePaneForMobileInput();
       setIsEditingNote(true);
       if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
     };
@@ -498,22 +513,52 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       >
         {!isSidebar && !isCompact && (
           <div
-            className="absolute -top-10 left-0 right-0 h-8 flex items-center justify-end gap-1 px-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none z-[60]"
+            className="absolute top-[-60px] md:top-[-52px] left-0 right-0 h-10 md:h-8 flex items-center justify-end gap-2 md:gap-1 px-2 md:px-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none z-[60]"
             style={{ opacity: isSelected || showSettings ? 1 : undefined }}
           >
-            <div className="flex gap-1 bg-slate-800/90 backdrop-blur-sm border border-slate-700 rounded-lg p-1 pointer-events-auto shadow-md">
+            <div className="flex gap-2 md:gap-1 bg-slate-800/90 backdrop-blur-sm border border-slate-700 rounded-lg p-2 md:p-1 pointer-events-auto shadow-md">
+              {onExpandFromWikidata && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onExpandFromWikidata(node.id, node.content);
+                  }}
+                  className="min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 text-slate-400 hover:text-amber-300 hover:bg-slate-700/50 rounded transition-colors flex items-center justify-center"
+                  title="Expand from Wikidata (subtopics)"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onTouchStart={(e) => e.stopPropagation()}
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M12 3v18" />
+                    <path d="M3 12h18" />
+                    <path d="M8 6l4-3 4 3" />
+                    <path d="M8 18l4 3 4-3" />
+                    <path d="M6 8l-3 4 3 4" />
+                    <path d="M18 8l3 4-3 4" />
+                  </svg>
+                </button>
+              )}
+
               {node.link && (
                 <button
                   onClick={(e) => handleLinkClick(e, node.link!)}
-                  className="p-1.5 text-slate-400 hover:text-blue-400 hover:bg-slate-700/50 rounded transition-colors"
+                  className="min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 text-slate-400 hover:text-blue-400 hover:bg-slate-700/50 rounded transition-colors flex items-center justify-center"
                   title="Open Wiki Link"
                   onMouseDown={(e) => e.stopPropagation()}
                   onTouchStart={(e) => e.stopPropagation()}
                 >
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
-                    width="14"
-                    height="14"
+                    className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
                     viewBox="0 0 24 24"
                     fill="none"
                     stroke="currentColor"
@@ -528,21 +573,20 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                 </button>
               )}
 
-              {onViewSubgraph && (
+              {onExpand && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    onViewSubgraph(node.id);
+                    onExpand(node.id, node.content);
                   }}
-                  className="p-1.5 text-slate-400 hover:text-purple-400 hover:bg-slate-700/50 transition-colors rounded"
-                  title="View Subgraph"
+                  className="min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 text-slate-400 hover:text-purple-400 hover:bg-slate-700/50 transition-colors rounded flex items-center justify-center"
+                  title="Expand Subgraph (AI)"
                   onMouseDown={(e) => e.stopPropagation()}
                   onTouchStart={(e) => e.stopPropagation()}
                 >
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
-                    width="14"
-                    height="14"
+                    className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
                     viewBox="0 0 24 24"
                     fill="none"
                     stroke="currentColor"
@@ -566,15 +610,14 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     e.stopPropagation();
                     onConnectStart(node.id);
                   }}
-                  className="p-1.5 text-slate-400 hover:text-green-400 hover:bg-slate-700/50 transition-colors rounded"
+                  className="min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 text-slate-400 hover:text-green-400 hover:bg-slate-700/50 transition-colors rounded flex items-center justify-center"
                   title="Connect to another node"
                   onMouseDown={(e) => e.stopPropagation()}
                   onTouchStart={(e) => e.stopPropagation()}
                 >
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
-                    width="14"
-                    height="14"
+                    className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
                     viewBox="0 0 24 24"
                     fill="none"
                     stroke="currentColor"
@@ -593,7 +636,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                   e.stopPropagation();
                   setShowSettings(!showSettings);
                 }}
-                className={`p-1.5 rounded hover:bg-slate-700/50 transition-colors ${
+                className={`min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 rounded hover:bg-slate-700/50 transition-colors flex items-center justify-center ${
                   showSettings
                     ? "text-sky-400 bg-slate-700/50"
                     : "text-slate-400 hover:text-sky-400"
@@ -604,8 +647,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
-                  width="14"
-                  height="14"
+                  className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
@@ -624,15 +666,14 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     e.stopPropagation();
                     onToggleMaximize(node.id);
                   }}
-                  className="p-1.5 rounded hover:bg-slate-700/50 transition-colors text-slate-400 hover:text-sky-400"
+                  className="min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 rounded hover:bg-slate-700/50 transition-colors text-slate-400 hover:text-sky-400 flex items-center justify-center"
                   title="Maximize Side Pane"
                   onMouseDown={(e) => e.stopPropagation()}
                   onTouchStart={(e) => e.stopPropagation()}
                 >
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
-                    width="14"
-                    height="14"
+                    className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
                     viewBox="0 0 24 24"
                     fill="none"
                     stroke="currentColor"
@@ -849,13 +890,23 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
             } 
             ${!isSidebar ? "border-b " + colorTheme.border : ""} 
             ${
-              !isSidebar ? (isDragging ? "cursor-grabbing" : "cursor-grab") : ""
+              !isSidebar || dragListeners.onMouseDown ? (isDragging || dragListeners.onMouseDown ? "cursor-grabbing" : "cursor-grab") : ""
             } select-none relative touch-none shrink-0`}
             style={{ height: NODE_HEADER_HEIGHT }}
             onDoubleClick={handleDoubleClick}
-            onTouchStart={handleTouchStart}
+            onTouchStart={(e) => {
+               if (dragListeners.onTouchStart) dragListeners.onTouchStart(e);
+               handleTouchStart(e);
+            }}
             onTouchEnd={handleTouchEnd}
             onTouchMove={handleTouchMove}
+            onMouseDown={(e) => {
+               if (dragListeners.onMouseDown) {
+                 dragListeners.onMouseDown(e);
+               } else if (!isSidebar && onMouseDown) {
+                 onMouseDown(e, node.id);
+               }
+            }}
           >
             <div className={`flex items-center gap-2 overflow-hidden flex-1`}>
               <span className={isSidebar ? "text-xl" : "text-lg"}>
@@ -910,6 +961,22 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
 
             {isSidebar && (
               <div className="flex items-center gap-2">
+                {dragListeners.onMouseDown && (
+                   <div 
+                      className="cursor-grab active:cursor-grabbing p-1 text-slate-400 hover:text-white mr-1"
+                      {...dragListeners}
+                      onClick={(e) => e.stopPropagation()}
+                   >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <circle cx="8" cy="7" r="1" />
+                        <circle cx="8" cy="12" r="1" />
+                        <circle cx="8" cy="17" r="1" />
+                        <circle cx="16" cy="7" r="1" />
+                        <circle cx="16" cy="12" r="1" />
+                        <circle cx="16" cy="17" r="1" />
+                      </svg>
+                   </div>
+                )}
                 <div className="flex gap-1.5 mr-2">
                   {(Object.keys(NODE_COLORS) as NodeColor[]).map((c) => (
                     <button
@@ -1024,9 +1091,13 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     value={node.content}
                     onChange={handleNoteContentChange}
                     onBlur={handleNoteBlur}
+                    onFocus={openNodeInSidePaneForMobileInput}
                     placeholder="Write a note (Markdown supported)..."
                     onMouseDown={(e) => e.stopPropagation()}
-                    onTouchStart={(e) => e.stopPropagation()}
+                    onTouchStart={(e) => {
+                      e.stopPropagation();
+                      openNodeInSidePaneForMobileInput();
+                    }}
                   />
                 ) : (
                   <div
@@ -1176,8 +1247,12 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                       onKeyDown={(e) =>
                         e.key === "Enter" && handleSendMessage()
                       }
+                      onFocus={openNodeInSidePaneForMobileInput}
                       onMouseDown={(e) => e.stopPropagation()}
-                      onTouchStart={(e) => e.stopPropagation()}
+                      onTouchStart={(e) => {
+                        e.stopPropagation();
+                        openNodeInSidePaneForMobileInput();
+                      }}
                     />
                     <button
                       onClick={handleSendMessage}
