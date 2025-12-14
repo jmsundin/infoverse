@@ -22,8 +22,8 @@ body, html, #root {
 
 /* Graph Edge Styles */
 .edge-path {
-  marker-end: url(#arrowhead);
+  transition: all 0.3s ease;
 }
 .group:hover .edge-path {
-  marker-end: url(#arrowhead-active);
+  /* marker-end is handled by React state for correct color */
 }

@@ -27,6 +27,7 @@ import {
   MIN_NODE_HEIGHT,
   COLORS,
   NODE_COLORS,
+  NODE_HEADER_HEIGHT,
 } from "../constants";
 import {
   sendChatMessage,
@@ -155,7 +156,12 @@ const computeSurroundChildPositions = (
   return positionsById;
 };
 
-type LayoutType = "force" | "tree-tb" | "tree-lr" | "hybrid" | "isolate-subgraph";
+type LayoutType =
+  | "force"
+  | "tree-tb"
+  | "tree-lr"
+  | "hybrid"
+  | "isolate-subgraph";
 
 interface LayoutOption {
   type: LayoutType;
@@ -291,21 +297,38 @@ const resolveCollisionsInScope = (
   allNodes: GraphNode[],
   scopeEdges: GraphEdge[],
   fixedNodeId: string | null,
-  currentScopeId: string | null | undefined
+  currentScopeId: string | null | undefined,
+  selectedNodeIds: Set<string>
 ) => {
   const scopeNodes = allNodes.filter((n) => n.parentId == currentScopeId);
   if (scopeNodes.length === 0) return allNodes;
 
+  // Map to effective layout nodes (handling compact size for unselected)
+  const effectiveNodes = scopeNodes.map((n) => ({
+    ...n,
+    width: selectedNodeIds.has(n.id)
+      ? n.width || DEFAULT_NODE_WIDTH
+      : DEFAULT_NODE_WIDTH, // Width stays uniform for now, or match compact width logic if needed
+    height: selectedNodeIds.has(n.id)
+      ? n.height || DEFAULT_NODE_HEIGHT
+      : NODE_HEADER_HEIGHT,
+  }));
+
   const resolvedScopeNodes = resolveCollisionsService(
-    scopeNodes,
+    effectiveNodes,
     scopeEdges,
     fixedNodeId ?? undefined
   );
-  const resolvedById = new Map<string, GraphNode>(
-    resolvedScopeNodes.map((n) => [n.id, n])
+
+  // Map positions back to original nodes (preserving original dimensions)
+  const resolvedById = new Map<string, { x: number; y: number }>(
+    resolvedScopeNodes.map((n) => [n.id, { x: n.x, y: n.y }])
   );
 
-  return allNodes.map((node) => resolvedById.get(node.id) ?? node);
+  return allNodes.map((node) => {
+    const pos = resolvedById.get(node.id);
+    return pos ? { ...node, x: pos.x, y: pos.y } : node;
+  });
 };
 
 export const Canvas: React.FC<CanvasProps> = ({
@@ -719,7 +742,8 @@ export const Canvas: React.FC<CanvasProps> = ({
           currentNodes,
           edges,
           fixedNodeId ?? null,
-          currentScopeId ?? null
+          currentScopeId ?? null,
+          selectedNodeIds
         );
       });
     },
@@ -1061,7 +1085,8 @@ export const Canvas: React.FC<CanvasProps> = ({
             movedNodes,
             edges,
             draggingId,
-            currentScopeId ?? null
+            currentScopeId ?? null,
+            selectedNodeIds
           );
         });
       } else if (resizingId && resizeDirection) {
@@ -1462,25 +1487,49 @@ export const Canvas: React.FC<CanvasProps> = ({
     if (nodes.length === 0) return;
 
     setNodes((currentNodes) => {
+      // Create effective nodes for layout calculation
+      const effectiveNodes = currentNodes.map((n) => ({
+        ...n,
+        height: selectedNodeIds.has(n.id)
+          ? n.height || DEFAULT_NODE_HEIGHT
+          : NODE_HEADER_HEIGHT,
+      }));
+
+      let laidOutNodes: GraphNode[] = currentNodes;
+
       switch (type) {
         case "force":
-          return applyForceLayout(currentNodes, edges);
+          laidOutNodes = applyForceLayout(effectiveNodes, edges);
+          break;
         case "tree-tb":
-          return applyTreeLayout(currentNodes, edges, "TB");
+          laidOutNodes = applyTreeLayout(effectiveNodes, edges, "TB");
+          break;
         case "tree-lr":
-          return applyTreeLayout(currentNodes, edges, "LR");
+          laidOutNodes = applyTreeLayout(effectiveNodes, edges, "LR");
+          break;
         case "hybrid":
-          return applyHybridLayout(currentNodes, edges, "TB"); // Default to TB hybrid
+          laidOutNodes = applyHybridLayout(effectiveNodes, edges, "TB");
+          break;
         case "isolate-subgraph":
           if (!selectedNodeId) return currentNodes;
-          return applySubgraphIsolationLayout(
-            currentNodes,
+          laidOutNodes = applySubgraphIsolationLayout(
+            effectiveNodes,
             edges,
             selectedNodeId
           );
+          break;
         default:
           return currentNodes;
       }
+
+      // Map positions back to original nodes
+      const posMap = new Map(
+        laidOutNodes.map((n) => [n.id, { x: n.x, y: n.y }])
+      );
+      return currentNodes.map((n) => {
+        const pos = posMap.get(n.id);
+        return pos ? { ...n, x: pos.x, y: pos.y } : n;
+      });
     });
   };
 
@@ -1732,8 +1781,9 @@ export const Canvas: React.FC<CanvasProps> = ({
             </button>
             {isLayoutMenuOpen && (
               <div
-                className="absolute z-50 w-64 bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl p-3 pointer-events-auto animate-in fade-in slide-in-from-right-4
-                left-full ml-3 top-1/2 -translate-y-1/2 origin-left"
+                className="absolute z-50 w-64 bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl p-3 pointer-events-auto animate-in fade-in
+                bottom-full mb-3 right-0 origin-bottom-right slide-in-from-bottom-2
+                md:bottom-0 md:mb-0 md:left-full md:ml-3 md:right-auto md:top-auto md:origin-bottom-left md:slide-in-from-left-2 md:slide-in-from-bottom-0"
               >
                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 px-1">
                   Choose Layout

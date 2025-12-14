@@ -194,7 +194,7 @@ export const Edge: React.FC<EdgeProps> = ({
       if (Math.abs(dx) < 10) curvature = 0.2;
   }
 
-  const cpX = midX - dy * curvature; 
+    const cpX = midX - dy * curvature; 
   const cpY = midY + dx * curvature;
 
   const pathD = curvature === 0 
@@ -220,6 +220,7 @@ export const Edge: React.FC<EdgeProps> = ({
       
   const strokeWidth = isHighlighted ? 3 : isMediumHighlight ? 2.5 : 2;
   const opacity = isMediumHighlight ? 0.6 : 1;
+  const markerId = isHighlighted || isMediumHighlight ? "arrowhead-active" : "arrowhead";
 
   return (
     <g className="group pointer-events-auto" style={{ opacity }}>
@@ -228,6 +229,7 @@ export const Edge: React.FC<EdgeProps> = ({
         fill="none"
         stroke={strokeColor}
         strokeWidth={strokeWidth}
+        markerEnd={`url(#${markerId})`}
         className="edge-path transition-all duration-300 group-hover:stroke-sky-400 group-hover:stroke-[3px]"
       />
       

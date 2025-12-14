@@ -1895,20 +1895,17 @@ const App: React.FC = () => {
     [nodes]
   );
 
-  // Breadcrumbs: Use BFS to find shortest path from Root to Selected Node
+  // Breadcrumbs: show scope hierarchy plus the lineage of connected nodes within that scope
   const getBreadcrumbs = () => {
     const rootName = dirName || "Home";
-    const combinedCrumbs: { id: string | null; name: string; type: string }[] =
-      [];
+    type Breadcrumb = { id: string | null; name: string; type: "root" | "scope" | "node" };
+    const crumbs: Breadcrumb[] = [];
     const seenIds = new Set<string | null>();
-    const pushCrumb = (crumb: {
-      id: string | null;
-      name: string;
-      type: string;
-    }) => {
+
+    const pushCrumb = (crumb: Breadcrumb) => {
       const key = crumb.id ?? null;
       if (seenIds.has(key)) return;
-      combinedCrumbs.push(crumb);
+      crumbs.push(crumb);
       seenIds.add(key);
     };
 
@@ -1917,21 +1914,25 @@ const App: React.FC = () => {
     const activeId =
       selectedNodeIds.size > 0 ? Array.from(selectedNodeIds)[0] : null;
     const activeNode = activeId ? nodeMap.get(activeId) : null;
+    const activeScopeId = activeNode
+      ? activeNode.parentId ?? null
+      : currentScopeId ?? null;
+    const scopeNode = activeScopeId ? nodeMap.get(activeScopeId) : null;
 
-    const appendParentChain = (node?: GraphNode | null) => {
+    const appendScopeAncestors = (node?: GraphNode | null) => {
       if (!node) return;
-      const ancestorStack: GraphNode[] = [];
+      const stack: GraphNode[] = [];
       const visited = new Set<string>();
       let current: GraphNode | undefined | null = node;
       while (current?.parentId) {
         if (visited.has(current.parentId)) break;
         const parent = nodeMap.get(current.parentId);
         if (!parent) break;
-        ancestorStack.unshift(parent);
+        stack.unshift(parent);
         visited.add(parent.id);
         current = parent;
       }
-      ancestorStack.forEach((ancestor) =>
+      stack.forEach((ancestor) =>
         pushCrumb({
           id: ancestor.id,
           name: getNodeTitleForBreadcrumb(ancestor),
@@ -1940,103 +1941,101 @@ const App: React.FC = () => {
       );
     };
 
-    if (activeNode) {
-      appendParentChain(activeNode);
-    } else if (currentScopeId) {
-      const scopeNode = nodeMap.get(currentScopeId);
-      appendParentChain(scopeNode);
-      if (scopeNode) {
-        pushCrumb({
-          id: scopeNode.id,
-          name: getNodeTitleForBreadcrumb(scopeNode),
-          type: "scope",
-        });
-      }
+    if (scopeNode) {
+      appendScopeAncestors(scopeNode);
+      pushCrumb({
+        id: scopeNode.id,
+        name: getNodeTitleForBreadcrumb(scopeNode),
+        type: "scope",
+      });
     }
 
-    if (activeId) {
-      const currentNodes = nodes.filter((n) => n.parentId == currentScopeId);
-      const currentEdges = edges.filter((e) => e.parentId == currentScopeId);
+    const nodesInScope = nodes.filter((n) => n.parentId == activeScopeId);
+    const edgesInScope = edges.filter((e) => e.parentId == activeScopeId);
 
-      if (currentNodes.length > 0) {
-        // Heuristic: The "Root" of this scope is usually the first node created (index 0)
-        // or the node that has the currentScopeId (if we are in root scope, it's just index 0)
-        const rootNode = currentNodes[0];
+    const buildLineageInScope = () => {
+      if (!activeId || !activeNode) return [] as GraphNode[];
+      if (nodesInScope.length === 0) return [activeNode];
 
-        // If selected node IS the root, just show it
-        if (activeId === rootNode.id) {
-          pushCrumb({
-            id: rootNode.id,
-            name: getNodeTitleForBreadcrumb(rootNode),
-            type: "node",
-          });
-        } else {
-          // Run BFS to find path from Root -> Selected
-          const adjacency: Record<string, string[]> = {};
-          currentNodes.forEach((n) => (adjacency[n.id] = []));
+      const nodeIdsInScope = new Set(nodesInScope.map((n) => n.id));
+      if (!nodeIdsInScope.has(activeId)) return [activeNode];
 
-          // Build Undirected Graph to handle any edge direction
-          currentEdges.forEach((e) => {
-            if (adjacency[e.source]) adjacency[e.source].push(e.target);
-            if (adjacency[e.target]) adjacency[e.target].push(e.source);
-          });
+      const adjacency = new Map<string, Set<string>>();
+      nodesInScope.forEach((n) => adjacency.set(n.id, new Set()));
+      edgesInScope.forEach((edge) => {
+        const sourceNeighbors = adjacency.get(edge.source);
+        const targetNeighbors = adjacency.get(edge.target);
+        if (sourceNeighbors) sourceNeighbors.add(edge.target);
+        if (targetNeighbors) targetNeighbors.add(edge.source);
+      });
 
-          const queue: string[] = [rootNode.id];
-          const visited = new Set<string>([rootNode.id]);
-          const parentMap = new Map<string, string>(); // child -> parent (for path reconstruction)
-
-          let found = false;
-          while (queue.length > 0) {
-            const curr = queue.shift()!;
-            if (curr === activeId) {
-              found = true;
-              break;
-            }
-            for (const neighbor of adjacency[curr] || []) {
-              if (!visited.has(neighbor)) {
-                visited.add(neighbor);
-                parentMap.set(neighbor, curr);
-                queue.push(neighbor);
-              }
-            }
-          }
-
-          let appendedPath = false;
-          if (found) {
-            const pathNodes: GraphNode[] = [];
-            let curr: string | undefined = activeId;
-            while (curr) {
-              const node = nodeMap.get(curr);
-              if (node) pathNodes.unshift(node);
-              curr = parentMap.get(curr);
-            }
-            pathNodes.forEach((n) =>
-              pushCrumb({
-                id: n.id,
-                name: getNodeTitleForBreadcrumb(n),
-                type: "node",
-              })
-            );
-            appendedPath = true;
-          }
-
-          if (!appendedPath && activeNode) {
-            pushCrumb({
-              id: activeNode.id,
-              name: getNodeTitleForBreadcrumb(activeNode),
-              type: "node",
-            });
-          }
+      const inDegree = new Map<string, number>();
+      nodesInScope.forEach((n) => inDegree.set(n.id, 0));
+      edgesInScope.forEach((edge) => {
+        const current = inDegree.get(edge.target);
+        if (typeof current === "number") {
+          inDegree.set(edge.target, current + 1);
         }
-      } else if (activeNode) {
-        pushCrumb({
-          id: activeNode.id,
-          name: getNodeTitleForBreadcrumb(activeNode),
-          type: "node",
+      });
+
+      const rootCandidates = nodesInScope.filter(
+        (n) => (inDegree.get(n.id) || 0) === 0
+      );
+      const traversalStarts =
+        rootCandidates.length > 0 ? rootCandidates : nodesInScope;
+
+      const queue: string[] = [];
+      const visited = new Set<string>();
+      const parentMap = new Map<string, string>();
+
+      const enqueue = (id: string) => {
+        if (visited.has(id)) return;
+        visited.add(id);
+        queue.push(id);
+      };
+
+      traversalStarts.forEach((node) => enqueue(node.id));
+
+      let found = false;
+      while (queue.length > 0) {
+        const current = queue.shift()!;
+        if (current === activeId) {
+          found = true;
+          break;
+        }
+        const neighbors = adjacency.get(current);
+        if (!neighbors) continue;
+        neighbors.forEach((neighbor) => {
+          if (visited.has(neighbor)) return;
+          parentMap.set(neighbor, current);
+          enqueue(neighbor);
         });
       }
+
+      if (!found) return [activeNode];
+
+      const lineagePath: GraphNode[] = [];
+      let cursor: string | undefined = activeId;
+      while (cursor) {
+        const node = nodeMap.get(cursor);
+        if (node) lineagePath.unshift(node);
+        cursor = parentMap.get(cursor);
+      }
+      return lineagePath;
+    };
+
+    if (activeNode) {
+      const lineagePath = buildLineageInScope();
+      lineagePath.forEach((node) =>
+        pushCrumb({
+          id: node.id,
+          name: getNodeTitleForBreadcrumb(node),
+          type: "node",
+        })
+      );
     }
-    return combinedCrumbs;
+
+    return crumbs;
   };
 
   const filteredNodes = nodes.filter((n) => n.parentId == currentScopeId); // null == undefined check
