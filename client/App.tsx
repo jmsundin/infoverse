@@ -6,7 +6,16 @@ import React, {
   useMemo,
 } from "react";
 import { Canvas } from "./components/Canvas";
-import { SidePanel, WebContent, SidePanelLayout } from "./components/SidePanel";
+import { SidePanel, WebContent, SidePanelLayout, SidePanelDockPosition } from "./components/SidePanel";
+
+type ActiveSidePane = {
+  id: string; // Unique ID for this panel instance
+  type: "web" | "node";
+  data: string;
+  layout?: SidePanelLayout; // Store individual layout for each panel
+  initialDockPosition?: SidePanelDockPosition;
+  initialWidthPercent?: number;
+};
 import { GraphNodeComponent } from "./components/GraphNode";
 import { SearchBar } from "./components/SearchBar";
 import { NodeListDrawer } from "./components/NodeListDrawer";
@@ -267,10 +276,7 @@ const App: React.FC = () => {
     else setSelectedNodeIds(new Set([id]));
   }, []);
 
-  const [activeSidePane, setActiveSidePane] = useState<{
-    type: "web" | "node";
-    data: string;
-  } | null>(null);
+  const [activeSidePanes, setActiveSidePanes] = useState<ActiveSidePane[]>([]);
   const [expandingNodeIds, setExpandingNodeIds] = useState<string[]>([]);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [connectingNodeId, setConnectingNodeId] = useState<string | null>(null);
@@ -377,45 +383,65 @@ const App: React.FC = () => {
   const prevNodesRef = useRef<GraphNode[]>(nodes);
   const prevEdgesRef = useRef<GraphEdge[]>(edges);
 
-  // Layout & Visual Stability
-  const [sidePanelLayout, setSidePanelLayout] =
-    useState<SidePanelLayout | null>(null);
-  const prevPanelLeftShiftRef = useRef(0);
-  const prevPanelTopShiftRef = useRef(0);
+  // Layout & Visual Stability for multiple side panels
+  const [sidePanelLayouts, setSidePanelLayouts] = useState<
+    Record<string, SidePanelLayout>
+  >({});
+  const [canvasShiftX, setCanvasShiftX] = useState(0);
+  const [canvasShiftY, setCanvasShiftY] = useState(0);
 
-  const handleSidePanelLayoutChange = useCallback((layout: SidePanelLayout) => {
-    setSidePanelLayout(layout);
+  const isAnyPanelResizing = useMemo(
+    () => Object.values(sidePanelLayouts).some((l) => l.isResizing),
+    [sidePanelLayouts]
+  );
 
-    // Visual Stability Logic: Compensate ViewTransform if Margins change
+  // Layout & Visual Stability for multiple side panels
+  useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const { width, dockPosition } = layout;
     let newLeftShift = 0;
+    let newRightShift = 0;
     let newTopShift = 0;
+    let newBottomShift = 0;
 
-    // Matches logic in Canvas.tsx
-    if (
-      dockPosition === "left" ||
-      dockPosition === "top-left" ||
-      dockPosition === "bottom-left"
-    ) {
-      newLeftShift = (window.innerWidth * width) / 100;
+    Object.values(sidePanelLayouts).forEach((layout) => {
+      const { width, height, dockPosition } = layout;
+      if (dockPosition === "left") {
+        newLeftShift = Math.max(newLeftShift, (window.innerWidth * width) / 100);
+      } else if (dockPosition === "right") {
+        newRightShift = Math.max(newRightShift, (window.innerWidth * width) / 100);
+      } else if (dockPosition === "top-left" || dockPosition === "top-right") {
+        newTopShift = Math.max(newTopShift, (window.innerHeight * height) / 100);
+      } else if (dockPosition === "bottom-left" || dockPosition === "bottom-right") {
+        newBottomShift = Math.max(newBottomShift, (window.innerHeight * height) / 100);
+      }
+    });
+
+    // Sum up effective shifts
+    const totalXShift = newLeftShift - newRightShift; // Left shift positive, Right shift negative
+    const totalYShift = newTopShift - newBottomShift; // Top shift positive, Bottom shift negative
+
+    // Only update if there's a significant change to prevent unnecessary re-renders
+    if (Math.abs(totalXShift - canvasShiftX) > 1) {
+      setCanvasShiftX(totalXShift);
     }
-
-    const deltaX = newLeftShift - prevPanelLeftShiftRef.current;
-    const deltaY = newTopShift - prevPanelTopShiftRef.current;
-
-    if (Math.abs(deltaX) > 1 || Math.abs(deltaY) > 1) {
-      setViewTransform((prev) => ({
-        ...prev,
-        x: prev.x - deltaX,
-        y: prev.y - deltaY,
-      }));
+    if (Math.abs(totalYShift - canvasShiftY) > 1) {
+      setCanvasShiftY(totalYShift);
     }
+  }, [sidePanelLayouts, canvasShiftX, canvasShiftY]);
 
-    prevPanelLeftShiftRef.current = newLeftShift;
-    prevPanelTopShiftRef.current = newTopShift;
-  }, []);
+  const handleSidePanelLayoutChange = useCallback(
+    (id: string, layout: SidePanelLayout) => {
+      setSidePanelLayouts((prev) => {
+        const nextLayouts = {
+          ...prev,
+          [id]: layout,
+        };
+        return nextLayouts;
+      });
+    },
+    []
+  );
 
   // --- Check Auth on Mount ---
   useEffect(() => {
@@ -819,9 +845,10 @@ const App: React.FC = () => {
         prev.filter((e) => !idsSet.has(e.source) && !idsSet.has(e.target))
       );
 
-      if (activeSidePane?.type === "node" && idsSet.has(activeSidePane.data)) {
-        setActiveSidePane(null);
-      }
+      // Close any side panels associated with deleted nodes
+      setActiveSidePanes((prev) =>
+        prev.filter((pane) => !(pane.type === "node" && idsSet.has(pane.data)))
+      );
 
       setSelectedNodeIds((prev) => {
         const next = new Set(prev);
@@ -872,7 +899,7 @@ const App: React.FC = () => {
         },
       });
     },
-    [nodes, edges, activeSidePane, dirHandle, user, deleteNodeFromDisk]
+    [nodes, edges, dirHandle, user, deleteNodeFromDisk]
   );
 
   const handleDeleteNode = useCallback(
@@ -1438,17 +1465,74 @@ const App: React.FC = () => {
 
   const handleMaximizeNode = useCallback(
     (id: string) => {
-      if (activeSidePane?.type === "node" && activeSidePane.data === id) {
-        setActiveSidePane(null);
-      } else {
-        setActiveSidePane({ type: "node", data: id });
-      }
+      setActiveSidePanes((prevPanes) => {
+        const existingNodePane = prevPanes.find(
+          (pane) => pane.type === "node" && pane.data === id
+        );
+        if (existingNodePane) {
+          // If already open, close it
+          return prevPanes.filter((pane) => pane.id !== existingNodePane.id);
+        } else {
+          // Otherwise, open a new one on the right
+          return [
+            ...prevPanes,
+            {
+              id: crypto.randomUUID(),
+              type: "node",
+              data: id,
+              initialDockPosition: "right",
+            },
+          ];
+        }
+      });
     },
-    [activeSidePane]
+    []
   );
 
   const handleOpenLink = useCallback((url: string) => {
-    setActiveSidePane({ type: "web", data: url });
+    const isWikipedia = url.includes("wikipedia.org/wiki/");
+    if (isWikipedia) {
+      // Create a new side panel for Wikipedia links on the left
+      setActiveSidePanes((prevPanes) => [
+        ...prevPanes,
+        {
+          id: crypto.randomUUID(),
+          type: "web",
+          data: url,
+          initialDockPosition: "left",
+          initialWidthPercent: 33,
+        },
+      ]);
+    } else {
+      // For other web links, reuse an existing web panel or create a new one on the right
+      setActiveSidePanes((prevPanes) => {
+        const existingWebPane = prevPanes.find((pane) => pane.type === "web" && pane.initialDockPosition !== "left");
+        if (existingWebPane) {
+          return prevPanes.map((pane) =>
+            pane.id === existingWebPane.id ? { ...pane, data: url } : pane
+          );
+        }
+        return [
+          ...prevPanes,
+          {
+            id: crypto.randomUUID(),
+            type: "web",
+            data: url,
+            initialDockPosition: "right",
+            initialWidthPercent: 33,
+          },
+        ];
+      });
+    }
+  }, []);
+
+  const handleCloseSidePane = useCallback((id: string) => {
+    setActiveSidePanes((prevPanes) => prevPanes.filter((pane) => pane.id !== id));
+    setSidePanelLayouts((prevLayouts) => {
+      const newLayouts = { ...prevLayouts };
+      delete newLayouts[id];
+      return newLayouts;
+    });
   }, []);
 
   const handleNavigateToNodeLink = useCallback(
@@ -1495,25 +1579,6 @@ const App: React.FC = () => {
     },
     [nodes, setCurrentScopeId, setSelectedNodeIds, setViewTransform]
   );
-
-  const handleCloseSidePane = useCallback(() => {
-    setActiveSidePane(null);
-    setSidePanelLayout(null);
-
-    // Compensate for closing
-    const deltaX = 0 - prevPanelLeftShiftRef.current;
-    const deltaY = 0 - prevPanelTopShiftRef.current;
-
-    if (Math.abs(deltaX) > 1 || Math.abs(deltaY) > 1) {
-      setViewTransform((prev) => ({
-        ...prev,
-        x: prev.x - deltaX,
-        y: prev.y - deltaY,
-      }));
-    }
-    prevPanelLeftShiftRef.current = 0;
-    prevPanelTopShiftRef.current = 0;
-  }, []);
 
   const handleFocusNode = useCallback(
     (nodeId: string) => {
@@ -2038,8 +2103,14 @@ const App: React.FC = () => {
     return crumbs;
   };
 
-  const filteredNodes = nodes.filter((n) => n.parentId == currentScopeId); // null == undefined check
-  const filteredEdges = edges.filter((e) => e.parentId == currentScopeId);
+  const filteredNodes = useMemo(
+    () => nodes.filter((n) => n.parentId == currentScopeId),
+    [nodes, currentScopeId]
+  );
+  const filteredEdges = useMemo(
+    () => edges.filter((e) => e.parentId == currentScopeId),
+    [edges, currentScopeId]
+  );
 
   const handleOpenStorage = async () => {
     if (user) {
@@ -2125,52 +2196,80 @@ const App: React.FC = () => {
     }
   };
 
-  const sidebarNode =
-    activeSidePane?.type === "node"
-      ? nodes.find((n) => n.id === activeSidePane.data)
-      : null;
+  const getSidePanelContent = useCallback(
+    (activePane: ActiveSidePane) => {
+      const sidebarNode =
+        activePane.type === "node"
+          ? nodes.find((n) => n.id === activePane.data)
+          : null;
+      return (
+        <ErrorBoundary>
+          {activePane.type === "web" ? (
+            <WebContent
+              url={activePane.data}
+              onClose={() => handleCloseSidePane(activePane.id)}
+              onWikipediaLinkClick={handleOpenLink} // Pass handleOpenLink for new Wikipedia panels
+            />
+          ) : sidebarNode ? (
+            <GraphNodeComponent
+              key={sidebarNode.id}
+              node={sidebarNode}
+              allNodes={nodes}
+              viewMode="sidebar"
+              onUpdate={handleUpdateNode}
+              onExpand={handleExpandNode}
+              onExpandFromWikidata={handleExpandNodeFromWikidata}
+              onDelete={handleDeleteNode}
+              onToggleMaximize={handleMaximizeNode}
+              onOpenLink={handleOpenLink}
+              onNavigateToNode={handleNavigateToNodeLink}
+              autoGraphEnabled={autoGraphEnabled}
+              onSetAutoGraphEnabled={setAutoGraphEnabled}
+            />
+          ) : (
+            <div className="p-4 text-slate-500">Node not found.</div>
+          )}
+        </ErrorBoundary>
+      );
+    },
+    [
+      nodes,
+      handleCloseSidePane,
+      handleUpdateNode,
+      handleExpandNode,
+      handleExpandNodeFromWikidata,
+      handleDeleteNode,
+      handleMaximizeNode,
+      handleOpenLink,
+      handleNavigateToNodeLink,
+      autoGraphEnabled,
+      setAutoGraphEnabled,
+    ]
+  );
 
-  const sidePanelContent = useMemo(() => {
-    if (!activeSidePane) return null;
-    return (
-      <ErrorBoundary>
-        {activeSidePane.type === "web" ? (
-          <WebContent url={activeSidePane.data} onClose={handleCloseSidePane} />
-        ) : sidebarNode ? (
-          <GraphNodeComponent
-            key={sidebarNode.id}
-            node={sidebarNode}
-            allNodes={nodes}
-            viewMode="sidebar"
-            onUpdate={handleUpdateNode}
-            onExpand={handleExpandNode}
-            onExpandFromWikidata={handleExpandNodeFromWikidata}
-            onDelete={handleDeleteNode}
-            onToggleMaximize={handleMaximizeNode}
-            onOpenLink={handleOpenLink}
-            onNavigateToNode={handleNavigateToNodeLink}
-            autoGraphEnabled={autoGraphEnabled}
-            onSetAutoGraphEnabled={setAutoGraphEnabled}
-          />
-        ) : (
-          <div className="p-4 text-slate-500">Node not found.</div>
-        )}
-      </ErrorBoundary>
-    );
-  }, [
-    activeSidePane,
-    sidebarNode,
-    handleCloseSidePane,
-    handleUpdateNode,
-    handleExpandNode,
-    handleExpandNodeFromWikidata,
-    handleDeleteNode,
-    handleMaximizeNode,
-    handleOpenLink,
-    handleNavigateToNodeLink,
-    autoGraphEnabled,
-    setAutoGraphEnabled,
-  ]);
+  // Memoize SidePanels to prevent re-rendering on canvas pan (viewTransform change)
+  const sidePanels = useMemo(
+    () =>
+      activeSidePanes.map((pane) => (
+        <SidePanel
+          key={pane.id}
+          id={pane.id}
+          onClose={handleCloseSidePane}
+          initialWidthPercent={pane.initialWidthPercent}
+          initialDockPosition={pane.initialDockPosition}
+          hideDefaultDragHandle={pane.type === "node"} // Hide drag handle for node panels
+          onLayoutChange={handleSidePanelLayoutChange}
+        >
+          {getSidePanelContent(pane)}
+        </SidePanel>
+      )),
+    [
+      activeSidePanes,
+      handleCloseSidePane,
+      handleSidePanelLayoutChange,
+      getSidePanelContent,
+    ]
+  );
 
   return (
     <div className="flex w-screen h-screen overflow-hidden bg-slate-900 text-slate-200 font-sans">
@@ -2178,7 +2277,7 @@ const App: React.FC = () => {
         {/* Auth/Folder/Search Buttons */}
         <div
           className={`absolute top-4 right-4 z-[60] flex gap-3 items-center pointer-events-none transition-all duration-200 ${
-            activeSidePane ? "opacity-0 invisible" : "opacity-100 visible"
+            activeSidePanes.length > 0 ? "opacity-0 invisible" : "opacity-100 visible"
           }`}
         >
           {/* Search Button */}
@@ -2391,21 +2490,16 @@ const App: React.FC = () => {
             selectedNodeIds={selectedNodeIds}
             onNodeSelect={handleNodeSelect}
             onMultiSelect={handleBoxSelect}
-            sidePanelLayout={sidePanelLayout}
+            // Pass the aggregated canvas shifts to Canvas for positioning
+            canvasShiftX={canvasShiftX}
+            canvasShiftY={canvasShiftY}
+            isResizing={isAnyPanelResizing}
             onSelectionTooltipChange={setSelectionTooltip}
           />
         </ErrorBoundary>
       </div>
 
-      {activeSidePane && (
-        <SidePanel
-          onClose={handleCloseSidePane}
-          hideDefaultDragHandle={!!sidebarNode}
-          onLayoutChange={handleSidePanelLayoutChange}
-        >
-          {sidePanelContent}
-        </SidePanel>
-      )}
+      {sidePanels}
 
       {selectionTooltip && !connectingNodeId && (
         <SelectionTooltip

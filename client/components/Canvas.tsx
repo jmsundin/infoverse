@@ -75,8 +75,10 @@ interface CanvasProps {
   selectedNodeIds: Set<string>;
   onNodeSelect: (id: string | null, multi?: boolean) => void;
   onMultiSelect?: (ids: string[], multi?: boolean) => void;
-  sidePanelLayout?: SidePanelLayout | null;
+  canvasShiftX: number;
+  canvasShiftY: number;
   onSelectionTooltipChange?: (tooltip: SelectionTooltipState | null) => void;
+  isResizing?: boolean;
 }
 
 // Semantic Zoom Thresholds
@@ -367,8 +369,10 @@ export const Canvas: React.FC<CanvasProps> = ({
   selectedNodeIds,
   onNodeSelect,
   onMultiSelect,
-  sidePanelLayout,
+  isResizing,
   onSelectionTooltipChange,
+  canvasShiftX,
+  canvasShiftY,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -421,6 +425,9 @@ export const Canvas: React.FC<CanvasProps> = ({
     // Specifics for resize (which is always single node)
     nodeWidth?: number;
     nodeHeight?: number;
+    // Physics State
+    velocities?: Map<string, { vx: number; vy: number }>;
+    childrenMasses?: Map<string, number>;
   } | null>(null);
 
   const isDraggingRef = useRef(false);
@@ -664,48 +671,37 @@ export const Canvas: React.FC<CanvasProps> = ({
           if (event.type === "mousedown" || event.type === "touchstart")
             return false;
         }
-        if (event.type === "wheel" && event.ctrlKey) return true;
-        if (event.type === "wheel" && !event.ctrlKey) return false;
+        // Disable zoom/pan if interacting with a node or the selection tooltip
         const nodeElement = target.closest(".graph-node") as HTMLElement;
         if (nodeElement) {
           if (event.type === "mousedown" || event.type === "touchstart")
             return false;
         }
         if (target.closest(".selection-tooltip")) return false;
-        return !event.button;
+
+        // Allow wheel events for zoom ONLY if Ctrl is pressed
+        if (event.type === "wheel") return event.ctrlKey;
+        return !event.button; // Only allow panning with no button pressed (i.e. mouse wheel, or touch pan)
       });
-
-    selection.call(zoom).on("dblclick.zoom", null);
     zoomBehaviorRef.current = zoom;
-
-    const wheelHandler = (event: WheelEvent) => {
-      if (event.ctrlKey) return;
-      if (draggingIdRef.current || resizingIdRef.current) {
-        event.preventDefault();
-        return;
-      }
-
-      const target = event.target as HTMLElement;
-      const nodeElement = target.closest(".graph-node") as HTMLElement;
-      if (nodeElement && nodeElement.dataset.selected === "true") return;
-
-      event.preventDefault();
-      event.stopPropagation();
-
-      const currentK = d3.zoomTransform(selection.node()!).k;
-      zoom.translateBy(
-        selection,
-        -event.deltaX / currentK,
-        -event.deltaY / currentK
-      );
-    };
-
-    const containerEl = containerRef.current;
-    containerEl.addEventListener("wheel", wheelHandler, { passive: false });
+    selection
+      .call(zoom)
+      .on("dblclick.zoom", null)
+      .on("wheel.pan", (event) => {
+        if (!event.ctrlKey) {
+          event.preventDefault();
+          const currentT = d3.zoomTransform(selection.node()!);
+          zoom.translateBy(
+            selection,
+            -event.deltaX / currentT.k,
+            -event.deltaY / currentT.k
+          );
+        }
+      });
 
     return () => {
       selection.on(".zoom", null);
-      containerEl.removeEventListener("wheel", wheelHandler);
+      selection.on("wheel.pan", null);
     };
   }, [onViewTransformChange, onNavigateDown, onNavigateUp, currentScopeId]);
 
@@ -993,6 +989,14 @@ export const Canvas: React.FC<CanvasProps> = ({
           const processed = new Set<string>();
           const roots = new Set(initialPositions.keys());
 
+          // Initialize Physics State if needed
+          if (!dragStartRef.current!.velocities) {
+            dragStartRef.current!.velocities = new Map();
+            dragStartRef.current!.childrenMasses = new Map();
+          }
+          const velocities = dragStartRef.current!.velocities!;
+          const masses = dragStartRef.current!.childrenMasses!;
+
           // 1. Calculate deltas for dragged nodes (roots of movement)
           roots.forEach((id) => {
             const init = initialPositions.get(id);
@@ -1000,6 +1004,7 @@ export const Canvas: React.FC<CanvasProps> = ({
             if (init && current) {
               const targetX = init.x + dx;
               const targetY = init.y + dy;
+              // Parent moves directly (infinite mass/force)
               deltas.set(id, {
                 dx: targetX - current.x,
                 dy: targetY - current.y,
@@ -1042,37 +1047,120 @@ export const Canvas: React.FC<CanvasProps> = ({
 
             if (children.length === 0) continue;
 
-            // Determine Deltas for Children
+            // Determine Deltas for Children with Physics
             if (roots.has(pid)) {
-              // This is a dragged root -> Surround Logic for immediate children
-              // Calculate parent's NEW position
+              // This is a dragged root -> Apply Mass/Inertia Logic for immediate children
+
+              // Calculate parent's NEW position (target)
               const parentNewPos = {
                 ...parentNode,
                 x: parentNode.x + pDelta.dx,
                 y: parentNode.y + pDelta.dy,
               };
 
+              // Where children SHOULD be (Ideal formation)
               const surroundPositions = computeSurroundChildPositions(
                 parentNewPos,
                 children
               );
 
+              // Physics Constants
+              const SPRING_STRENGTH = 0.15; // How strongly they are pulled to target
+              const DAMPING = 0.8; // Friction (0-1)
+              const MASS_BASE = 1.0;
+
               children.forEach((c) => {
                 const target = surroundPositions.get(c.id);
                 if (target) {
+                  // Initialize mass if new
+                  if (!masses.has(c.id)) {
+                    masses.set(c.id, MASS_BASE + Math.random() * 0.5); // Slight variance
+                  }
+                  const mass = masses.get(c.id)!;
+
+                  // Current Velocity
+                  let v = velocities.get(c.id) || { vx: 0, vy: 0 };
+
+                  // Vector to target
+                  const distToTargetX = target.x - c.x;
+                  const distToTargetY = target.y - c.y;
+
+                  // Force = Spring * Distance
+                  const fx = distToTargetX * SPRING_STRENGTH;
+                  const fy = distToTargetY * SPRING_STRENGTH;
+
+                  // Acceleration = Force / Mass
+                  const ax = fx / mass;
+                  const ay = fy / mass;
+
+                  // Update Velocity
+                  v.vx = (v.vx + ax) * DAMPING;
+                  v.vy = (v.vy + ay) * DAMPING;
+
+                  // Check if node is "in front" of parent movement
+                  // Parent Velocity vector (approx by delta this frame)
+                  const parentVx = incDx;
+                  const parentVy = incDy;
+                  const parentSpeed = Math.sqrt(
+                    parentVx * parentVx + parentVy * parentVy
+                  );
+
+                  let avoidanceDx = 0;
+                  let avoidanceDy = 0;
+
+                  if (parentSpeed > 1) {
+                    // Only if moving significantly
+                    // Vector from Parent Center to Child Center
+                    const pCx = parentNode.x + (parentNode.width || 0) / 2;
+                    const pCy = parentNode.y + (parentNode.height || 0) / 2;
+                    const cCx = c.x + (c.width || 0) / 2;
+                    const cCy = c.y + (c.height || 0) / 2;
+
+                    const relX = cCx - pCx;
+                    const relY = cCy - pCy;
+
+                    // Dot product to check alignment
+                    // If (rel . parentV) > 0, child is roughly in front
+                    const dot = relX * parentVx + relY * parentVy;
+
+                    if (dot > 0) {
+                      // It is in front. Push it aside (perpendicular to movement).
+                      // Perpendicular vector: (-Vy, Vx)
+                      const perpX = -parentVy;
+                      const perpY = parentVx;
+
+                      // Push away from movement line
+                      // Check which side of the line the child is on (cross product z-component)
+                      const crossZ = parentVx * relY - parentVy * relX;
+                      const pushDir = crossZ > 0 ? 1 : -1;
+
+                      const PUSH_STRENGTH = 2.0;
+                      avoidanceDx =
+                        (perpX * pushDir * PUSH_STRENGTH) / parentSpeed; // Normalize
+                      avoidanceDy =
+                        (perpY * pushDir * PUSH_STRENGTH) / parentSpeed;
+                    }
+                  }
+
+                  v.vx += avoidanceDx;
+                  v.vy += avoidanceDy;
+
+                  velocities.set(c.id, v);
+
                   const cDelta = {
-                    dx: target.x - c.x,
-                    dy: target.y - c.y,
+                    dx: v.vx,
+                    dy: v.vy,
                   };
+
                   deltas.set(c.id, cDelta);
                   processed.add(c.id);
                   queue.push(c.id);
                 }
               });
             } else {
-              // Rigid move (inherit parent delta) for descendants
+              // Rigid move (inherit parent delta) for descendants further down
+              // Or could apply recursive physics? For now rigid is stable.
               children.forEach((c) => {
-                // Since we checked processed earlier, we can just add
                 deltas.set(c.id, pDelta);
                 processed.add(c.id);
                 queue.push(c.id);
@@ -1086,6 +1174,11 @@ export const Canvas: React.FC<CanvasProps> = ({
               return { ...node, x: node.x + d.dx, y: node.y + d.dy };
             }
             return node;
+          });
+
+          // Update physics state only for active nodes
+          velocities.forEach((v, id) => {
+            // Optional: Cap velocities if needed
           });
 
           return resolveCollisionsInScope(
@@ -1615,30 +1708,24 @@ export const Canvas: React.FC<CanvasProps> = ({
     window.matchMedia("(max-width: 768px)").matches;
 
   const canvasStyle: React.CSSProperties = useMemo(() => {
-    if (!sidePanelLayout || isMobile) return {};
-    const { width, dockPosition } = sidePanelLayout;
-    // SidePanel uses fixed positioning. We need to add margin to avoid overlap.
-    // SidePanel width is in percent.
+    if (isMobile) return {};
 
-    // Treat all docks as horizontal shifts to preserve vertical space and avoid "cut-off"
-    // top/bottom corners are treated as left/right 50% panels for canvas layout purposes
+    const style: React.CSSProperties = {};
 
-    if (
-      dockPosition === "right" ||
-      dockPosition === "top-right" ||
-      dockPosition === "bottom-right"
-    ) {
-      return { marginRight: `${width}%` };
+    if (canvasShiftX > 0) {
+      style.marginLeft = `${canvasShiftX}px`;
+    } else if (canvasShiftX < 0) {
+      style.marginRight = `${-canvasShiftX}px`;
     }
-    if (
-      dockPosition === "left" ||
-      dockPosition === "top-left" ||
-      dockPosition === "bottom-left"
-    ) {
-      return { marginLeft: `${width}%` };
+
+    if (canvasShiftY > 0) {
+      style.marginTop = `${canvasShiftY}px`;
+    } else if (canvasShiftY < 0) {
+      style.marginBottom = `${-canvasShiftY}px`;
     }
-    return {};
-  }, [sidePanelLayout, isMobile]);
+
+    return style;
+  }, [canvasShiftX, canvasShiftY, isMobile]);
 
   return (
     <div className="flex flex-col-reverse md:flex-row w-full h-full overflow-hidden bg-slate-950">
@@ -1866,9 +1953,7 @@ export const Canvas: React.FC<CanvasProps> = ({
           className="absolute inset-0 overflow-visible pointer-events-none"
           style={{
             ...canvasStyle,
-            transition: sidePanelLayout?.isResizing
-              ? "none"
-              : "margin 0.3s ease-out",
+            transition: isResizing ? "none" : "margin 0.3s ease-out",
           }}
         >
           {/* Mobile Hamburger - Fixed Top Left (stays in layout) */}

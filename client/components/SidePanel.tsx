@@ -29,27 +29,32 @@ export const useSidePanel = () => useContext(SidePanelContext);
 
 export interface SidePanelLayout {
   width: number; // percentage
+  height: number; // percentage
   dockPosition: SidePanelDockPosition;
   isMobile: boolean;
   isResizing: boolean;
 }
 
 interface SidePanelProps {
-  onClose: () => void;
+  id: string; // Unique ID for this panel instance
+  onClose: (id: string) => void;
   children: React.ReactNode;
   title?: string;
   initialWidthPercent?: number;
+  initialDockPosition?: SidePanelDockPosition;
   hideDefaultDragHandle?: boolean;
-  onLayoutChange?: (layout: SidePanelLayout) => void;
+  onLayoutChange?: (id: string, layout: SidePanelLayout) => void;
 }
 
 const SIDEBAR_WIDTH = 64;
 
 const SidePanelBase = ({
+  id,
   onClose,
   children,
   title,
   initialWidthPercent = 33,
+  initialDockPosition = "right",
   hideDefaultDragHandle = false,
   onLayoutChange,
 }: SidePanelProps) => {
@@ -59,7 +64,7 @@ const SidePanelBase = ({
   });
   const [isMobile, setIsMobile] = useState(false);
   const [dockPosition, setDockPosition] =
-    useState<SidePanelDockPosition>("right");
+    useState<SidePanelDockPosition>(initialDockPosition);
   const [isDockDragging, setIsDockDragging] = useState(false);
   const [dockPreview, setDockPreview] = useState<SidePanelDockPosition | null>(
     null
@@ -86,7 +91,8 @@ const SidePanelBase = ({
 
   useEffect(() => {
     // Determine effective width/state for layout reporting
-    let reportedWidth = dimension;
+    let reportedWidth = dimension; // Default to dimension for horizontal resizing
+    let reportedHeight = dimension; // Default to dimension for vertical resizing
     if (
       dockPosition === "top-left" ||
       dockPosition === "top-right" ||
@@ -94,15 +100,17 @@ const SidePanelBase = ({
       dockPosition === "bottom-right"
     ) {
       reportedWidth = 50; // Corner docks are always 50% width
+      reportedHeight = 50; // Corner docks are always 50% height
     }
 
-    onLayoutChange?.({
+    onLayoutChange?.(id, {
       width: reportedWidth,
+      height: reportedHeight,
       dockPosition,
       isMobile,
       isResizing: isResizingRef.current || isDockDraggingRef.current,
     });
-  }, [dimension, dockPosition, isMobile, onLayoutChange, isDockDragging]); // Added isDockDragging dependency to trigger updates during dock drag if needed
+  }, [dimension, dockPosition, isMobile, onLayoutChange, isDockDragging, id]); // Added isDockDragging dependency to trigger updates during dock drag if needed
 
   const getDockPositionFromPoint = (
     clientX: number,
@@ -501,10 +509,11 @@ const SidePanelBase = ({
 export const SidePanel = React.memo(SidePanelBase);
 
 // Web Content Component for reuse inside the panel
-export const WebContent: React.FC<{ url: string; onClose: () => void }> = ({
-  url,
-  onClose,
-}) => {
+export const WebContent: React.FC<{
+  url: string;
+  onClose: (id: string) => void;
+  onWikipediaLinkClick?: (url: string) => void; // New prop
+}> = ({ url, onClose, onWikipediaLinkClick }) => {
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
@@ -556,30 +565,54 @@ export const WebContent: React.FC<{ url: string; onClose: () => void }> = ({
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <a
-            href={url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="p-2 text-slate-400 hover:text-sky-400 hover:bg-slate-700 rounded transition-colors"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+          {isWikipedia && onWikipediaLinkClick ? (
+            <button
+              onClick={() => onWikipediaLinkClick(url)}
+              className="p-2 text-slate-400 hover:text-sky-400 hover:bg-slate-700 rounded transition-colors"
+              title="Open Wikipedia in new panel"
             >
-              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-              <polyline points="15 3 21 3 21 9" />
-              <line x1="10" y1="14" x2="21" y2="3" />
-            </svg>
-          </a>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                <polyline points="15 3 21 3 21 9" />
+                <line x1="10" y1="14" x2="21" y2="3" />
+              </svg>
+            </button>
+          ) : (
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="p-2 text-slate-400 hover:text-sky-400 hover:bg-slate-700 rounded transition-colors"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                <polyline points="15 3 21 3 21 9" />
+                <line x1="10" y1="14" x2="21" y2="3" />
+              </svg>
+            </a>
+          )}
           <button
-            onClick={onClose}
+            onClick={() => onClose(url)}
             className="p-2 text-slate-400 hover:text-red-400 hover:bg-slate-700 rounded transition-colors"
           >
             <svg
