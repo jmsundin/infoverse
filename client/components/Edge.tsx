@@ -230,7 +230,7 @@ export const Edge: React.FC<EdgeProps> = ({
         stroke={strokeColor}
         strokeWidth={strokeWidth}
         markerEnd={`url(#${markerId})`}
-        className="edge-path transition-all duration-300 group-hover:stroke-sky-400 group-hover:stroke-[3px]"
+        className="edge-path transition-colors duration-300 group-hover:stroke-sky-400 group-hover:stroke-[3px]"
       />
       
       {/* Relationship Label Badge - Hide when zoom is low/title only to reduce clutter */}

@@ -270,7 +270,10 @@ export const applyHybridLayout = (
   }
 };
 
-const getSubgraphIds = (rootId: string, edges: GraphEdge[]): Set<string> => {
+export const getSubgraphIds = (
+  rootId: string,
+  edges: GraphEdge[]
+): Set<string> => {
   const ids = new Set<string>();
   const queue = [rootId];
   ids.add(rootId);
@@ -444,7 +447,8 @@ export const applySubgraphIsolationLayout = (
 export const resolveCollisions = (
   nodes: GraphNode[],
   edges: GraphEdge[],
-  fixedNodeId?: string
+  fixedNodeId?: string,
+  activeNodeIds?: Set<string>
 ): GraphNode[] => {
   // Custom Rectangle Collision Resolution
   // Iterative relaxation to prevent overlap of rectangular nodes
@@ -453,6 +457,10 @@ export const resolveCollisions = (
   const simNodes = nodes.map((n) => ({ ...n }));
   const iterations = 3;
   const padding = 20;
+
+  // Sleep optimization: Only resolve collisions involving "awake" nodes.
+  // If activeNodeIds is provided, start with those. Otherwise all are awake.
+  const awakeNodes = activeNodeIds ? new Set(activeNodeIds) : null;
 
   for (let iter = 0; iter < iterations; iter++) {
     const quadtree = d3
@@ -509,6 +517,22 @@ export const resolveCollisions = (
 
               // Check for overlap
               if (absX < minDistX && absY < minDistY) {
+                // Sleep optimization:
+                // If neither node is awake, ignore this pre-existing collision
+                if (
+                  awakeNodes &&
+                  !awakeNodes.has(node.id) &&
+                  !awakeNodes.has(other.id)
+                ) {
+                  continue;
+                }
+
+                // If collision is processed, wake up both nodes involved
+                if (awakeNodes) {
+                  awakeNodes.add(node.id);
+                  awakeNodes.add(other.id);
+                }
+
                 // Calculate penetration depth
                 const penX = minDistX - absX;
                 const penY = minDistY - absY;

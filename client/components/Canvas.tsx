@@ -39,6 +39,7 @@ import {
   applyHybridLayout,
   applySubgraphIsolationLayout,
   resolveCollisions as resolveCollisionsService,
+  getSubgraphIds,
 } from "../services/layoutService";
 
 interface CanvasProps {
@@ -298,7 +299,8 @@ const resolveCollisionsInScope = (
   scopeEdges: GraphEdge[],
   fixedNodeId: string | null,
   currentScopeId: string | null | undefined,
-  selectedNodeIds: Set<string>
+  selectedNodeIds: Set<string>,
+  activeNodeIds?: Set<string>
 ) => {
   const scopeNodes = allNodes.filter((n) => n.parentId == currentScopeId);
   if (scopeNodes.length === 0) return allNodes;
@@ -317,7 +319,8 @@ const resolveCollisionsInScope = (
   const resolvedScopeNodes = resolveCollisionsService(
     effectiveNodes,
     scopeEdges,
-    fixedNodeId ?? undefined
+    fixedNodeId ?? undefined,
+    activeNodeIds
   );
 
   // Map positions back to original nodes (preserving original dimensions)
@@ -725,7 +728,7 @@ export const Canvas: React.FC<CanvasProps> = ({
   }, [viewTransform]);
 
   const resolveCollisions = useCallback(
-    (fixedNodeId?: string) => {
+    (fixedNodeId?: string, activeNodeIds?: Set<string>) => {
       // Use functional state update to ensure we always have latest nodes
       // AND prevent race conditions where we overwrite the position of the dragged node
       // with an old position from the simulation start.
@@ -743,7 +746,8 @@ export const Canvas: React.FC<CanvasProps> = ({
           edges,
           fixedNodeId ?? null,
           currentScopeId ?? null,
-          selectedNodeIds
+          selectedNodeIds,
+          activeNodeIds
         );
       });
     },
@@ -939,7 +943,10 @@ export const Canvas: React.FC<CanvasProps> = ({
       setResizeDirection(null);
       dragStartRef.current = null;
       // Final settle
-      if (wasInteracting && interactingId) resolveCollisions(interactingId);
+      if (wasInteracting && interactingId) {
+        const activeIds = getSubgraphIds(interactingId, edges);
+        resolveCollisions(interactingId, activeIds);
+      }
     };
 
     const handleMove = (e: MouseEvent | TouchEvent) => {
@@ -1086,7 +1093,8 @@ export const Canvas: React.FC<CanvasProps> = ({
             edges,
             draggingId,
             currentScopeId ?? null,
-            selectedNodeIds
+            selectedNodeIds,
+            new Set(deltas.keys())
           );
         });
       } else if (resizingId && resizeDirection) {

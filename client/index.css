@@ -22,7 +22,7 @@ body, html, #root {
 
 /* Graph Edge Styles */
 .edge-path {
-  transition: all 0.3s ease;
+  /* transition: all 0.3s ease; - REMOVED to fix edge lag */
 }
 .group:hover .edge-path {
   /* marker-end is handled by React state for correct color */
