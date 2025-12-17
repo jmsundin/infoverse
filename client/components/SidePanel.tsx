@@ -6,7 +6,7 @@ import React, {
   useContext,
 } from "react";
 
-type SidePanelDockPosition =
+export type SidePanelDockPosition =
   | "left"
   | "right"
   | "top-left"

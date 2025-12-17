@@ -41,12 +41,43 @@ export const loadGraphFromApi = async () => {
   return await res.json(); // returns { nodes, edges }
 };
 
+export const fetchNodesInViewport = async (
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number,
+  signal?: AbortSignal
+) => {
+  const query = new URLSearchParams({
+    minX: minX.toString(),
+    minY: minY.toString(),
+    maxX: maxX.toString(),
+    maxY: maxY.toString(),
+  });
+  const res = await fetch(`${API_BASE}/graph?${query.toString()}`, {
+    credentials: 'include',
+    signal
+  });
+  if (!res.ok) throw new Error('Failed to load graph viewport');
+  return await res.json(); // returns { nodes, edges }
+};
+
 export const saveNodeToApi = async (node: GraphNode) => {
   const res = await fetch(`${API_BASE}/nodes`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
     body: JSON.stringify(node)
+  });
+  return await res.json();
+};
+
+export const saveNodesBatchToApi = async (nodes: Array<GraphNode & { skipEmbedding?: boolean }>) => {
+  const res = await fetch(`${API_BASE}/nodes/batch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(nodes)
   });
   return await res.json();
 };

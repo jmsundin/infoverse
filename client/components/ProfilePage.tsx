@@ -7,12 +7,14 @@ interface ProfilePageProps {
     email?: string;
     isPaid?: boolean;
   };
+  aiProvider: 'gemini' | 'huggingface';
+  onSetAiProvider: (provider: 'gemini' | 'huggingface') => void;
   onClose: () => void;
   onUpdateUser: (updates: any) => void;
   onLogout: () => void;
 }
 
-export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onClose, onUpdateUser, onLogout }) => {
+export const ProfilePage: React.FC<ProfilePageProps> = ({ user, aiProvider, onSetAiProvider, onClose, onUpdateUser, onLogout }) => {
   const [activeTab, setActiveTab] = useState<'settings' | 'billing'>('settings');
   const [username, setUsername] = useState(user.username);
   const [email, setEmail] = useState(user.email || '');
@@ -27,12 +29,13 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onClose, onUpdat
     setMessage('');
 
     try {
-      const apiBase = (import.meta as any).env.VITE_API_URL || '/api';
-      const res = await fetch(`${apiBase}/user/profile`, {
+      const apiBase = (import.meta as any).env.VITE_API_URL || '';
+      const res = await fetch(`${apiBase}/api/user/profile`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'include',
         body: JSON.stringify({
           username,
           email,
@@ -60,12 +63,13 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onClose, onUpdat
 
   const handleUpgrade = async () => {
     try {
-      const apiBase = (import.meta as any).env.VITE_API_URL || '/api';
-      const res = await fetch(`${apiBase}/billing/checkout`, {
+      const apiBase = (import.meta as any).env.VITE_API_URL || '';
+      const res = await fetch(`${apiBase}/api/billing/checkout`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-        }
+        },
+        credentials: 'include'
       });
       const data = await res.json();
       if (data.url) {
@@ -81,12 +85,13 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onClose, onUpdat
 
   const handlePortal = async () => {
     try {
-      const apiBase = (import.meta as any).env.VITE_API_URL || '/api';
-      const res = await fetch(`${apiBase}/billing/portal`, {
+      const apiBase = (import.meta as any).env.VITE_API_URL || '';
+      const res = await fetch(`${apiBase}/api/billing/portal`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-        }
+        },
+        credentials: 'include'
       });
       const data = await res.json();
       if (data.url) {
@@ -163,6 +168,21 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onClose, onUpdat
                     className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white focus:border-sky-500 focus:outline-none"
                     placeholder="your@email.com"
                   />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-400 mb-1">AI Provider</label>
+                  <select
+                    value={aiProvider}
+                    onChange={(e) => onSetAiProvider(e.target.value as 'gemini' | 'huggingface')}
+                    className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white focus:border-sky-500 focus:outline-none"
+                  >
+                    <option value="gemini">Google Gemini (Default)</option>
+                    <option value="huggingface">Hugging Face (Open Models)</option>
+                  </select>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Choose which AI service powers the chat and expansion features.
+                  </p>
                 </div>
               </div>
 

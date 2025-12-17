@@ -18,7 +18,8 @@ import {
   ResizeDirection,
   LODLevel,
 } from "../types";
-import { sendChatMessage, generateTitle } from "../services/geminiService";
+import * as geminiService from "../services/geminiService";
+import * as hfService from "../services/huggingfaceService";
 import { NODE_HEADER_HEIGHT, NODE_COLORS } from "../constants";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -57,6 +58,8 @@ interface GraphNodeProps {
   autoGraphEnabled?: boolean;
   onSetAutoGraphEnabled?: (enabled: boolean) => void;
   scale?: number;
+  cutNodeId: string | null;
+  aiProvider?: 'gemini' | 'huggingface';
 }
 
 const DELETE_CONFIRM_PREF_KEY = "infoverse_skip_delete_confirm";
@@ -85,6 +88,8 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     autoGraphEnabled,
     onSetAutoGraphEnabled,
     scale = 1,
+    cutNodeId,
+    aiProvider = 'gemini',
   }) => {
     const [input, setInput] = useState("");
     const [isChatting, setIsChatting] = useState(false);
@@ -99,6 +104,18 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     const [titleEditValue, setTitleEditValue] = useState("");
     const chatContainerRef = useRef<HTMLDivElement>(null);
     const settingsRef = useRef<HTMLDivElement>(null);
+
+    // Refs for async callbacks to avoid stale closures
+    const onUpdateRef = useRef(onUpdate);
+    const onExpandRef = useRef(onExpand);
+    
+    useEffect(() => {
+      onUpdateRef.current = onUpdate;
+    }, [onUpdate]);
+
+    useEffect(() => {
+      onExpandRef.current = onExpand;
+    }, [onExpand]);
 
     // Long Press Refs
     const longPressTimerRef = useRef<any>(null);
@@ -250,7 +267,8 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       if (
         isSelected &&
         node.content &&
-        (!node.link || node.link.includes("wikidata.org"))
+        (!node.link || node.link.includes("wikidata.org")) &&
+        !isDragging // <-- Add this condition
       ) {
         const checkWiki = async () => {
           const url = await fetchWikipediaUrl(node.content);
@@ -260,7 +278,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         };
         checkWiki();
       }
-    }, [isSelected, node.content, node.link, node.id, onUpdate]);
+    }, [isSelected, node.content, node.link, node.id, onUpdate, isDragging]);
 
     const handleSendMessage = async () => {
       if (!input.trim()) return;
@@ -273,12 +291,14 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       const updatedMessages = [...(node.messages || []), userMsg];
       const currentInput = input;
 
-      onUpdate(node.id, { messages: updatedMessages });
+      onUpdateRef.current(node.id, { messages: updatedMessages });
       setInput("");
       setIsChatting(true);
       setStreamingContent("");
 
-      const result = await sendChatMessage(
+      const service = aiProvider === 'huggingface' ? hfService : geminiService;
+
+      const result = await service.sendChatMessage(
         updatedMessages,
         userMsg.text,
         (chunk) => {
@@ -291,7 +311,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         result.text.length > 400 || result.text.split("\n\n").length > 1;
 
       if (autoGraphEnabled && node.type === NodeType.CHAT && isLongAnswer) {
-        onExpand(node.id, result.text);
+        onExpandRef.current(node.id, result.text);
       }
 
       const modelMsg: ChatMessage = {
@@ -300,7 +320,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         timestamp: Date.now(),
       };
 
-      onUpdate(node.id, { messages: [...updatedMessages, modelMsg] });
+      onUpdateRef.current(node.id, { messages: [...updatedMessages, modelMsg] });
       setIsChatting(false);
       setStreamingContent(null);
 
@@ -308,8 +328,9 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         node.type === NodeType.CHAT &&
         (node.content === "New Chat" || node.content === "Chat")
       ) {
-        const newTitle = await generateTitle(currentInput, result.text);
-        onUpdate(node.id, { content: newTitle });
+        const service = aiProvider === 'huggingface' ? hfService : geminiService;
+        const newTitle = await service.generateTitle(currentInput, result.text);
+        onUpdateRef.current(node.id, { content: newTitle });
       }
     };
 
@@ -516,6 +537,38 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     const resizeHandleClass =
       "absolute z-50 hover:bg-sky-400/20 transition-colors touch-none";
     const displayMessages = node.messages || [];
+
+    if (node.type === NodeType.CLUSTER) {
+      return (
+        <div
+          data-node-id={node.id}
+          className="absolute graph-node flex items-center justify-center pointer-events-auto cursor-pointer animate-in fade-in zoom-in duration-300"
+          style={{
+            left: node.x,
+            top: node.y,
+            width: node.width || 64,
+            height: node.height || 64,
+            transform: "translate(-50%, -50%)",
+            zIndex: 45,
+          }}
+          onMouseDown={(e) =>
+            !isSidebar && onMouseDown && onMouseDown(e, node.id)
+          }
+          onTouchStart={(e) =>
+            !isSidebar && onMouseDown && onMouseDown(e, node.id)
+          }
+        >
+          <div className="w-full h-full rounded-full bg-slate-700/90 backdrop-blur-sm border-2 border-slate-500 text-slate-100 flex flex-col items-center justify-center shadow-lg hover:scale-110 hover:bg-slate-600 transition-all">
+            <span className="font-bold text-lg leading-none">
+              {node.clusterCount}
+            </span>
+            <span className="text-[10px] uppercase font-bold text-slate-400">
+              Nodes
+            </span>
+          </div>
+        </div>
+      );
+    }
 
     if (isClusterParentMode) {
       const scaleFactor = Math.min(Math.max((1 / scale) * 0.2, 1), 8);
@@ -902,7 +955,8 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                           [...msgs].reverse().find((m) => m.role === "model")
                             ?.text || "";
                         if (lastUserMsg) {
-                          const newTitle = await generateTitle(
+                          const service = aiProvider === 'huggingface' ? hfService : geminiService;
+                          const newTitle = await service.generateTitle(
                             lastUserMsg,
                             lastModelMsg
                           );
@@ -1104,6 +1158,11 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
               : ""
           } 
           ${colorTheme.bg} ${!isSidebar ? `${colorTheme.border} border` : ""}
+          ${
+            !isSidebar && cutNodeId === node.id
+              ? "border-dashed border-sky-400"
+              : ""
+          }
       `}
           >
             <div

@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const passport = require('passport');
 const LocalStrategy = require('passport-local').Strategy;
@@ -65,8 +66,28 @@ app.post('/api/billing/webhook', express.raw({ type: 'application/json' }), asyn
     res.send();
 });
 
+// Cleanup Task
+const runCleanupTask = async () => {
+    try {
+        const result = await db.query(`
+            DELETE FROM deleted_items 
+            WHERE deleted_at < NOW() - INTERVAL '30 days'
+        `);
+        if (result.rowCount > 0) {
+            console.log(`Cleanup complete: Removed ${result.rowCount} old items from trash.`);
+        }
+    } catch (e) {
+        // Ignore table not found if init hasn't finished (though we wait for init)
+        // console.error('Cleanup task failed:', e);
+    }
+};
+
 // Initialize Database
-db.initDb().catch(err => console.error('DB Init Failed:', err));
+db.initDb().then(() => {
+    runCleanupTask();
+    // Run daily
+    setInterval(runCleanupTask, 24 * 60 * 60 * 1000);
+}).catch(err => console.error('DB Init Failed:', err));
 
 // Passport Config
 passport.use(new LocalStrategy(async (username, password, done) => {
@@ -205,6 +226,8 @@ app.use(session({
     saveUninitialized: false,
     cookie: { 
         secure: process.env.NODE_ENV === 'production', // Set true if using https
+        httpOnly: true,
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // 'none' for cross-site (needs secure: true), 'lax' for local
         maxAge: 24 * 60 * 60 * 1000, // 24 hours
         domain: process.env.COOKIE_DOMAIN || undefined // e.g. '.infoverse.ai' to share across subdomains
     } 
@@ -214,6 +237,8 @@ app.use(passport.session());
 
 // Gemini Routes
 app.use('/api/gemini', require('./geminiRoutes'));
+// Hugging Face Routes
+app.use('/api/huggingface', require('./huggingfaceRoutes'));
 
 // Helper to ensure directory exists
 const ensureDir = (dirPath) => {
@@ -537,40 +562,73 @@ app.get('/api/graph', async (req, res) => {
     // Simplified: Authenticated users use Cloud. Local file system picker is for "Export/Import" or "Local Mode" (client-side only?)
     // The previous code had "Legacy Local-on-Server Mode". We should probably deprecate or keep as fallback.
     
-    // Strategy: Always try to load from Cloud first.
+    // Strategy: Spatial query if viewport provided, otherwise load all (or limit).
     try {
-        const nodesResult = await db.query('SELECT * FROM nodes WHERE user_id = $1', [req.user.id]);
-        const edgesResult = await db.query('SELECT * FROM edges WHERE user_id = $1', [req.user.id]);
-        
-        if (nodesResult.rows.length > 0) {
-            // Map DB fields
-            const nodes = nodesResult.rows.map(n => ({
-                id: n.id,
-                type: n.type,
-                x: n.x,
-                y: n.y,
-                width: n.width,
-                height: n.height,
-                content: n.content,
-                messages: n.messages,
-                link: n.link,
-                color: n.color,
-                parentId: n.parent_id,
-                summary: n.summary,
-                autoExpandDepth: n.auto_expand_depth,
-                aliases: n.aliases
-            }));
+        const { minX, minY, maxX, maxY } = req.query;
+        let nodesResult;
+        let edgesResult;
 
-            const edges = edgesResult.rows.map(e => ({
-                id: e.id,
-                source: e.source,
-                target: e.target,
-                label: e.label,
-                parentId: e.parent_id
-            }));
+        if (minX && minY && maxX && maxY) {
+            // Spatial Query
+            const query = `
+                SELECT * FROM nodes 
+                WHERE user_id = $1 
+                AND geom && ST_MakeEnvelope($2, $3, $4, $5)
+                LIMIT 2000;
+            `;
+            nodesResult = await db.query(query, [
+                req.user.id, 
+                parseFloat(minX), 
+                parseFloat(minY), 
+                parseFloat(maxX), 
+                parseFloat(maxY)
+            ]);
 
-            return res.json({ nodes, edges });
+            if (nodesResult.rows.length > 0) {
+                const nodeIds = nodesResult.rows.map(n => n.id);
+                const edgesQuery = `
+                    SELECT * FROM edges 
+                    WHERE user_id = $1 
+                    AND (source = ANY($2) OR target = ANY($2))
+                `;
+                edgesResult = await db.query(edgesQuery, [req.user.id, nodeIds]);
+            } else {
+                edgesResult = { rows: [] };
+            }
+        } else {
+            // Load All
+            nodesResult = await db.query('SELECT * FROM nodes WHERE user_id = $1', [req.user.id]);
+            edgesResult = await db.query('SELECT * FROM edges WHERE user_id = $1', [req.user.id]);
         }
+        
+        // Always return array even if empty
+        const nodes = nodesResult.rows.map(n => ({
+            id: n.id,
+            type: n.type,
+            x: n.x,
+            y: n.y,
+            width: n.width,
+            height: n.height,
+            content: n.content,
+            messages: n.messages,
+            link: n.link,
+            color: n.color,
+            parentId: n.parent_id,
+            summary: n.summary,
+            autoExpandDepth: n.auto_expand_depth,
+            aliases: n.aliases
+        }));
+
+        const edges = edgesResult.rows.map(e => ({
+            id: e.id,
+            source: e.source,
+            target: e.target,
+            label: e.label,
+            parentId: e.parent_id
+        }));
+
+        return res.json({ nodes, edges });
+
     } catch (e) {
         console.error('Error fetching cloud graph:', e);
         // Fallthrough to local check?
@@ -723,17 +781,121 @@ app.post('/api/nodes', async (req, res) => {
     }
 });
 
+app.post('/api/nodes/batch', async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
+
+    const nodes = req.body;
+    if (!Array.isArray(nodes)) {
+        return res.status(400).json({ message: 'Nodes must be an array' });
+    }
+
+    if (nodes.length > 2000) {
+        return res.status(400).json({ message: 'Too many nodes in one request' });
+    }
+
+    try {
+        for (const node of nodes) {
+            if (!node || !node.id) continue;
+
+            const skipEmbedding = !!node.skipEmbedding;
+
+            let embedding = null;
+            if (!skipEmbedding) {
+                // Generate Embedding only when requested
+                const aliases = node.aliases || [];
+                const embeddingText = [
+                    node.content,
+                    aliases.join(' '),
+                    node.summary
+                ].filter(Boolean).join(' ');
+
+                if (embeddingText) {
+                    embedding = await generateEmbedding(embeddingText);
+                }
+            }
+
+            const query = `
+                INSERT INTO nodes (id, user_id, type, x, y, width, height, content, messages, link, color, parent_id, summary, auto_expand_depth, aliases, embedding, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW())
+                ON CONFLICT (id) DO UPDATE SET
+                type = EXCLUDED.type,
+                x = EXCLUDED.x,
+                y = EXCLUDED.y,
+                width = EXCLUDED.width,
+                height = EXCLUDED.height,
+                content = EXCLUDED.content,
+                messages = EXCLUDED.messages,
+                link = EXCLUDED.link,
+                color = EXCLUDED.color,
+                parent_id = EXCLUDED.parent_id,
+                summary = EXCLUDED.summary,
+                auto_expand_depth = EXCLUDED.auto_expand_depth,
+                aliases = EXCLUDED.aliases,
+                embedding = COALESCE(EXCLUDED.embedding, nodes.embedding),
+                updated_at = NOW();
+            `;
+
+            const values = [
+                node.id,
+                req.user.id,
+                node.type,
+                node.x,
+                node.y,
+                node.width,
+                node.height,
+                node.content,
+                JSON.stringify(node.messages || []),
+                node.link,
+                node.color,
+                node.parentId,
+                node.summary,
+                node.autoExpandDepth,
+                JSON.stringify(node.aliases || []),
+                embedding ? JSON.stringify(embedding) : null
+            ];
+
+            await db.query(query, values);
+        }
+
+        return res.json({ success: true });
+    } catch (e) {
+        console.error('Error saving nodes batch:', e);
+        return res.status(500).json({ message: 'Error saving nodes batch' });
+    }
+});
+
 app.delete('/api/nodes/:id', async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
     
     const nodeId = req.params.id;
 
-    // Cloud Delete (Try first)
+    // Cloud Soft Delete (Move to deleted_items)
     try {
-        const result = await db.query('DELETE FROM nodes WHERE id = $1 AND user_id = $2', [nodeId, req.user.id]);
-        if (result.rowCount > 0) {
-            // Also clean up edges connected to this node
+        // 1. Fetch Node
+        const nodeResult = await db.query('SELECT * FROM nodes WHERE id = $1 AND user_id = $2', [nodeId, req.user.id]);
+        
+        if (nodeResult.rows.length > 0) {
+            const node = nodeResult.rows[0];
+            
+            // 2. Archive Node
+            await db.query(
+                'INSERT INTO deleted_items (user_id, original_id, item_type, content) VALUES ($1, $2, $3, $4)',
+                [req.user.id, nodeId, 'node', JSON.stringify(node)]
+            );
+
+            // 3. Archive & Delete Connected Edges
+            const edgesResult = await db.query('SELECT * FROM edges WHERE (source = $1 OR target = $1) AND user_id = $2', [nodeId, req.user.id]);
+            for (const edge of edgesResult.rows) {
+                 await db.query(
+                    'INSERT INTO deleted_items (user_id, original_id, item_type, content) VALUES ($1, $2, $3, $4)',
+                    [req.user.id, edge.id, 'edge', JSON.stringify(edge)]
+                );
+            }
             await db.query('DELETE FROM edges WHERE (source = $1 OR target = $1) AND user_id = $2', [nodeId, req.user.id]);
+
+            // 4. Delete Node
+            await db.query('DELETE FROM nodes WHERE id = $1 AND user_id = $2', [nodeId, req.user.id]);
+            
             return res.json({ success: true });
         }
     } catch (e) {

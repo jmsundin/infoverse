@@ -172,7 +172,40 @@ const initDb = async () => {
         console.warn('Embedding column/index creation failed. Vector support might be missing.', e.message);
     }
 
-    console.log('Database initialized: users, rate_limits & session tables created/verified');
+    // Enable PostGIS Extension
+    try {
+        await query('CREATE EXTENSION IF NOT EXISTS postgis');
+    } catch (e) {
+        console.warn('PostGIS extension creation failed. Ensure PostGIS is installed on the database server.', e.message);
+    }
+
+    // Add generated geometry column to nodes
+    try {
+        await query(`
+            ALTER TABLE nodes
+            ADD COLUMN IF NOT EXISTS geom GEOMETRY(Point)
+            GENERATED ALWAYS AS (ST_MakePoint(x, y)) STORED
+        `);
+        
+        // Create Spatial Index
+        await query('CREATE INDEX IF NOT EXISTS nodes_geom_idx ON nodes USING GIST (geom)');
+    } catch (e) {
+        console.warn('Geometry column/index creation failed.', e.message);
+    }
+
+    // Create deleted_items table for soft delete / safe cleanup
+    await query(`
+      CREATE TABLE IF NOT EXISTS deleted_items (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        original_id UUID,
+        item_type VARCHAR(50),
+        content JSONB,
+        deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    console.log('Database initialized: users, rate_limits, session & spatial tables created/verified');
   } catch (err) {
     console.error('Error initializing database:', err);
     // Don't exit process, might be temporary connection issue or valid in local dev without DB

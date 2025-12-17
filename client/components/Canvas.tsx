@@ -30,10 +30,6 @@ import {
   NODE_HEADER_HEIGHT,
 } from "../constants";
 import {
-  sendChatMessage,
-  getTopicSummaryPrompt,
-} from "../services/geminiService";
-import {
   applyForceLayout,
   applyTreeLayout,
   applyHybridLayout,
@@ -79,6 +75,9 @@ interface CanvasProps {
   canvasShiftY: number;
   onSelectionTooltipChange?: (tooltip: SelectionTooltipState | null) => void;
   isResizing?: boolean;
+  cutNodeId: string | null;
+  setCutNodeId: React.Dispatch<React.SetStateAction<string | null>>;
+  aiProvider?: 'gemini' | 'huggingface';
 }
 
 // Semantic Zoom Thresholds
@@ -373,6 +372,9 @@ export const Canvas: React.FC<CanvasProps> = ({
   onSelectionTooltipChange,
   canvasShiftX,
   canvasShiftY,
+  cutNodeId,
+  setCutNodeId,
+  aiProvider,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -983,23 +985,34 @@ export const Canvas: React.FC<CanvasProps> = ({
       dragStartRef.current.lastY = clientY;
 
       if (draggingId) {
+        const currentDragState = dragStartRef.current; // Capture current value
+        if (!currentDragState) {
+          console.error("dragStartRef.current is null during dragging.");
+          return; // Exit early if null
+        }
+
         setNodes((prev) => {
           const nodeMap = new Map(prev.map((n) => [n.id, n]));
           const deltas = new Map<string, { dx: number; dy: number }>();
           const processed = new Set<string>();
-          const roots = new Set(initialPositions.keys());
+          const roots = new Set(currentDragState.initialPositions.keys());
 
           // Initialize Physics State if needed
-          if (!dragStartRef.current!.velocities) {
-            dragStartRef.current!.velocities = new Map();
-            dragStartRef.current!.childrenMasses = new Map();
+          if (!currentDragState.velocities) {
+            currentDragState.velocities = new Map();
+            currentDragState.childrenMasses = new Map();
           }
-          const velocities = dragStartRef.current!.velocities!;
-          const masses = dragStartRef.current!.childrenMasses!;
+          const velocities = currentDragState.velocities;
+          const masses = currentDragState.childrenMasses;
+
+          if (!velocities || !masses) {
+            console.error("Physics state not initialized correctly.");
+            return prev;
+          }
 
           // 1. Calculate deltas for dragged nodes (roots of movement)
           roots.forEach((id) => {
-            const init = initialPositions.get(id);
+            const init = currentDragState.initialPositions.get(id);
             const current = nodeMap.get(id);
             if (init && current) {
               const targetX = init.x + dx;
@@ -1016,213 +1029,98 @@ export const Canvas: React.FC<CanvasProps> = ({
           const queue = Array.from(roots);
 
           while (queue.length > 0) {
-            const pid = queue.shift()!;
-            const parentNode = nodeMap.get(pid);
-            if (!parentNode) continue;
+            const parentId = queue.shift();
+            if (!parentId || processed.has(parentId)) continue;
 
-            const pDelta = deltas.get(pid)!;
-
-            // Find children (Unprocessed only)
-            const children: GraphNode[] = [];
-            const childrenIds = new Set<string>();
-
-            // Edges
-            edges.forEach((e) => {
-              if (e.source === pid && !processed.has(e.target)) {
-                childrenIds.add(e.target);
-              }
-            });
-
-            // Hierarchy
-            prev.forEach((n) => {
-              if (n.parentId === pid && !processed.has(n.id)) {
-                childrenIds.add(n.id);
-              }
-            });
-
-            childrenIds.forEach((cid) => {
-              const c = nodeMap.get(cid);
-              if (c) children.push(c);
-            });
-
-            if (children.length === 0) continue;
-
-            // Determine Deltas for Children with Physics
-            if (roots.has(pid)) {
-              // This is a dragged root -> Apply Mass/Inertia Logic for immediate children
-
-              // Calculate parent's NEW position (target)
-              const parentNewPos = {
-                ...parentNode,
-                x: parentNode.x + pDelta.dx,
-                y: parentNode.y + pDelta.dy,
-              };
-
-              // Where children SHOULD be (Ideal formation)
-              const surroundPositions = computeSurroundChildPositions(
-                parentNewPos,
-                children
-              );
-
-              // Physics Constants
-              const SPRING_STRENGTH = 0.15; // How strongly they are pulled to target
-              const DAMPING = 0.8; // Friction (0-1)
-              const MASS_BASE = 1.0;
-
-              children.forEach((c) => {
-                const target = surroundPositions.get(c.id);
-                if (target) {
-                  // Initialize mass if new
-                  if (!masses.has(c.id)) {
-                    masses.set(c.id, MASS_BASE + Math.random() * 0.5); // Slight variance
+            processed.add(parentId);
+            // Add force to children, proportional to mass
+            edges.forEach((edge) => {
+              if (edge.source === parentId) {
+                const childId = edge.target;
+                const childNode = nodeMap.get(childId);
+                if (
+                  childNode &&
+                  !processed.has(childId) &&
+                  !roots.has(childId) // Don't move if it's a root of another drag
+                ) {
+                  const parentDelta = deltas.get(parentId);
+                  if (parentDelta) {
+                    // Apply force/velocity rather than direct position change
+                    const currentVelocity = velocities.get(childId) || {
+                      vx: 0,
+                      vy: 0,
+                    };
+                    velocities.set(childId, {
+                      vx: currentVelocity.vx + parentDelta.dx * 0.1,
+                      vy: currentVelocity.vy + parentDelta.dy * 0.1,
+                    });
+                    // Propagate to children
+                    queue.push(childId);
                   }
-                  const mass = masses.get(c.id)!;
-
-                  // Current Velocity
-                  let v = velocities.get(c.id) || { vx: 0, vy: 0 };
-
-                  // Vector to target
-                  const distToTargetX = target.x - c.x;
-                  const distToTargetY = target.y - c.y;
-
-                  // Force = Spring * Distance
-                  const fx = distToTargetX * SPRING_STRENGTH;
-                  const fy = distToTargetY * SPRING_STRENGTH;
-
-                  // Acceleration = Force / Mass
-                  const ax = fx / mass;
-                  const ay = fy / mass;
-
-                  // Update Velocity
-                  v.vx = (v.vx + ax) * DAMPING;
-                  v.vy = (v.vy + ay) * DAMPING;
-
-                  // Check if node is "in front" of parent movement
-                  // Parent Velocity vector (approx by delta this frame)
-                  const parentVx = incDx;
-                  const parentVy = incDy;
-                  const parentSpeed = Math.sqrt(
-                    parentVx * parentVx + parentVy * parentVy
-                  );
-
-                  let avoidanceDx = 0;
-                  let avoidanceDy = 0;
-
-                  if (parentSpeed > 1) {
-                    // Only if moving significantly
-                    // Vector from Parent Center to Child Center
-                    const pCx = parentNode.x + (parentNode.width || 0) / 2;
-                    const pCy = parentNode.y + (parentNode.height || 0) / 2;
-                    const cCx = c.x + (c.width || 0) / 2;
-                    const cCy = c.y + (c.height || 0) / 2;
-
-                    const relX = cCx - pCx;
-                    const relY = cCy - pCy;
-
-                    // Dot product to check alignment
-                    // If (rel . parentV) > 0, child is roughly in front
-                    const dot = relX * parentVx + relY * parentVy;
-
-                    if (dot > 0) {
-                      // It is in front. Push it aside (perpendicular to movement).
-                      // Perpendicular vector: (-Vy, Vx)
-                      const perpX = -parentVy;
-                      const perpY = parentVx;
-
-                      // Push away from movement line
-                      // Check which side of the line the child is on (cross product z-component)
-                      const crossZ = parentVx * relY - parentVy * relX;
-                      const pushDir = crossZ > 0 ? 1 : -1;
-
-                      const PUSH_STRENGTH = 2.0;
-                      avoidanceDx =
-                        (perpX * pushDir * PUSH_STRENGTH) / parentSpeed; // Normalize
-                      avoidanceDy =
-                        (perpY * pushDir * PUSH_STRENGTH) / parentSpeed;
-                    }
-                  }
-
-                  v.vx += avoidanceDx;
-                  v.vy += avoidanceDy;
-
-                  velocities.set(c.id, v);
-
-                  const cDelta = {
-                    dx: v.vx,
-                    dy: v.vy,
-                  };
-
-                  deltas.set(c.id, cDelta);
-                  processed.add(c.id);
-                  queue.push(c.id);
                 }
-              });
-            } else {
-              // Rigid move (inherit parent delta) for descendants further down
-              // Or could apply recursive physics? For now rigid is stable.
-              children.forEach((c) => {
-                deltas.set(c.id, pDelta);
-                processed.add(c.id);
-                queue.push(c.id);
-              });
-            }
+              }
+            });
           }
 
-          const movedNodes = prev.map((node) => {
-            const d = deltas.get(node.id);
-            if (d) {
-              return { ...node, x: node.x + d.dx, y: node.y + d.dy };
+          const newNodes = prev.map((node) => {
+            // Apply velocities
+            const velocity = velocities.get(node.id);
+            if (velocity) {
+              nodeMap.set(node.id, {
+                ...node,
+                x: node.x + velocity.vx,
+                y: node.y + velocity.vy,
+              });
+              // Dampen velocity
+              velocities.set(node.id, {
+                vx: velocity.vx * 0.9,
+                vy: velocity.vy * 0.9,
+              });
+            }
+            const delta = deltas.get(node.id);
+            if (delta) {
+              return {
+                ...node,
+                x: node.x + delta.dx,
+                y: node.y + delta.dy,
+              };
             }
             return node;
           });
 
-          // Update physics state only for active nodes
-          velocities.forEach((v, id) => {
-            // Optional: Cap velocities if needed
-          });
-
-          return resolveCollisionsInScope(
-            movedNodes,
-            edges,
-            draggingId,
-            currentScopeId ?? null,
-            selectedNodeIds,
-            new Set(deltas.keys())
-          );
+          return newNodes;
         });
-      } else if (resizingId && resizeDirection) {
-        const initPos = initialPositions.get(resizingId);
-        if (initPos && nodeWidth !== undefined && nodeHeight !== undefined) {
-          setNodes((prev) =>
-            prev.map((n) => {
-              if (n.id === resizingId) {
-                let newX = initPos.x,
-                  newY = initPos.y,
-                  newW = nodeWidth,
-                  newH = nodeHeight;
-                if (resizeDirection.includes("e"))
-                  newW = Math.max(MIN_NODE_WIDTH, nodeWidth + dx);
-                else if (resizeDirection.includes("w")) {
-                  const effectiveDx = Math.min(dx, nodeWidth - MIN_NODE_WIDTH);
-                  newW = nodeWidth - effectiveDx;
-                  newX = initPos.x + effectiveDx;
-                }
-                if (resizeDirection.includes("s"))
-                  newH = Math.max(MIN_NODE_HEIGHT, nodeHeight + dy);
-                else if (resizeDirection.includes("n")) {
-                  const effectiveDy = Math.min(
-                    dy,
-                    nodeHeight - MIN_NODE_HEIGHT
-                  );
-                  newH = nodeHeight - effectiveDy;
-                  newY = initPos.y + effectiveDy;
-                }
-                return { ...n, x: newX, y: newY, width: newW, height: newH };
+      } else if (resizingId && nodeWidth && nodeHeight) {
+        setNodes((prev) =>
+          prev.map((node) => {
+            if (node.id === resizingId) {
+              let newWidth = nodeWidth;
+              let newHeight = nodeHeight;
+
+              switch (resizeDirection) {
+                case "e": // Changed from "right"
+                  newWidth = Math.max(50, nodeWidth + dx * viewTransform.k);
+                  break;
+                case "s": // Changed from "bottom"
+                  newHeight = Math.max(50, nodeHeight + dy * viewTransform.k);
+                  break;
+                case "se": // Changed from "bottom-right"
+                  newWidth = Math.max(50, nodeWidth + dx * viewTransform.k);
+                  newHeight = Math.max(50, nodeHeight + dy * viewTransform.k);
+                  break;
+                default:
+                  break;
               }
-              return n;
-            })
-          );
-        }
+
+              return {
+                ...node,
+                width: newWidth,
+                height: newHeight,
+              };
+            }
+            return node;
+          })
+        );
       }
     };
 
@@ -2107,6 +2005,8 @@ export const Canvas: React.FC<CanvasProps> = ({
                   autoGraphEnabled={autoGraphEnabled}
                   onSetAutoGraphEnabled={onSetAutoGraphEnabled}
                   scale={viewTransform.k}
+                  cutNodeId={cutNodeId}
+                  aiProvider={aiProvider}
                 />
               </div>
             ))}

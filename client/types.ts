@@ -2,7 +2,8 @@ import React from 'react';
 
 export enum NodeType {
   NOTE = 'NOTE',
-  CHAT = 'CHAT'
+  CHAT = 'CHAT',
+  CLUSTER = 'CLUSTER'
 }
 
 export type NodeColor = 'slate' | 'red' | 'green' | 'blue' | 'amber' | 'purple';
@@ -26,6 +27,8 @@ export interface GraphNode {
   summary?: string; // High-level summary for semantic zoom
   autoExpandDepth?: number; // Number of levels to automatically expand
   aliases?: string[]; // Alternative names for the node
+  clusterCount?: number; // Number of nodes in this cluster
+  clusterIds?: string[]; // IDs of nodes in this cluster
 }
 
 export interface ChatMessage {

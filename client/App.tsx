@@ -6,7 +6,12 @@ import React, {
   useMemo,
 } from "react";
 import { Canvas } from "./components/Canvas";
-import { SidePanel, WebContent, SidePanelLayout, SidePanelDockPosition } from "./components/SidePanel";
+import {
+  SidePanel,
+  WebContent,
+  SidePanelLayout,
+  SidePanelDockPosition,
+} from "./components/SidePanel";
 
 type ActiveSidePane = {
   id: string; // Unique ID for this panel instance
@@ -51,17 +56,18 @@ import {
   pickServerDirectory,
   updateUserSettings,
   loadGraphFromApi,
+  fetchNodesInViewport,
   saveNodeToApi,
+  saveNodesBatchToApi,
   deleteNodeFromApi,
   saveEdgesToApi,
 } from "./services/apiStorageService";
-import {
-  expandNodeTopic,
-  sendChatMessage,
-  getTopicSummaryPrompt,
-  findRelationships,
-} from "./services/geminiService";
+import { performGreedyClustering } from "./utils/clustering";
+import * as geminiService from "./services/geminiService";
+import * as hfService from "./services/huggingfaceService";
 import { fetchWikidataSubtopics } from "./services/wikidataService";
+import { debounce } from "./services/debounceService";
+import { v4 as uuidv4 } from "uuid";
 
 const LOCAL_STORAGE_KEY = "wiki-graph-data";
 const WIKIDATA_SUBTOPIC_LIMIT = 12;
@@ -203,79 +209,6 @@ const App: React.FC = () => {
 
   const [localStorageReady, setLocalStorageReady] = useState(false);
 
-  const resetGraphState = useCallback(() => {
-    setNodes(createDefaultGraphNodes());
-    setEdges([]);
-    setViewTransform({ x: 0, y: 0, k: 1 });
-    setCurrentScopeId(null);
-    setSelectedNodeIds(new Set());
-    setAutoGraphEnabled(true);
-  }, []);
-
-  const loadGraphFromLocalStorage = useCallback(() => {
-    if (typeof window === "undefined") return;
-    try {
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (!saved) {
-        resetGraphState();
-        return;
-      }
-
-      const parsed: LocalGraphSnapshot & {
-        viewTransform?: ViewportTransform;
-        autoGraphEnabled?: boolean;
-      } = JSON.parse(saved);
-
-      if (parsed.nodes && Array.isArray(parsed.nodes)) {
-        setNodes(parsed.nodes);
-      } else {
-        setNodes(createDefaultGraphNodes());
-      }
-
-      if (parsed.edges && Array.isArray(parsed.edges)) {
-        setEdges(parsed.edges);
-      } else {
-        setEdges([]);
-      }
-
-      if (parsed.viewTransform) {
-        setViewTransform(parsed.viewTransform);
-      } else {
-        setViewTransform({ x: 0, y: 0, k: 1 });
-      }
-
-      if (parsed.currentScopeId !== undefined) {
-        setCurrentScopeId(parsed.currentScopeId || null);
-      } else {
-        setCurrentScopeId(null);
-      }
-
-      if (parsed.selectedNodeIds && Array.isArray(parsed.selectedNodeIds)) {
-        setSelectedNodeIds(new Set(parsed.selectedNodeIds));
-      } else if (parsed.selectedNodeId) {
-        setSelectedNodeIds(new Set([parsed.selectedNodeId]));
-      } else {
-        setSelectedNodeIds(new Set());
-      }
-
-      setAutoGraphEnabled(
-        parsed.autoGraphEnabled !== undefined
-          ? !!parsed.autoGraphEnabled
-          : true
-      );
-    } catch (e) {
-      console.error("Failed to load from local storage", e);
-      resetGraphState();
-    }
-  }, [resetGraphState]);
-
-  const selectedNodeId =
-    selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null;
-  const setSelectedNodeId = useCallback((id: string | null) => {
-    if (id === null) setSelectedNodeIds(new Set());
-    else setSelectedNodeIds(new Set([id]));
-  }, []);
-
   const [activeSidePanes, setActiveSidePanes] = useState<ActiveSidePane[]>([]);
   const [expandingNodeIds, setExpandingNodeIds] = useState<string[]>([]);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -305,9 +238,27 @@ const App: React.FC = () => {
     null
   );
   const [dirName, setDirName] = useState<string | null>(null);
-  const [isSaving, setIsSaving] = useState(false);
   const [isGraphLoaded, setIsGraphLoaded] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [aiProvider, setAiProvider] = useState<"gemini" | "huggingface">(() => {
+    if (typeof window !== "undefined") {
+      return (
+        (localStorage.getItem("ai_provider") as "gemini" | "huggingface") ||
+        "gemini"
+      );
+    }
+    return "gemini";
+  });
+
+  const handleSetAiProvider = useCallback(
+    (provider: "gemini" | "huggingface") => {
+      setAiProvider(provider);
+      if (typeof window !== "undefined") {
+        localStorage.setItem("ai_provider", provider);
+      }
+    },
+    []
+  );
 
   // --- Auth State ---
   const [user, setUser] = useState<{
@@ -325,7 +276,192 @@ const App: React.FC = () => {
     visible: boolean;
   }>({ message: "", visible: false });
 
-  // Usage check function
+  const [showLimitModal, setShowLimitModal] = useState(false);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+
+  const [lastSelectedNode, setLastSelectedNode] = useState<GraphNode | null>(
+    null
+  );
+  const [cutNodeId, setCutNodeId] = useState<string | null>(null);
+
+  // --- Viewport Fetching Logic ---
+  const fetchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const viewportFetchAbortRef = useRef<AbortController | null>(null);
+  const lastViewportFetchKeyRef = useRef<string | null>(null);
+  const lastViewportFetchAtRef = useRef<number>(0);
+
+  const fetchViewportNodes = useCallback(async () => {
+    // Only fetch if authenticated and in cloud mode
+    if (!user || dirName !== "Cloud Storage") return;
+
+    const { x, y, k } = viewTransform;
+
+    // Guard against invalid transform
+    if (!k || k === 0) return;
+
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+
+    // Screen (0,0) -> World (-x/k, -y/k)
+    // Screen (W,H) -> World ((W-x)/k, (H-y)/k)
+    const minX = -x / k;
+    const minY = -y / k;
+    const maxX = (width - x) / k;
+    const maxY = (height - y) / k;
+
+    // Buffer 20%
+    const w = maxX - minX;
+    const h = maxY - minY;
+    const bufferX = w * 0.2;
+    const bufferY = h * 0.2;
+
+    const bufferedMinX = minX - bufferX;
+    const bufferedMinY = minY - bufferY;
+    const bufferedMaxX = maxX + bufferX;
+    const bufferedMaxY = maxY + bufferY;
+
+    // Dedupe/throttle: quantize viewport to reduce request churn from tiny transform changes.
+    // Quantization step is a fraction of the viewport size, so it scales with zoom.
+    const quantizeStepX = Math.max(w * 0.25, 1);
+    const quantizeStepY = Math.max(h * 0.25, 1);
+    const q = (v: number, step: number) => Math.round(v / step) * step;
+    const fetchKey = [
+      q(bufferedMinX, quantizeStepX),
+      q(bufferedMinY, quantizeStepY),
+      q(bufferedMaxX, quantizeStepX),
+      q(bufferedMaxY, quantizeStepY),
+      Math.round(k * 1000) / 1000,
+    ].join("|");
+
+    if (lastViewportFetchKeyRef.current === fetchKey) return;
+
+    const now = Date.now();
+    // Hard throttle: never fetch more than once per 800ms even if the key changes.
+    if (now - lastViewportFetchAtRef.current < 800) return;
+    lastViewportFetchAtRef.current = now;
+    lastViewportFetchKeyRef.current = fetchKey;
+
+    try {
+      // Cancel any in-flight viewport request to avoid piling up work.
+      if (viewportFetchAbortRef.current) {
+        viewportFetchAbortRef.current.abort();
+      }
+      const controller = new AbortController();
+      viewportFetchAbortRef.current = controller;
+
+      const { nodes: newNodes, edges: newEdges } = await fetchNodesInViewport(
+        bufferedMinX,
+        bufferedMinY,
+        bufferedMaxX,
+        bufferedMaxY,
+        controller.signal
+      );
+
+      // Pruning: We replace the current nodes with the fetched viewport nodes.
+      // This implicitly prunes nodes outside the viewport (plus buffer).
+      if (newNodes) setNodes(newNodes);
+      if (newEdges) setEdges(newEdges);
+    } catch (e) {
+      // Ignore aborts (expected during rapid pan/zoom)
+      if ((e as any)?.name !== "AbortError") {
+        console.error("Viewport fetch failed", e);
+      }
+    }
+  }, [viewTransform, user, dirName]);
+
+  // Trigger fetch on view transform change (debounced)
+  useEffect(() => {
+    if (!user || dirName !== "Cloud Storage") return;
+
+    if (fetchTimeoutRef.current) clearTimeout(fetchTimeoutRef.current);
+
+    fetchTimeoutRef.current = setTimeout(() => {
+      fetchViewportNodes();
+    }, 600);
+
+    return () => {
+      if (fetchTimeoutRef.current) clearTimeout(fetchTimeoutRef.current);
+    };
+  }, [viewTransform, user, dirName, fetchViewportNodes]);
+
+  const handleCreateNode = useCallback(
+    (node: GraphNode) => {
+      setNodes((prevNodes) => [...prevNodes, node]);
+      setSelectedNodeIds(new Set([node.id]));
+      setCurrentScopeId(node.parentId || null);
+      setViewTransform((prevTransform) => ({
+        ...prevTransform,
+        x: prevTransform.x + 100,
+        y: prevTransform.y + 100,
+      }));
+    },
+    [setNodes, setSelectedNodeIds, setCurrentScopeId, setViewTransform]
+  );
+
+  const handleCut = useCallback(
+    (nodeId: string) => {
+      const node = nodes.find((n) => n.id === nodeId);
+      if (node) {
+        setCutNodeId(nodeId);
+        setToast({
+          visible: true,
+          message: `Node '${node.content}' cut.`,
+          action: () => setCutNodeId(null),
+        });
+      }
+    },
+    [nodes, setToast]
+  );
+
+  const handlePaste = useCallback(
+    (position: { x: number; y: number }) => {
+      if (cutNodeId) {
+        const nodeToPaste = nodes.find((n) => n.id === cutNodeId);
+        if (nodeToPaste) {
+          const newNode: GraphNode = {
+            ...nodeToPaste,
+            id: uuidv4(),
+            x: position.x,
+            y: position.y,
+          };
+
+          handleCreateNode(newNode);
+          setCutNodeId(null);
+          setToast({
+            visible: true,
+            message: `Node '${newNode.content}' pasted.`,
+          });
+        }
+      } else {
+        setToast({ visible: true, message: "No node cut to paste." });
+      }
+    },
+    [cutNodeId, nodes, handleCreateNode, setToast]
+  );
+
+  const saveGraphToLocalStorage = useCallback(
+    (
+      nodesToSave: GraphNode[],
+      edgesToSave: GraphEdge[],
+      currentViewTransform: ViewportTransform,
+      currentAutoGraphEnabled: boolean,
+      currentScopeId: string | null,
+      currentSelectedNodeIds: Set<string>
+    ) => {
+      if (typeof window === "undefined") return;
+      const data = {
+        nodes: nodesToSave,
+        edges: edgesToSave,
+        viewTransform: currentViewTransform,
+        autoGraphEnabled: currentAutoGraphEnabled,
+        currentScopeId: currentScopeId,
+        selectedNodeIds: Array.from(currentSelectedNodeIds),
+      };
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(data));
+    },
+    []
+  );
+
   const checkUsage = useCallback((currentCount: number) => {
     const limit = 100;
     const percentage = (currentCount / limit) * 100;
@@ -339,7 +475,7 @@ const App: React.FC = () => {
     } else if (percentage >= 50 && percentage < 51) {
       // Show only once around 50
       message = `50% Storage Used (${currentCount}/${limit} nodes).`;
-    } else if (percentage >= 20 && percentage < 21) {
+    } else if (percentage >= 20 && percentage >= 20) {
       // Show only once around 20
       message = `20% Storage Used (${currentCount}/${limit} nodes).`;
     }
@@ -358,27 +494,203 @@ const App: React.FC = () => {
     }
   }, []);
 
-  const [showLimitModal, setShowLimitModal] = useState(false);
-  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  // Debounced save functions
+  const dirtyNodesByIdRef = useRef<
+    Map<string, { node: GraphNode; skipEmbedding: boolean }>
+  >(new Map());
+  const edgesDirtyRef = useRef(false);
 
-  useEffect(() => {
+  const debouncedFlushSaves = useMemo(
+    () =>
+      debounce(
+        async (
+          nodesSnapshot: GraphNode[],
+          edgesSnapshot: GraphEdge[],
+          currentViewTransform: ViewportTransform,
+          currentAutoGraphEnabled: boolean,
+          currentScopeId: string | null,
+          currentSelectedNodeIds: Set<string>
+        ) => {
+          // Save to local storage (snapshot of current graph state)
+          saveGraphToLocalStorage(
+            nodesSnapshot,
+            edgesSnapshot,
+            currentViewTransform,
+            currentAutoGraphEnabled,
+            currentScopeId,
+            currentSelectedNodeIds
+          );
+
+          const dirtyNodes = Array.from(dirtyNodesByIdRef.current.values());
+          dirtyNodesByIdRef.current.clear();
+          const edgesDirty = edgesDirtyRef.current;
+          edgesDirtyRef.current = false;
+
+          // Save to file system or cloud (only what changed)
+          if (dirHandle) {
+            dirtyNodes.forEach(({ node }) => saveNodeToFile(dirHandle, node));
+            if (edgesDirty) {
+              saveEdgesToFile(dirHandle, edgesSnapshot);
+            }
+          } else if (user) {
+            if (dirtyNodes.length > 0) {
+              // Batch-save dirty nodes to cut request count
+              await saveNodesBatchToApi(
+                dirtyNodes.map(({ node, skipEmbedding }) => ({
+                  ...(node as any),
+                  skipEmbedding,
+                }))
+              );
+            }
+            if (edgesDirty) {
+              saveEdgesToApi(edgesSnapshot);
+            }
+          }
+        },
+        2000 // 2 second debounce delay
+      ),
+    [saveGraphToLocalStorage, dirHandle, user, checkUsage]
+  );
+
+  const setNodesCallback = useCallback(
+    (newNodes: GraphNode[] | ((prev: GraphNode[]) => GraphNode[])) => {
+      const resolvedNodes =
+        typeof newNodes === "function" ? newNodes(nodes) : newNodes;
+      setNodes(resolvedNodes);
+      // Mark changed nodes as dirty (reference compare is fast and works with immutable updates)
+      const prevById = new Map(nodes.map((n) => [n.id, n]));
+      for (const n of resolvedNodes) {
+        const prev = prevById.get(n.id);
+        if (!prev || prev !== n) {
+          const semanticChanged =
+            !prev ||
+            prev.content !== n.content ||
+            prev.summary !== n.summary ||
+            JSON.stringify(prev.aliases || []) !==
+              JSON.stringify(n.aliases || []);
+
+          // skipEmbedding=true for position-only updates; false when semantic fields changed
+          dirtyNodesByIdRef.current.set(n.id, {
+            node: n,
+            skipEmbedding: !semanticChanged,
+          });
+        }
+      }
+
+      debouncedFlushSaves(
+        resolvedNodes,
+        edges,
+        viewTransform,
+        autoGraphEnabled,
+        currentScopeId,
+        selectedNodeIds
+      );
+    },
+    [
+      nodes,
+      edges,
+      viewTransform,
+      autoGraphEnabled,
+      currentScopeId,
+      selectedNodeIds,
+      debouncedFlushSaves,
+    ]
+  );
+
+  const setEdgesCallback = useCallback(
+    (newEdges: GraphEdge[] | ((prev: GraphEdge[]) => GraphEdge[])) => {
+      const resolvedEdges =
+        typeof newEdges === "function" ? newEdges(edges) : newEdges;
+      setEdges(resolvedEdges);
+      edgesDirtyRef.current = true;
+      debouncedFlushSaves(
+        nodes,
+        resolvedEdges,
+        viewTransform,
+        autoGraphEnabled,
+        currentScopeId,
+        selectedNodeIds
+      );
+    },
+    [
+      nodes,
+      edges,
+      viewTransform,
+      autoGraphEnabled,
+      currentScopeId,
+      selectedNodeIds,
+      debouncedFlushSaves,
+    ]
+  );
+
+  const resetGraphState = useCallback(() => {
+    setNodesCallback(createDefaultGraphNodes());
+    setEdgesCallback([]);
+    setViewTransform({ x: 0, y: 0, k: 1 });
+    setCurrentScopeId(null);
+    setSelectedNodeIds(new Set());
+    setAutoGraphEnabled(true);
+  }, [setNodesCallback, setEdgesCallback]);
+
+  const loadGraphFromLocalStorage = useCallback(() => {
     if (typeof window === "undefined") return;
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+      if (!saved) {
+        resetGraphState();
+        return;
+      }
 
-    if (!user) {
-      hasLoadedLocalGraphRef.current = false;
-      hasCenteredOnStoredSelectionRef.current = false;
-      setLocalStorageReady(false);
+      const parsed: LocalGraphSnapshot & {
+        viewTransform?: ViewportTransform;
+        autoGraphEnabled?: boolean;
+      } = JSON.parse(saved);
+
+      if (parsed.nodes && Array.isArray(parsed.nodes)) {
+        setNodesCallback(parsed.nodes);
+      } else {
+        setNodesCallback(createDefaultGraphNodes());
+      }
+
+      if (parsed.edges && Array.isArray(parsed.edges)) {
+        setEdgesCallback(parsed.edges);
+      } else {
+        setEdgesCallback([]);
+      }
+
+      if (parsed.viewTransform) {
+        setViewTransform(parsed.viewTransform);
+      } else {
+        setViewTransform({ x: 0, y: 0, k: 1 });
+      }
+
+      if (parsed.currentScopeId !== undefined) {
+        setCurrentScopeId(parsed.currentScopeId || null);
+      }
+
+      if (parsed.selectedNodeIds && Array.isArray(parsed.selectedNodeIds)) {
+        setSelectedNodeIds(new Set(parsed.selectedNodeIds));
+      } else if (parsed.selectedNodeId) {
+        setSelectedNodeIds(new Set([parsed.selectedNodeId]));
+      } else {
+        setSelectedNodeIds(new Set());
+      }
+
+      setAutoGraphEnabled(
+        parsed.autoGraphEnabled !== undefined ? !!parsed.autoGraphEnabled : true
+      );
+    } catch (e) {
+      console.error("Failed to load from local storage", e);
       resetGraphState();
-      return;
     }
+  }, [resetGraphState, setNodesCallback, setEdgesCallback]);
 
-    if (!hasLoadedLocalGraphRef.current) {
-      loadGraphFromLocalStorage();
-      hasLoadedLocalGraphRef.current = true;
-      hasCenteredOnStoredSelectionRef.current = false;
-    }
-    setLocalStorageReady(true);
-  }, [user, loadGraphFromLocalStorage, resetGraphState]);
+  const selectedNodeId =
+    selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null;
+  const setSelectedNodeId = useCallback((id: string | null) => {
+    if (id === null) setSelectedNodeIds(new Set());
+    else setSelectedNodeIds(new Set([id]));
+  }, []);
 
   const prevNodesRef = useRef<GraphNode[]>(nodes);
   const prevEdgesRef = useRef<GraphEdge[]>(edges);
@@ -407,13 +719,28 @@ const App: React.FC = () => {
     Object.values(sidePanelLayouts).forEach((layout) => {
       const { width, height, dockPosition } = layout;
       if (dockPosition === "left") {
-        newLeftShift = Math.max(newLeftShift, (window.innerWidth * width) / 100);
+        newLeftShift = Math.max(
+          newLeftShift,
+          (window.innerWidth * width) / 100
+        );
       } else if (dockPosition === "right") {
-        newRightShift = Math.max(newRightShift, (window.innerWidth * width) / 100);
+        newRightShift = Math.max(
+          newRightShift,
+          (window.innerWidth * width) / 100
+        );
       } else if (dockPosition === "top-left" || dockPosition === "top-right") {
-        newTopShift = Math.max(newTopShift, (window.innerHeight * height) / 100);
-      } else if (dockPosition === "bottom-left" || dockPosition === "bottom-right") {
-        newBottomShift = Math.max(newBottomShift, (window.innerHeight * height) / 100);
+        newTopShift = Math.max(
+          newTopShift,
+          (window.innerHeight * height) / 100
+        );
+      } else if (
+        dockPosition === "bottom-left" ||
+        dockPosition === "bottom-right"
+      ) {
+        newBottomShift = Math.max(
+          newBottomShift,
+          (window.innerHeight * height) / 100
+        );
       }
     });
 
@@ -433,10 +760,7 @@ const App: React.FC = () => {
   const handleSidePanelLayoutChange = useCallback(
     (id: string, layout: SidePanelLayout) => {
       setSidePanelLayouts((prev) => {
-        const nextLayouts = {
-          ...prev,
-          [id]: layout,
-        };
+        const nextLayouts = { ...prev, [id]: layout };
         return nextLayouts;
       });
     },
@@ -458,28 +782,8 @@ const App: React.FC = () => {
           // Cloud User (Paid OR Free): Auto-connect
           if (data.user) {
             setDirName("Cloud Storage");
-            // Load graph
-            loadGraphFromApi()
-              .then(({ nodes, edges }) => {
-                if (nodes && nodes.length > 0) {
-                  setNodes(nodes);
-                  setEdges(edges);
-
-                  // Initial usage check for free users
-                  if (!data.user.isPaid) {
-                    // Count nodes
-                    // Since we just loaded, we know the count
-                    // But we need a persistent way to track if we already notified for 20/50/80%
-                    // For simplicity, the server only sends notifications on SAVE.
-                    // But we can check here too.
-                  }
-                }
-                setIsGraphLoaded(true);
-              })
-              .catch((e) => {
-                console.error("Cloud load failed", e);
-                setIsGraphLoaded(true);
-              });
+            // Initial load is handled by the viewport effect
+            setIsGraphLoaded(true);
           } else {
             setIsGraphLoaded(true);
           }
@@ -516,176 +820,70 @@ const App: React.FC = () => {
       setUser(null);
       setDirHandle(null);
       setDirName(null);
-      // Optional: clear graph?
-      // setNodes([]);
-      // setEdges([]);
+      setNodesCallback([]);
+      setEdgesCallback([]);
     } catch (err) {
       console.error("Logout failed", err);
     }
   };
 
-  // --- Automatic Connection Discovery ---
-  useEffect(() => {
-    // Only trigger if node count increased (new node added)
-    if (nodes.length <= prevNodesRef.current.length) return;
+  const handleFindRelationshipsForNode = useCallback(
+    async (sourceNodeId: string) => {
+      const sourceNode = nodes.find((n) => n.id === sourceNodeId);
+      if (!sourceNode || !sourceNode.content || sourceNode.content.length < 3) {
+        return;
+      }
 
-    const newNode = nodes[nodes.length - 1];
-    if (!newNode.content || newNode.content.length < 3) return;
+      const potentialTargets = nodes
+        .filter(
+          (n) =>
+            n.id !== sourceNode.id &&
+            n.content.length > 3 &&
+            n.parentId === currentScopeId
+        )
+        .slice(-10);
 
-    const potentialTargets = nodes
-      .filter(
-        (n) =>
-          n.id !== newNode.id &&
-          n.content.length > 3 &&
-          n.parentId === currentScopeId
-      )
-      .slice(-10);
-
-    const discoverConnections = async () => {
       try {
-        const relationships = await findRelationships(
-          { id: newNode.id, content: newNode.content },
+        const relationships = await (aiProvider === "huggingface"
+          ? hfService
+          : geminiService
+        ).findRelationships(
+          { id: sourceNode.id, content: sourceNode.content },
           potentialTargets.map((n) => ({ id: n.id, content: n.content }))
         );
 
         if (relationships.length > 0) {
-          setEdges((prev) => {
-            const newEdges = [...prev];
+          setEdgesCallback((prev) => {
+            const nextEdges = [...prev];
             relationships.forEach((rel) => {
-              const exists = newEdges.some(
+              const exists = nextEdges.some(
                 (e) =>
-                  (e.source === newNode.id && e.target === rel.targetId) ||
-                  (e.source === rel.targetId && e.target === newNode.id)
+                  (e.source === sourceNode.id && e.target === rel.targetId) ||
+                  (e.source === rel.targetId && e.target === sourceNode.id)
               );
 
               if (!exists) {
-                newEdges.push({
+                nextEdges.push({
                   id: crypto.randomUUID(),
-                  source: newNode.id,
+                  source: sourceNode.id,
                   target: rel.targetId,
                   label: rel.relationship,
                   parentId: currentScopeId || undefined,
                 });
               }
             });
-            return newEdges;
+            return nextEdges;
           });
         }
       } catch (e: any) {
-        if (e.message === "LIMIT_REACHED") {
-          // Silently fail for background auto-discovery or show modal?
-          // Usually annoying to show modal for background task, but user might want to know
-          // Let's just log it for now to avoid interrupting if they are just typing
-          console.log("Limit reached during background relationship discovery");
+        if (e?.message === "LIMIT_REACHED") {
+          setShowLimitModal(true);
         } else {
-          console.error("Failed to discover connections", e);
+          console.error("Failed to find relationships", e);
         }
-      }
-    };
-
-    const timer = setTimeout(discoverConnections, 2000);
-    return () => clearTimeout(timer);
-  }, [nodes.length, currentScopeId]);
-
-  // --- Local Storage Auto-Save ---
-  useEffect(() => {
-    if (!localStorageReady) return;
-    if (typeof window === "undefined") return;
-
-    const timeoutId = setTimeout(() => {
-      const data = {
-        nodes,
-        edges,
-        viewTransform,
-        autoGraphEnabled,
-        currentScopeId,
-        selectedNodeIds: Array.from(selectedNodeIds),
-      };
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(data));
-    }, 1000);
-
-    return () => clearTimeout(timeoutId);
-  }, [
-    nodes,
-    edges,
-    viewTransform,
-    autoGraphEnabled,
-    currentScopeId,
-    selectedNodeIds,
-    localStorageReady,
-  ]);
-
-  // --- File System Sync Effects ---
-
-  useEffect(() => {
-    // If using cloud storage (user) or browser FS handle
-    if (!dirHandle && !user) return;
-    if (!isGraphLoaded) return;
-
-    // Save all edges when they change
-    const timeout = setTimeout(async () => {
-      setIsSaving(true);
-      try {
-        if (dirHandle) {
-          await saveEdgesToFile(dirHandle, edges);
-        } else if (user) {
-          // Cloud Storage (for all users)
-          await saveEdgesToApi(edges);
-        }
-      } catch (e) {
-        console.error("Failed to sync edges", e);
-      } finally {
-        setIsSaving(false);
-      }
-    }, 2000);
-    return () => clearTimeout(timeout);
-  }, [edges, dirHandle, user, isGraphLoaded]);
-
-  const saveNodeToDisk = useCallback(
-    async (node: GraphNode) => {
-      if (!dirHandle && !user) return;
-      if (!isGraphLoaded) return;
-      setIsSaving(true);
-      try {
-        if (dirHandle) {
-          await saveNodeToFile(dirHandle, node);
-        } else if (user) {
-          const res = await saveNodeToApi(node);
-          if (res.count !== undefined) {
-            checkUsage(res.count);
-          }
-          if (res.code === "STORAGE_LIMIT") {
-            setUsageNotification({ message: res.message, visible: true });
-            setShowUpgradeModal(true);
-          }
-        }
-      } catch (e) {
-        console.error("Failed to save node", node.id, e);
-      } finally {
-        setIsSaving(false);
       }
     },
-    [dirHandle, user, isGraphLoaded, checkUsage]
-  );
-
-  const deleteNodeFromDisk = useCallback(
-    async (id: string) => {
-      if (!dirHandle && !user) return;
-      if (!isGraphLoaded) return;
-      setIsSaving(true);
-      try {
-        if (dirHandle) {
-          await deleteNodeFile(dirHandle, id);
-        } else if (user) {
-          await deleteNodeFromApi(id);
-        }
-      } catch (e) {
-        console.error("Failed to delete node", id, e);
-      } finally {
-        setIsSaving(false);
-      }
-    },
-    [dirHandle, user, isGraphLoaded]
+    [nodes, currentScopeId, setEdgesCallback]
   );
 
   // --- Auto-Resize Nodes Based on Children ---
@@ -737,16 +935,9 @@ const App: React.FC = () => {
     });
 
     if (hasChanges) {
-      setNodes(newNodes);
-
-      // Optional: Sync to disk (debounce this if many changes?)
-      // For now, we rely on the fact that this is deterministic.
-      // If we want to persist, we can call saveNodeToDisk for changedNodes.
-      if (dirHandle || user?.storagePath) {
-        changedNodes.forEach((n) => saveNodeToDisk(n));
-      }
+      setNodesCallback(newNodes);
     }
-  }, [edges, nodes, dirHandle, user, saveNodeToDisk]);
+  }, [edges, nodes, setNodesCallback]);
 
   // --- Initial Center on Selected Node ---
   useEffect(() => {
@@ -807,19 +998,17 @@ const App: React.FC = () => {
 
   const handleUpdateNode = useCallback(
     (id: string, updates: Partial<GraphNode>) => {
-      setNodes((prev) =>
+      setNodesCallback((prev) =>
         prev.map((n) => {
           if (n.id === id) {
             const updated = { ...n, ...updates };
-            // Sync to disk if folder open
-            if (dirHandle || user?.storagePath) saveNodeToDisk(updated);
             return updated;
           }
           return n;
         })
       );
     },
-    [dirHandle, user, saveNodeToDisk]
+    [setNodesCallback]
   );
 
   const confirmDeleteNode = useCallback(
@@ -840,10 +1029,18 @@ const App: React.FC = () => {
       const idsSet = new Set(ids);
 
       // 2. Optimistic Update (Remove from UI)
-      setNodes((prev) => prev.filter((n) => !idsSet.has(n.id)));
-      setEdges((prev) =>
-        prev.filter((e) => !idsSet.has(e.source) && !idsSet.has(e.target))
+      setNodesCallback((prev) => prev.filter((node) => !ids.includes(node.id)));
+      setEdgesCallback((prev) =>
+        prev.filter(
+          (edge) => !ids.includes(edge.source) && !ids.includes(edge.target)
+        )
       );
+      setSelectedNodeIds(new Set()); // Clear selection after deletion
+
+      // If the cut node is among the deleted nodes, clear the cut state
+      if (cutNodeId && ids.includes(cutNodeId)) {
+        setCutNodeId(null);
+      }
 
       // Close any side panels associated with deleted nodes
       setActiveSidePanes((prev) =>
@@ -859,9 +1056,13 @@ const App: React.FC = () => {
       // 3. Set up Soft Delete / Undo Timer
       // We wait 5 seconds before actually deleting from disk/API
       const timer = window.setTimeout(async () => {
-        if (dirHandle || user?.storagePath) {
+        if (dirHandle) {
           for (const id of ids) {
-            await deleteNodeFromDisk(id);
+            await deleteNodeFile(dirHandle, id);
+          }
+        } else if (user) {
+          for (const id of ids) {
+            await deleteNodeFromApi(id);
           }
         }
         deletedNodeRef.current = null; // Clear undo history
@@ -890,8 +1091,8 @@ const App: React.FC = () => {
               clearTimeout(timer);
             }
 
-            setNodes((prev) => [...prev, ...restoredNodes]);
-            setEdges((prev) => [...prev, ...restoredEdges]);
+            setNodesCallback((prev) => [...prev, ...restoredNodes]);
+            setEdgesCallback((prev) => [...prev, ...restoredEdges]);
 
             deletedNodeRef.current = null;
             setToast((prev) => ({ ...prev, visible: false }));
@@ -899,7 +1100,15 @@ const App: React.FC = () => {
         },
       });
     },
-    [nodes, edges, dirHandle, user, deleteNodeFromDisk]
+    [
+      nodes,
+      edges,
+      dirHandle,
+      user,
+      deleteNodeFile,
+      setNodesCallback,
+      setEdgesCallback,
+    ]
   );
 
   const handleDeleteNode = useCallback(
@@ -945,10 +1154,40 @@ const App: React.FC = () => {
         e.preventDefault();
         setIsSearchOpen(true);
       }
+
+      // Cut (Ctrl+X / Cmd+X)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "x") {
+        if (selectedNodeIds.size === 1) {
+          e.preventDefault();
+          handleCut(Array.from(selectedNodeIds)[0]);
+        }
+      }
+
+      // Paste (Ctrl+V / Cmd+V)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
+        e.preventDefault();
+        // You might want to paste it at the current canvas view center or mouse position
+        // For simplicity, let's paste it at a fixed offset from the original or center.
+        // This needs to be refined for actual positioning.
+        handlePaste({
+          x: viewTransform.x + 50,
+          y: viewTransform.y + 50,
+        });
+      }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [toast, selectedNodeIds, handleDeleteNode, confirmDeleteNode]);
+  }, [
+    toast,
+    selectedNodeIds,
+    handleDeleteNode,
+    confirmDeleteNode,
+    handleCut,
+    handlePaste,
+    viewTransform.x,
+    viewTransform.y,
+    viewTransform.k,
+  ]);
 
   const handleExpandNodeFromWikidata = useCallback(
     async (
@@ -1071,12 +1310,8 @@ const App: React.FC = () => {
           });
         }
 
-        setNodes((prev) => [...prev, ...nodesToAdd]);
-        setEdges((prev) => [...prev, ...edgesToAdd]);
-
-        if (dirHandle || user?.storagePath) {
-          nodesToAdd.forEach((n) => saveNodeToDisk(n));
-        }
+        setNodesCallback((prev) => [...prev, ...nodesToAdd]);
+        setEdgesCallback((prev) => [...prev, ...edgesToAdd]);
 
         if (nodesToAdd.length > 0) {
           let minX = sourceNode.x;
@@ -1098,6 +1333,7 @@ const App: React.FC = () => {
           const centerX = (minX + maxX) / 2;
           const centerY = (minY + maxY) / 2;
 
+          // Calculate zoom to fit
           const scaleX = window.innerWidth / width;
           const scaleY = window.innerHeight / height;
           let newK = Math.min(scaleX, scaleY, 1);
@@ -1141,7 +1377,7 @@ const App: React.FC = () => {
         wikidataExpansionInFlightRef.current.delete(id);
       }
     },
-    [nodes, currentScopeId, dirHandle, user, saveNodeToDisk]
+    [nodes, currentScopeId, setNodesCallback, setEdgesCallback]
   );
 
   const handleExpandNode = useCallback(
@@ -1310,7 +1546,10 @@ const App: React.FC = () => {
           const existingNodeNames = nodes
             .filter((n) => n.parentId === currentScopeId)
             .map((n) => n.content);
-          const result = await expandNodeTopic(topic, existingNodeNames);
+          const result = await (aiProvider === "huggingface"
+            ? hfService
+            : geminiService
+          ).expandNodeTopic(topic, existingNodeNames);
 
           if (topicNode && result.mainTopic) {
             topicNode.content = result.mainTopic;
@@ -1396,16 +1635,9 @@ const App: React.FC = () => {
           }
         }
 
-        setNodes((prev) => [...prev, ...nodesToAdd]);
-        setEdges((prev) => [...prev, ...edgesToAdd]);
+        setNodesCallback((prev) => [...prev, ...nodesToAdd]);
+        setEdgesCallback((prev) => [...prev, ...edgesToAdd]);
 
-        // Sync new nodes/edges to disk
-        if (dirHandle || user?.storagePath) {
-          nodesToAdd.forEach((n) => saveNodeToDisk(n));
-          // Edges are handled by the useEffect hook
-        }
-
-        // --- Auto-Fit Viewport to New Nodes ---
         if (nodesToAdd.length > 0) {
           // Calculate bounds of the new cluster + parent
           let minX = sourceNode.x;
@@ -1431,9 +1663,8 @@ const App: React.FC = () => {
           const scaleX = window.innerWidth / width;
           const scaleY = window.innerHeight / height;
           let newK = Math.min(scaleX, scaleY, 1); // Cap at 1.0 zoom (don't zoom in too close)
-          newK = Math.max(newK, 0.1); // Cap minimum zoom
+          newK = Math.max(newK, 0.1);
 
-          // Smooth transition
           setViewTransform({
             x: window.innerWidth / 2 - centerX * newK,
             y: window.innerHeight / 2 - centerY * newK,
@@ -1460,34 +1691,31 @@ const App: React.FC = () => {
         setExpandingNodeIds((prev) => prev.filter((nId) => nId !== id));
       }
     },
-    [nodes, currentScopeId, dirHandle, user, saveNodeToDisk]
+    [nodes, currentScopeId, setNodesCallback, setEdgesCallback]
   );
 
-  const handleMaximizeNode = useCallback(
-    (id: string) => {
-      setActiveSidePanes((prevPanes) => {
-        const existingNodePane = prevPanes.find(
-          (pane) => pane.type === "node" && pane.data === id
-        );
-        if (existingNodePane) {
-          // If already open, close it
-          return prevPanes.filter((pane) => pane.id !== existingNodePane.id);
-        } else {
-          // Otherwise, open a new one on the right
-          return [
-            ...prevPanes,
-            {
-              id: crypto.randomUUID(),
-              type: "node",
-              data: id,
-              initialDockPosition: "right",
-            },
-          ];
-        }
-      });
-    },
-    []
-  );
+  const handleMaximizeNode = useCallback((id: string) => {
+    setActiveSidePanes((prevPanes) => {
+      const existingNodePane = prevPanes.find(
+        (pane) => pane.type === "node" && pane.data === id
+      );
+      if (existingNodePane) {
+        // If already open, close it
+        return prevPanes.filter((pane) => pane.id !== existingNodePane.id);
+      } else {
+        // Otherwise, open a new one on the right
+        return [
+          ...prevPanes,
+          {
+            id: crypto.randomUUID(),
+            type: "node",
+            data: id,
+            initialDockPosition: "right",
+          },
+        ];
+      }
+    });
+  }, []);
 
   const handleOpenLink = useCallback((url: string) => {
     const isWikipedia = url.includes("wikipedia.org/wiki/");
@@ -1506,7 +1734,9 @@ const App: React.FC = () => {
     } else {
       // For other web links, reuse an existing web panel or create a new one on the right
       setActiveSidePanes((prevPanes) => {
-        const existingWebPane = prevPanes.find((pane) => pane.type === "web" && pane.initialDockPosition !== "left");
+        const existingWebPane = prevPanes.find(
+          (pane) => pane.type === "web" && pane.initialDockPosition !== "left"
+        );
         if (existingWebPane) {
           return prevPanes.map((pane) =>
             pane.id === existingWebPane.id ? { ...pane, data: url } : pane
@@ -1527,7 +1757,9 @@ const App: React.FC = () => {
   }, []);
 
   const handleCloseSidePane = useCallback((id: string) => {
-    setActiveSidePanes((prevPanes) => prevPanes.filter((pane) => pane.id !== id));
+    setActiveSidePanes((prevPanes) =>
+      prevPanes.filter((pane) => pane.id !== id)
+    );
     setSidePanelLayouts((prevLayouts) => {
       const newLayouts = { ...prevLayouts };
       delete newLayouts[id];
@@ -1545,9 +1777,7 @@ const App: React.FC = () => {
       const matchesNode = (graphNode: GraphNode) => {
         if (normalize(graphNode.content) === target) return true;
         if (normalize(graphNode.summary) === target) return true;
-        if (
-          graphNode.aliases?.some((alias) => normalize(alias) === target)
-        )
+        if (graphNode.aliases?.some((alias) => normalize(alias) === target))
           return true;
         if (graphNode.type === NodeType.NOTE) {
           const noteTitle = normalize(
@@ -1614,7 +1844,7 @@ const App: React.FC = () => {
         setConnectingNodeId(null);
         return;
       }
-      setEdges((prev) => {
+      setEdgesCallback((prev) => {
         if (prev.some((e) => e.source === sourceId && e.target === targetId))
           return prev;
         return [
@@ -1630,7 +1860,7 @@ const App: React.FC = () => {
       });
       setConnectingNodeId(null);
     },
-    [currentScopeId]
+    [currentScopeId, setEdgesCallback]
   );
 
   const handleCreateFromSelection = useCallback(
@@ -1651,7 +1881,9 @@ const App: React.FC = () => {
         newNodeY = canvasY + 50;
       }
 
-      const promptTemplate = getTopicSummaryPrompt(selectionTooltip.text);
+      const promptTemplate = geminiService.getTopicSummaryPrompt(
+        selectionTooltip.text
+      );
       const initialMessages: ChatMessage[] =
         type === NodeType.CHAT
           ? [
@@ -1688,7 +1920,7 @@ const App: React.FC = () => {
         parentId: currentScopeId || undefined,
       };
 
-      setNodes((prev) => [...prev, newNode]);
+      setNodesCallback((prev) => [...prev, newNode]);
       setSelectedNodeIds(new Set([newNode.id]));
 
       if (selectionTooltip.sourceId) {
@@ -1696,7 +1928,7 @@ const App: React.FC = () => {
           selectionTooltip.text.length > 20
             ? selectionTooltip.text.substring(0, 20) + "..."
             : selectionTooltip.text;
-        setEdges((prev) => [
+        setEdgesCallback((prev) => [
           ...prev,
           {
             id: crypto.randomUUID(),
@@ -1713,9 +1945,12 @@ const App: React.FC = () => {
       if (type === NodeType.CHAT) {
         try {
           let currentText = "";
-          const result = await sendChatMessage([], promptTemplate, (chunk) => {
+          const result = await (aiProvider === "huggingface"
+            ? hfService
+            : geminiService
+          ).sendChatMessage([], promptTemplate, (chunk) => {
             currentText += chunk;
-            setNodes((prev) =>
+            setNodesCallback((prev) =>
               prev.map((n) =>
                 n.id === newNode.id && n.messages
                   ? {
@@ -1732,7 +1967,7 @@ const App: React.FC = () => {
               )
             );
           });
-          setNodes((prev) =>
+          setNodesCallback((prev) =>
             prev.map((n) =>
               n.id === newNode.id && n.messages
                 ? {
@@ -1757,8 +1992,8 @@ const App: React.FC = () => {
       selectionTooltip,
       nodes,
       viewTransform,
-      setNodes,
-      setEdges,
+      setNodesCallback,
+      setEdgesCallback,
       currentScopeId,
       setSelectedNodeIds,
     ]
@@ -1810,9 +2045,7 @@ const App: React.FC = () => {
         parentId: currentScopeId || undefined,
       };
 
-      setNodes((prev) => [...prev, newNode]);
-
-      if (dirHandle || user?.storagePath) saveNodeToDisk(newNode);
+      setNodesCallback((prev) => [...prev, newNode]);
 
       if (shouldExpand) {
         handleExpandNode(newNodeId, topic, newNode);
@@ -1832,11 +2065,11 @@ const App: React.FC = () => {
       setViewTransform({ x: newX, y: newY, k });
 
       if (!isWiki) {
-        const prompt = getTopicSummaryPrompt(topic);
+        const prompt = geminiService.getTopicSummaryPrompt(topic);
         let currentText = "";
 
         const updateNodeMessage = (text: string) => {
-          setNodes((prev) =>
+          setNodesCallback((prev) =>
             prev.map((n) => {
               if (n.id === newNodeId && n.messages) {
                 const newMsgs = [...n.messages];
@@ -1851,10 +2084,11 @@ const App: React.FC = () => {
           );
         };
 
-        sendChatMessage([], prompt, (chunk) => {
-          currentText += chunk;
-          updateNodeMessage(currentText);
-        })
+        (aiProvider === "huggingface" ? hfService : geminiService)
+          .sendChatMessage([], prompt, (chunk) => {
+            currentText += chunk;
+            updateNodeMessage(currentText);
+          })
           .then((result) => {
             updateNodeMessage(result.text);
             // Save final state
@@ -1864,7 +2098,6 @@ const App: React.FC = () => {
                 updatedNode.messages[updatedNode.messages.length - 1];
               if (lastMsg.role === "model") lastMsg.text = result.text;
             }
-            if (dirHandle || user?.storagePath) saveNodeToDisk(updatedNode);
           })
           .catch((err: any) => {
             if (err.message === "LIMIT_REACHED") {
@@ -1876,14 +2109,7 @@ const App: React.FC = () => {
           });
       }
     },
-    [
-      viewTransform,
-      handleExpandNode,
-      currentScopeId,
-      dirHandle,
-      user,
-      saveNodeToDisk,
-    ]
+    [viewTransform, handleExpandNode, currentScopeId, setNodesCallback]
   );
 
   const handleNavigateDown = useCallback((nodeId: string) => {
@@ -1935,8 +2161,8 @@ const App: React.FC = () => {
       // But user might want to stay logged in?
       // For now, just disconnect storage UI
       setDirName(null);
-      setNodes([]);
-      setEdges([]);
+      setNodesCallback([]);
+      setEdgesCallback([]);
       return;
     }
 
@@ -1950,20 +2176,21 @@ const App: React.FC = () => {
     }
     setDirHandle(null);
     setDirName(null);
-    setNodes([]); // Clear?
-    setEdges([]);
+    setNodesCallback([]); // Clear?
+    setEdgesCallback([]);
     window.location.reload();
-  }, [user]);
+  }, [user, setNodesCallback, setEdgesCallback]);
 
-  const nodeMap = useMemo(
-    () => new Map(nodes.map((n) => [n.id, n])),
-    [nodes]
-  );
+  const nodeMap = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
 
   // Breadcrumbs: show scope hierarchy plus the lineage of connected nodes within that scope
   const getBreadcrumbs = () => {
     const rootName = dirName || "Home";
-    type Breadcrumb = { id: string | null; name: string; type: "root" | "scope" | "node" };
+    type Breadcrumb = {
+      id: string | null;
+      name: string;
+      type: "root" | "scope" | "node";
+    };
     const crumbs: Breadcrumb[] = [];
     const seenIds = new Set<string | null>();
 
@@ -2107,12 +2334,28 @@ const App: React.FC = () => {
     () => nodes.filter((n) => n.parentId == currentScopeId),
     [nodes, currentScopeId]
   );
-  const filteredEdges = useMemo(
-    () => edges.filter((e) => e.parentId == currentScopeId),
-    [edges, currentScopeId]
+
+  // Apply clustering logic for rendering
+  const clusteredNodes = useMemo(() => {
+    return performGreedyClustering(filteredNodes, viewTransform.k);
+  }, [filteredNodes, viewTransform.k]);
+
+  const visibleNodeIds = useMemo(
+    () => new Set(clusteredNodes.map((n) => n.id)),
+    [clusteredNodes]
   );
 
-  const handleOpenStorage = async () => {
+  const filteredEdges = useMemo(
+    () =>
+      edges.filter((e) => {
+        if (e.parentId != currentScopeId) return false;
+        // Only show edges between visible nodes (hides edges connected to clusters for now)
+        return visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target);
+      }),
+    [edges, currentScopeId, visibleNodeIds]
+  );
+
+  const handleOpenStorage = useCallback(async () => {
     if (user) {
       // Check if user is paid for Cloud Storage
       // Note: We use 'isPaid' from the user object (make sure to update user type or just cast)
@@ -2122,10 +2365,7 @@ const App: React.FC = () => {
         setDirName("Cloud Storage");
 
         try {
-          const { nodes: loadedNodes, edges: loadedEdges } =
-            await loadGraphFromApi();
-          if (loadedNodes) setNodes(loadedNodes);
-          if (loadedEdges) setEdges(loadedEdges);
+          // Initial load handled by viewport effect
           setIsGraphLoaded(true);
         } catch (e) {
           console.error("Error loading cloud graph", e);
@@ -2150,8 +2390,8 @@ const App: React.FC = () => {
           const { nodes: loadedNodes, edges: loadedEdges } =
             await loadGraphFromApi();
           if (loadedNodes && loadedNodes.length > 0) {
-            setNodes(loadedNodes);
-            setEdges(loadedEdges);
+            setNodesCallback(loadedNodes);
+            setEdgesCallback(loadedEdges);
           }
           setIsGraphLoaded(true);
         }
@@ -2183,8 +2423,8 @@ const App: React.FC = () => {
           const { nodes: loadedNodes, edges: loadedEdges } =
             await loadGraphFromDirectory(handle);
           if (loadedNodes.length > 0) {
-            setNodes(loadedNodes);
-            setEdges(loadedEdges);
+            setNodesCallback(loadedNodes);
+            setEdgesCallback(loadedEdges);
           }
           setIsGraphLoaded(true);
         } catch (e) {
@@ -2194,7 +2434,7 @@ const App: React.FC = () => {
         }
       }
     }
-  };
+  }, [user, nodes, edges, setNodesCallback, setEdgesCallback]);
 
   const getSidePanelContent = useCallback(
     (activePane: ActiveSidePane) => {
@@ -2225,6 +2465,8 @@ const App: React.FC = () => {
               onNavigateToNode={handleNavigateToNodeLink}
               autoGraphEnabled={autoGraphEnabled}
               onSetAutoGraphEnabled={setAutoGraphEnabled}
+              cutNodeId={cutNodeId}
+              aiProvider={aiProvider}
             />
           ) : (
             <div className="p-4 text-slate-500">Node not found.</div>
@@ -2244,6 +2486,7 @@ const App: React.FC = () => {
       handleNavigateToNodeLink,
       autoGraphEnabled,
       setAutoGraphEnabled,
+      cutNodeId,
     ]
   );
 
@@ -2277,7 +2520,9 @@ const App: React.FC = () => {
         {/* Auth/Folder/Search Buttons */}
         <div
           className={`absolute top-4 right-4 z-[60] flex gap-3 items-center pointer-events-none transition-all duration-200 ${
-            activeSidePanes.length > 0 ? "opacity-0 invisible" : "opacity-100 visible"
+            activeSidePanes.length > 0
+              ? "opacity-0 invisible"
+              : "opacity-100 visible"
           }`}
         >
           {/* Search Button */}
@@ -2458,17 +2703,17 @@ const App: React.FC = () => {
 
         <ErrorBoundary>
           <Canvas
-            nodes={filteredNodes}
+            nodes={clusteredNodes}
             allNodes={nodes}
             edges={filteredEdges}
-            setNodes={setNodes}
-            setEdges={setEdges}
+            setNodes={setNodesCallback}
+            setEdges={setEdgesCallback}
             viewTransform={viewTransform}
             onViewTransformChange={setViewTransform}
             onOpenStorage={handleOpenStorage}
             storageConnected={!!dirName}
             storageDirName={dirName}
-            isSaving={isSaving}
+            isSaving={false}
             onOpenLink={handleOpenLink}
             onNavigateToNode={handleNavigateToNodeLink}
             onMaximizeNode={handleMaximizeNode}
@@ -2495,6 +2740,9 @@ const App: React.FC = () => {
             canvasShiftY={canvasShiftY}
             isResizing={isAnyPanelResizing}
             onSelectionTooltipChange={setSelectionTooltip}
+            cutNodeId={cutNodeId}
+            setCutNodeId={setCutNodeId}
+            aiProvider={aiProvider}
           />
         </ErrorBoundary>
       </div>
@@ -2513,6 +2761,13 @@ const App: React.FC = () => {
                 selectionTooltip.sourceId,
                 selectionTooltip.text
               );
+              setSelectionTooltip(null);
+              window.getSelection()?.removeAllRanges();
+            }
+          }}
+          onFindRelationships={() => {
+            if (selectionTooltip.sourceId) {
+              handleFindRelationshipsForNode(selectionTooltip.sourceId);
               setSelectionTooltip(null);
               window.getSelection()?.removeAllRanges();
             }
@@ -2568,10 +2823,10 @@ const App: React.FC = () => {
                   setDirName("Cloud Storage");
                   await syncToCloud();
                   loadGraphFromApi()
-                    .then(({ nodes, edges }) => {
-                      if (nodes && nodes.length > 0) {
-                        setNodes(nodes);
-                        setEdges(edges);
+                    .then(({ nodes: loadedNodes, edges: loadedEdges }) => {
+                      if (loadedNodes && loadedNodes.length > 0) {
+                        setNodesCallback(loadedNodes);
+                        setEdgesCallback(loadedEdges);
                       }
                       setIsGraphLoaded(true);
                     })
@@ -2582,10 +2837,10 @@ const App: React.FC = () => {
                 } else if (user.storagePath) {
                   setDirName(user.storagePath);
                   loadGraphFromApi()
-                    .then(({ nodes, edges }) => {
-                      if (nodes && nodes.length > 0) {
-                        setNodes(nodes);
-                        setEdges(edges);
+                    .then(({ nodes: loadedNodes, edges: loadedEdges }) => {
+                      if (loadedNodes && loadedNodes.length > 0) {
+                        setNodesCallback(loadedNodes);
+                        setEdgesCallback(loadedEdges);
                       }
                       setIsGraphLoaded(true);
                     })
@@ -2598,10 +2853,10 @@ const App: React.FC = () => {
                   setDirName("Cloud Storage");
                   await syncToCloud();
                   loadGraphFromApi()
-                    .then(({ nodes, edges }) => {
-                      if (nodes && nodes.length > 0) {
-                        setNodes(nodes);
-                        setEdges(edges);
+                    .then(({ nodes: loadedNodes, edges: loadedEdges }) => {
+                      if (loadedNodes && loadedNodes.length > 0) {
+                        setNodesCallback(loadedNodes);
+                        setEdgesCallback(loadedEdges);
                       }
                       setIsGraphLoaded(true);
                     })
@@ -2628,6 +2883,8 @@ const App: React.FC = () => {
         <ErrorBoundary>
           <ProfilePage
             user={user}
+            aiProvider={aiProvider}
+            onSetAiProvider={handleSetAiProvider}
             onClose={() => setShowProfile(false)}
             onUpdateUser={(updates) =>
               setUser((prev) => (prev ? { ...prev, ...updates } : null))
