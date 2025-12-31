@@ -781,9 +781,22 @@ const App: React.FC = () => {
             autoGraphEnabled={autoGraphEnabled}
             onSetAutoGraphEnabled={setAutoGraphEnabled}
             selectedNodeIds={selectedNodeIds}
-            onNodeSelect={(id) => {
-              if (id === null) setSelectedNodeIds(new Set());
-              else setSelectedNodeIds(new Set([id]));
+            onNodeSelect={(id, multi) => {
+              if (id === null) {
+                setSelectedNodeIds(new Set());
+              } else if (multi === 'remove') {
+                // Remove this specific node from selection (for minimize)
+                setSelectedNodeIds((prev) => {
+                  const newSet = new Set(prev);
+                  newSet.delete(id);
+                  return newSet;
+                });
+              } else if (multi) {
+                // Add to existing selection without clearing others
+                setSelectedNodeIds((prev) => new Set([...prev, id]));
+              } else {
+                setSelectedNodeIds(new Set([id]));
+              }
             }}
             canvasShiftX={canvasShiftX}
             canvasShiftY={canvasShiftY}

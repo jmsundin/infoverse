@@ -35,6 +35,7 @@ interface GraphNodeProps {
   node: GraphNode;
   allNodes?: GraphNode[];
   isSelected?: boolean;
+  isExpanded?: boolean;
   isDragging?: boolean;
   viewMode?: "canvas" | "sidebar";
   lodLevel?: LODLevel;
@@ -70,6 +71,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     node,
     allNodes,
     isSelected = false,
+    isExpanded,
     isDragging = false,
     viewMode = "canvas",
     lodLevel = "DETAIL",
@@ -134,12 +136,14 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         : undefined;
 
     // Semantic Zoom Modes
+    // Use isExpanded for content expansion, falling back to isSelected for backward compatibility
+    const effectiveExpanded = isExpanded ?? isSelected;
     const isClusterMode =
-      lodLevel === "CLUSTER" && !isSelected && !isSidebar && !isClusterParent;
+      lodLevel === "CLUSTER" && !effectiveExpanded && !isSidebar && !isClusterParent;
     const isClusterParentMode =
-      lodLevel === "CLUSTER" && !isSelected && !isSidebar && isClusterParent;
-    const isTitleOnly = lodLevel === "TITLE" && !isSelected && !isSidebar;
-    const isCompact = !isSidebar && !isSelected;
+      lodLevel === "CLUSTER" && !effectiveExpanded && !isSidebar && isClusterParent;
+    const isTitleOnly = lodLevel === "TITLE" && !effectiveExpanded && !isSidebar;
+    const isCompact = !isSidebar && !effectiveExpanded;
 
     const titleText =
       node.type === NodeType.CHAT ? node.content : node.summary || node.content;

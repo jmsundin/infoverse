@@ -69,7 +69,7 @@ interface CanvasProps {
   autoGraphEnabled?: boolean;
   onSetAutoGraphEnabled?: (enabled: boolean) => void;
   selectedNodeIds: Set<string>;
-  onNodeSelect: (id: string | null, multi?: boolean) => void;
+  onNodeSelect: (id: string | null, multi?: boolean | 'remove') => void;
   onMultiSelect?: (ids: string[], multi?: boolean) => void;
   canvasShiftX: number;
   canvasShiftY: number;
@@ -396,6 +396,8 @@ export const Canvas: React.FC<CanvasProps> = ({
     width: window.innerWidth,
     height: window.innerHeight,
   });
+  // Track the most recently clicked node for highlight styling
+  const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [resizingId, setResizingId] = useState<string | null>(null);
   const [resizeDirection, setResizeDirection] =
@@ -936,12 +938,8 @@ export const Canvas: React.FC<CanvasProps> = ({
         const dist = Math.hypot(clientX - mouseX, clientY - mouseY);
 
         if (dist < 5) {
-          const isShift = (e as MouseEvent).shiftKey;
-
-          // If we clicked a selected node without shift, we deferred the clear-others logic. Do it now.
-          if (!isShift && selectedNodeIds.has(draggingId)) {
-            onNodeSelect(draggingId, false);
-          }
+          // Node click without drag - no action needed
+          // Nodes are only minimized via the minimize button, not by clicking
         }
       }
 
@@ -1194,20 +1192,18 @@ export const Canvas: React.FC<CanvasProps> = ({
       const isShift = (e as React.MouseEvent).shiftKey;
       const isSelected = selectedNodeIds.has(id);
 
+      // Set this node as the active (highlighted) node
+      setActiveNodeId(id);
+
       if (isShift) {
         // Toggle selection
         onNodeSelect(id, true);
         // If we are deselecting (was selected, now toggled off), do not start drag
         if (isSelected) return;
       } else {
-        // No Shift
-        if (!isSelected) {
-          // New selection: select this one, clear others
-          onNodeSelect(id, false);
-        }
-        // If ALREADY selected: Do NOT call onNodeSelect(id, false) yet.
-        // We defer this to MouseUp to allow dragging the whole group.
-        // See handleEnd logic.
+        // No Shift - always add to selection (keeps other nodes expanded)
+        // Nodes are only minimized via the minimize button, not by clicking other nodes
+        onNodeSelect(id, true);
       }
 
       // Calculate the effective selection for dragging purposes
@@ -1974,8 +1970,8 @@ export const Canvas: React.FC<CanvasProps> = ({
                   lodLevel={lodLevel}
                   sourceIsParent={parentIds.has(edge.source)}
                   targetIsParent={parentIds.has(edge.target)}
-                  sourceIsSelected={selectedNodeId === edge.source}
-                  targetIsSelected={selectedNodeId === edge.target}
+                  sourceIsSelected={selectedNodeIds.has(edge.source)}
+                  targetIsSelected={selectedNodeIds.has(edge.target)}
                   isDragging={draggingId !== null}
                 />
               ))}
@@ -2020,7 +2016,10 @@ export const Canvas: React.FC<CanvasProps> = ({
                   node={node}
                   allNodes={allNodes}
                   isSelected={
-                    selectedNodeId === node.id || connectingNodeId === node.id
+                    activeNodeId === node.id || connectingNodeId === node.id
+                  }
+                  isExpanded={
+                    selectedNodeIds.has(node.id) || connectingNodeId === node.id
                   }
                   isDragging={draggingId === node.id}
                   viewMode="canvas"
@@ -2033,7 +2032,10 @@ export const Canvas: React.FC<CanvasProps> = ({
                   onDelete={onDeleteNode}
                   onResizeStart={handleResizeStart}
                   onToggleMaximize={onMaximizeNode}
-                  onMinimize={(id) => onNodeSelect(null)}
+                  onMinimize={(id) => {
+                    onNodeSelect(id, 'remove');
+                    if (activeNodeId === id) setActiveNodeId(null);
+                  }}
                   onOpenLink={onOpenLink}
                   onNavigateToNode={onNavigateToNode}
                   onConnectStart={onConnectStart}
