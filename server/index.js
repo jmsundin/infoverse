@@ -157,18 +157,25 @@ if (process.env.CORS_ORIGIN) {
     allowedOrigins.push(...envOrigins);
 }
 
+// Helper to check if origin is allowed
+const isOriginAllowed = (origin) => {
+    if (!origin) return true;
+    if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*')) return true;
+    
+    // Allow local network IPs for development
+    // Matches http://10.x.x.x, http://192.168.x.x, http://172.16-31.x.x
+    const localIpRegex = /^http:\/\/(localhost|127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})(:\d+)?$/;
+    if (localIpRegex.test(origin)) return true;
+
+    return false;
+};
+
 app.use(cors({
     origin: (origin, callback) => {
-        // Allow requests with no origin (like mobile apps or curl requests)
-        if (!origin) return callback(null, true);
-        
-        if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*')) {
+        if (isOriginAllowed(origin)) {
             callback(null, true);
         } else {
             console.log('Blocked by CORS:', origin);
-            // Don't throw error to avoid 500, just return false/error object handled by middleware
-            // But standard CORS middleware expects an error for blockage or false.
-            // If we pass an error, it goes to error handler.
             callback(new Error('Not allowed by CORS'));
         }
     },
@@ -180,8 +187,7 @@ app.use(cors({
 // Handle OPTIONS preflight for all routes
 app.options('*', cors({
     origin: (origin, callback) => {
-        if (!origin) return callback(null, true);
-        if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*')) {
+        if (isOriginAllowed(origin)) {
             callback(null, true);
         } else {
             callback(new Error('Not allowed by CORS'));
@@ -196,7 +202,7 @@ app.options('*', cors({
 app.use((req, res, next) => {
   if (req.method === 'OPTIONS') {
     const origin = req.headers.origin;
-    if (allowedOrigins.includes(origin)) {
+    if (isOriginAllowed(origin)) {
       res.header('Access-Control-Allow-Origin', origin);
       res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
       res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');

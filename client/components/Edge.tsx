@@ -1,5 +1,5 @@
 import React from 'react';
-import { GraphEdge, GraphNode, LODLevel } from '../types';
+import { GraphEdge, GraphNode, LODLevel, NodeType } from '../types';
 import { COLORS, NODE_HEADER_HEIGHT } from '../constants';
 
 interface EdgeProps {
@@ -12,6 +12,7 @@ interface EdgeProps {
   sourceIsSelected?: boolean;
   targetIsSelected?: boolean;
   highlightToChildren?: boolean;
+  isDragging?: boolean;
 }
 
 // Helper to find intersection of line from center to target with box
@@ -54,16 +55,17 @@ const getBoxIntersection = (
   };
 };
 
-export const Edge: React.FC<EdgeProps> = ({ 
-    edge, 
-    sourceNode, 
-    targetNode, 
+export const Edge: React.FC<EdgeProps> = React.memo(({
+    edge,
+    sourceNode,
+    targetNode,
     lodLevel = 'DETAIL',
     sourceIsParent = false,
     targetIsParent = false,
     sourceIsSelected = false,
     targetIsSelected = false,
-    highlightToChildren = false
+    highlightToChildren = false,
+    isDragging = false
 }) => {
   if (!sourceNode || !targetNode) return null;
 
@@ -95,26 +97,26 @@ export const Edge: React.FC<EdgeProps> = ({
   let tCx = targetNode.x + tW / 2;
   let tCy = targetNode.y + tH / 2;
 
+  // Handle center-positioned nodes (Clusters and Title-only nodes)
+  const sourceIsCentered = sourceNode.type === NodeType.CLUSTER || isTitle || isCluster;
+  const targetIsCentered = targetNode.type === NodeType.CLUSTER || isTitle || isCluster;
+
+  if (sourceIsCentered) {
+    sCx = sourceNode.x;
+    sCy = sourceNode.y;
+  }
+  if (targetIsCentered) {
+    tCx = targetNode.x;
+    tCy = targetNode.y;
+  }
+
   // --- Adjust for Cluster Mode ---
   if (isCluster) {
       // Source
       if (sourceIsParent) {
-          // Hub Node: Text only. Treat as small point at center.
-          // In GraphNode, Hub is centered at (x + width/2, y + height/2) visually?
-          // No, GraphNode positioning logic:
-          // Hub: absolute, left: node.x, top: node.y, width: node.width (300), height: node.height (200)
-          // Inside: flex items-center justify-center. So visual text is at center of box.
           sW = hubSize;
           sH = hubSize;
-          // sCx, sCy are already center of box.
       } else {
-          // Leaf Node: Dot at (x, y). 
-          // GraphNode: left: node.x, top: node.y, width: 48, height: 48.
-          // Visual dot is 24px (w-6) centered in 48px box.
-          // So center is at node.x + 24, node.y + 24.
-          const containerSize = 48;
-          sCx = sourceNode.x + containerSize / 2;
-          sCy = sourceNode.y + containerSize / 2;
           sW = dotSize;
           sH = dotSize;
       }
@@ -124,9 +126,6 @@ export const Edge: React.FC<EdgeProps> = ({
           tW = hubSize;
           tH = hubSize;
       } else {
-          const containerSize = 48;
-          tCx = targetNode.x + containerSize / 2;
-          tCy = targetNode.y + containerSize / 2;
           tW = dotSize;
           tH = dotSize;
       }
@@ -223,14 +222,18 @@ export const Edge: React.FC<EdgeProps> = ({
   const markerId = isHighlighted || isMediumHighlight ? "arrowhead-active" : "arrowhead";
 
   return (
-    <g className="group pointer-events-auto" style={{ opacity }}>
+    <g
+      className={`group pointer-events-auto ${isDragging ? '' : 'transition-opacity duration-200'}`}
+      style={{ opacity }}
+    >
       <path
         d={pathD}
         fill="none"
         stroke={strokeColor}
         strokeWidth={strokeWidth}
+        vectorEffect="non-scaling-stroke"
         markerEnd={`url(#${markerId})`}
-        className="edge-path transition-colors duration-300 group-hover:stroke-sky-400 group-hover:stroke-[3px]"
+        className={`edge-path ${isDragging ? '' : 'transition-colors duration-300'} group-hover:stroke-sky-400 group-hover:stroke-[3px]`}
       />
       
       {/* Relationship Label Badge - Hide when zoom is low/title only to reduce clutter */}
@@ -255,4 +258,24 @@ export const Edge: React.FC<EdgeProps> = ({
       )}
     </g>
   );
-};
+}, (prevProps, nextProps) => {
+  // Custom comparison - only re-render if positions or relevant states change
+  return (
+    prevProps.sourceNode.x === nextProps.sourceNode.x &&
+    prevProps.sourceNode.y === nextProps.sourceNode.y &&
+    prevProps.sourceNode.width === nextProps.sourceNode.width &&
+    prevProps.sourceNode.height === nextProps.sourceNode.height &&
+    prevProps.targetNode.x === nextProps.targetNode.x &&
+    prevProps.targetNode.y === nextProps.targetNode.y &&
+    prevProps.targetNode.width === nextProps.targetNode.width &&
+    prevProps.targetNode.height === nextProps.targetNode.height &&
+    prevProps.sourceIsSelected === nextProps.sourceIsSelected &&
+    prevProps.targetIsSelected === nextProps.targetIsSelected &&
+    prevProps.sourceIsParent === nextProps.sourceIsParent &&
+    prevProps.targetIsParent === nextProps.targetIsParent &&
+    prevProps.lodLevel === nextProps.lodLevel &&
+    prevProps.isDragging === nextProps.isDragging &&
+    prevProps.highlightToChildren === nextProps.highlightToChildren &&
+    prevProps.edge.label === nextProps.edge.label
+  );
+});

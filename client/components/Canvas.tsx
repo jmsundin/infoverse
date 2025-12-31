@@ -535,7 +535,7 @@ export const Canvas: React.FC<CanvasProps> = ({
       // Since quadtree indexes points (x,y), and nodes have width/height,
       // we must expand the query box left/up by the max possible node size
       // to catch nodes whose top-left is outside but body is inside.
-      const MAX_NODE_DIM = 2000;
+      const MAX_NODE_DIM = 4000; // Increased from 2000 to better handle large nodes and long edges
       const queryLeft = renderRect.left - MAX_NODE_DIM;
       const queryTop = renderRect.top - MAX_NODE_DIM;
 
@@ -587,6 +587,8 @@ export const Canvas: React.FC<CanvasProps> = ({
       const nodeMap = new Map(nodes.map((n) => [n.id, n]));
 
       // Always render edges regardless of LOD
+      // Use a more generous buffer for edge culling to prevent flickering
+      const EDGE_CULL_BUFFER = 500; // Extra buffer beyond renderRect
       visEdges = edges.filter((e) => {
         const source = nodeMap.get(e.source);
         const target = nodeMap.get(e.target);
@@ -598,7 +600,11 @@ export const Canvas: React.FC<CanvasProps> = ({
           typeof source.x !== "number" ||
           typeof source.y !== "number" ||
           typeof target.x !== "number" ||
-          typeof target.y !== "number"
+          typeof target.y !== "number" ||
+          isNaN(source.x) ||
+          isNaN(source.y) ||
+          isNaN(target.x) ||
+          isNaN(target.y)
         ) {
           return false;
         }
@@ -608,16 +614,19 @@ export const Canvas: React.FC<CanvasProps> = ({
         const tW = target.width || DEFAULT_NODE_WIDTH;
         const tH = target.height || DEFAULT_NODE_HEIGHT;
 
+        // Calculate bounding box that encompasses the entire edge path
+        // This includes both nodes and the space between them
         const left = Math.min(source.x, target.x);
         const right = Math.max(source.x + sW, target.x + tW);
         const top = Math.min(source.y, target.y);
         const bottom = Math.max(source.y + sH, target.y + tH);
 
+        // Apply generous buffer to prevent edges from disappearing at viewport boundaries
         return (
-          left < renderRect.right &&
-          right > renderRect.left &&
-          top < renderRect.bottom &&
-          bottom > renderRect.top
+          left < renderRect.right + EDGE_CULL_BUFFER &&
+          right > renderRect.left - EDGE_CULL_BUFFER &&
+          top < renderRect.bottom + EDGE_CULL_BUFFER &&
+          bottom > renderRect.top - EDGE_CULL_BUFFER
         );
       });
 
@@ -1094,19 +1103,43 @@ export const Canvas: React.FC<CanvasProps> = ({
         setNodes((prev) =>
           prev.map((node) => {
             if (node.id === resizingId) {
+              const initPos = dragStartRef.current?.initialPositions.get(resizingId);
+              if (!initPos) return node;
+
               let newWidth = nodeWidth;
               let newHeight = nodeHeight;
+              let newX = initPos.x;
+              let newY = initPos.y;
 
               switch (resizeDirection) {
-                case "e": // Changed from "right"
-                  newWidth = Math.max(50, nodeWidth + dx * viewTransform.k);
+                case "e":
+                  newWidth = Math.max(MIN_NODE_WIDTH, nodeWidth + dx);
                   break;
-                case "s": // Changed from "bottom"
-                  newHeight = Math.max(50, nodeHeight + dy * viewTransform.k);
+                case "s":
+                  newHeight = Math.max(MIN_NODE_HEIGHT, nodeHeight + dy);
                   break;
-                case "se": // Changed from "bottom-right"
-                  newWidth = Math.max(50, nodeWidth + dx * viewTransform.k);
-                  newHeight = Math.max(50, nodeHeight + dy * viewTransform.k);
+                case "se":
+                  newWidth = Math.max(MIN_NODE_WIDTH, nodeWidth + dx);
+                  newHeight = Math.max(MIN_NODE_HEIGHT, nodeHeight + dy);
+                  break;
+                case "sw":
+                  // Left edge moves, right edge stays fixed
+                  newWidth = Math.max(MIN_NODE_WIDTH, nodeWidth - dx);
+                  newX = initPos.x + (nodeWidth - newWidth);
+                  newHeight = Math.max(MIN_NODE_HEIGHT, nodeHeight + dy);
+                  break;
+                case "nw":
+                  // Top-left corner: both edges move, bottom-right stays fixed
+                  newWidth = Math.max(MIN_NODE_WIDTH, nodeWidth - dx);
+                  newX = initPos.x + (nodeWidth - newWidth);
+                  newHeight = Math.max(MIN_NODE_HEIGHT, nodeHeight - dy);
+                  newY = initPos.y + (nodeHeight - newHeight);
+                  break;
+                case "ne":
+                  // Top-right corner: top edge moves, bottom stays fixed
+                  newWidth = Math.max(MIN_NODE_WIDTH, nodeWidth + dx);
+                  newHeight = Math.max(MIN_NODE_HEIGHT, nodeHeight - dy);
+                  newY = initPos.y + (nodeHeight - newHeight);
                   break;
                 default:
                   break;
@@ -1114,6 +1147,8 @@ export const Canvas: React.FC<CanvasProps> = ({
 
               return {
                 ...node,
+                x: newX,
+                y: newY,
                 width: newWidth,
                 height: newHeight,
               };
@@ -1253,7 +1288,8 @@ export const Canvas: React.FC<CanvasProps> = ({
         target === containerRef.current ||
         target.closest(".canvas-background")
       ) {
-        onNodeSelect(null);
+        // Only clear selection tooltip, not node selection
+        // Node minimization is now handled by the minimize button in the node tooltip
         onSelectionTooltipChange?.(null);
       }
     },
@@ -1940,6 +1976,7 @@ export const Canvas: React.FC<CanvasProps> = ({
                   targetIsParent={parentIds.has(edge.target)}
                   sourceIsSelected={selectedNodeId === edge.source}
                   targetIsSelected={selectedNodeId === edge.target}
+                  isDragging={draggingId !== null}
                 />
               ))}
               {expandingNodeIds.map((id) => {
@@ -1977,7 +2014,7 @@ export const Canvas: React.FC<CanvasProps> = ({
             ))}
 
             {visibleNodes.map((node) => (
-              <div key={`wrapper-${node.id}`} className="pointer-events-auto">
+              <div key={node.id} className="pointer-events-auto">
                 <GraphNodeComponent
                   key={node.id}
                   node={node}
@@ -1996,6 +2033,7 @@ export const Canvas: React.FC<CanvasProps> = ({
                   onDelete={onDeleteNode}
                   onResizeStart={handleResizeStart}
                   onToggleMaximize={onMaximizeNode}
+                  onMinimize={(id) => onNodeSelect(null)}
                   onOpenLink={onOpenLink}
                   onNavigateToNode={onNavigateToNode}
                   onConnectStart={onConnectStart}

@@ -1,4 +1,22 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import {
+  EditorView,
+  keymap,
+  ViewPlugin,
+  Decoration,
+  WidgetType,
+  placeholder as cmPlaceholder,
+} from "@codemirror/view";
+import { EditorState, EditorSelection } from "@codemirror/state";
+import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
+import {
+  syntaxTree,
+  syntaxHighlighting,
+  defaultHighlightStyle,
+} from "@codemirror/language";
+import { languages } from "@codemirror/language-data";
+import hljs from "highlight.js";
 import { GraphNode } from "../types";
 import { NODE_COLORS } from "../constants";
 import { INTERNAL_NODE_LINK_REGEX, getNodeTitle } from "../utils/wikiLinks";
@@ -12,86 +30,12 @@ interface MarkdownEditorProps {
   allNodes?: GraphNode[];
 }
 
-type LoadedCodeMirror = {
-  EditorView: any;
-  EditorState: any;
-  EditorSelection: any;
-  keymap: any;
-  ViewPlugin: any;
-  Decoration: any;
-  WidgetType: any;
-  placeholder: any;
-  defaultKeymap: any[];
-  historyKeymap: any[];
-  history: () => any;
-  markdown: any;
-  markdownLanguage: any;
-  syntaxTree: any;
-  languages: any;
-  syntaxHighlighting: any;
-  defaultHighlightStyle: any;
-  hljs: any;
-};
-
 type LinkDropdownState = {
   position: { left: number; top: number };
   query: string;
 };
 
 const INLINE_LINK_DROPDOWN_WIDTH = 320;
-
-const cmImport = (specifier: string) =>
-  `https://esm.sh/${specifier}?target=esnext`;
-
-let loadPromise: Promise<LoadedCodeMirror> | null = null;
-
-const loadCodeMirror = async (): Promise<LoadedCodeMirror> => {
-  if (!loadPromise) {
-    loadPromise = (async () => {
-      const [
-        viewModule,
-        stateModule,
-        commandsModule,
-        markdownModule,
-        languageModule,
-        languageDataModule,
-        highlightModule,
-      ] = await Promise.all([
-        import(/* @vite-ignore */ cmImport("@codemirror/view@6.39.3")),
-        import(/* @vite-ignore */ cmImport("@codemirror/state@6.5.2")),
-        import(/* @vite-ignore */ cmImport("@codemirror/commands@6.10.0")),
-        import(/* @vite-ignore */ cmImport("@codemirror/lang-markdown@6.5.0")),
-        import(/* @vite-ignore */ cmImport("@codemirror/language@6.11.3")),
-        import(/* @vite-ignore */ cmImport("@codemirror/language-data@6.5.2")),
-        import(/* @vite-ignore */ cmImport("highlight.js@11.9.0")),
-      ]);
-      const hljs = (highlightModule.default || highlightModule) as any;
-
-      return {
-        EditorView: viewModule.EditorView,
-        EditorState: stateModule.EditorState,
-        EditorSelection: stateModule.EditorSelection,
-        keymap: viewModule.keymap,
-        ViewPlugin: viewModule.ViewPlugin,
-        Decoration: viewModule.Decoration,
-        WidgetType: viewModule.WidgetType,
-        placeholder: viewModule.placeholder,
-        defaultKeymap: commandsModule.defaultKeymap,
-        historyKeymap: commandsModule.historyKeymap,
-        history: commandsModule.history,
-        markdown: markdownModule.markdown,
-        markdownLanguage: markdownModule.markdownLanguage,
-        syntaxTree: languageModule.syntaxTree,
-        languages: languageDataModule.languages,
-        syntaxHighlighting: languageModule.syntaxHighlighting,
-        defaultHighlightStyle: languageModule.defaultHighlightStyle,
-        hljs,
-      };
-    })();
-  }
-
-  return loadPromise;
-};
 
 const escapeHtml = (value: string) =>
   value
@@ -101,12 +45,9 @@ const escapeHtml = (value: string) =>
     .replace(/"/g, "&quot;");
 
 const createLivePreviewPlugin = (
-  cm: LoadedCodeMirror,
   getNavigateToNode?: () => ((title: string) => void) | undefined
 ) => {
-  const { ViewPlugin, Decoration, WidgetType, syntaxTree, hljs } = cm;
-
-  const getActiveLineNumbers = (state: any) => {
+  const getActiveLineNumbers = (state: EditorState) => {
     const lines = new Set<number>();
     if (!state?.selection?.ranges) return lines;
     state.selection.ranges.forEach((range: any) => {
@@ -122,7 +63,7 @@ const createLivePreviewPlugin = (
   };
 
   const nodeTouchesActiveLine = (
-    state: any,
+    state: EditorState,
     node: { from: number; to: number },
     activeLines: Set<number>
   ) => {
@@ -210,7 +151,7 @@ const createLivePreviewPlugin = (
     }
   }
 
-  const computeDecorations = (view: any) => {
+  const computeDecorations = (view: EditorView) => {
     const ranges: any[] = [];
     const activeLines = getActiveLineNumbers(view.state);
     const processedLines = new Set<number>();
@@ -418,10 +359,7 @@ const createLivePreviewPlugin = (
           }
 
           if (!activeLines.has(line.number)) {
-            const wikiRegex = new RegExp(
-              INTERNAL_NODE_LINK_REGEX.source,
-              "g"
-            );
+            const wikiRegex = new RegExp(INTERNAL_NODE_LINK_REGEX.source, "g");
             let wikiMatch;
             while ((wikiMatch = wikiRegex.exec(line.text)) !== null) {
               if (wikiMatch.index == null) continue;
@@ -456,11 +394,15 @@ const createLivePreviewPlugin = (
   return ViewPlugin.fromClass(
     class {
       decorations: any;
-      constructor(view: any) {
+      constructor(view: EditorView) {
         this.decorations = computeDecorations(view);
       }
       update(update: any) {
-        if (update.docChanged || update.selectionSet || update.viewportChanged) {
+        if (
+          update.docChanged ||
+          update.selectionSet ||
+          update.viewportChanged
+        ) {
           this.decorations = computeDecorations(update.view);
         }
       }
@@ -471,9 +413,8 @@ const createLivePreviewPlugin = (
   );
 };
 
-const createEditorKeymap = (cm: LoadedCodeMirror) => {
-  const { EditorSelection } = cm;
-  const insertTab = (view: any) => {
+const createEditorKeymap = () => {
+  const insertTab = (view: EditorView) => {
     const tabText = "  ";
     const transaction = view.state.changeByRange((range: any) => ({
       changes: { from: range.from, to: range.to, insert: tabText },
@@ -486,7 +427,7 @@ const createEditorKeymap = (cm: LoadedCodeMirror) => {
   return [
     {
       key: "Enter",
-      run: (view: any) => {
+      run: (view: EditorView) => {
         const { state } = view;
         const { main } = state.selection;
         if (!main.empty) return false;
@@ -521,20 +462,22 @@ const createEditorKeymap = (cm: LoadedCodeMirror) => {
   ];
 };
 
-const createTripleBacktickHandler = (cm: LoadedCodeMirror) =>
-  cm.EditorView.inputHandler.of((view: any, from: number, to: number, text: string) => {
-    if (text !== "`" || from !== to) return false;
-    if (from < 2) return false;
-    const prevTwo = view.state.doc.sliceString(from - 2, from);
-    if (prevTwo !== "``") return false;
-    const insertText = "`\n\n```";
-    view.dispatch({
-      changes: { from, to, insert: insertText },
-      selection: { anchor: from + 2 },
-      scrollIntoView: true,
-    });
-    return true;
-  });
+const createTripleBacktickHandler = () =>
+  EditorView.inputHandler.of(
+    (view: EditorView, from: number, to: number, text: string) => {
+      if (text !== "`" || from !== to) return false;
+      if (from < 2) return false;
+      const prevTwo = view.state.doc.sliceString(from - 2, from);
+      if (prevTwo !== "``") return false;
+      const insertText = "`\n\n```";
+      view.dispatch({
+        changes: { from, to, insert: insertText },
+        selection: { anchor: from + 2 },
+        scrollIntoView: true,
+      });
+      return true;
+    }
+  );
 
 export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
   initialContent,
@@ -545,7 +488,7 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
   allNodes,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const viewRef = useRef<{ view: any; cm: LoadedCodeMirror } | null>(null);
+  const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   const onNavigateToNodeRef = useRef(onNavigateToNode);
   const allNodesRef = useRef<GraphNode[] | undefined>(allNodes);
@@ -623,7 +566,7 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
   }, []);
 
   const evaluateLinkSearch = useCallback(
-    (view: any) => {
+    (view: EditorView) => {
       if (!view) return;
       const selection = view.state.selection?.main;
       if (!selection || !selection.empty) {
@@ -661,16 +604,12 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
       const matches = computeLinkMatches(query);
       setLinkResults(matches);
       setActiveResultIndex((prev) =>
-            matches.length === 0 ? 0 : Math.min(prev, matches.length - 1)
-          );
+        matches.length === 0 ? 0 : Math.min(prev, matches.length - 1)
+      );
       const rawLeft = coords.left - containerRect.left;
       const rawTop = coords.bottom - containerRect.top + 4;
-      const maxLeft =
-        containerRect.width - INLINE_LINK_DROPDOWN_WIDTH - 8;
-      const clampedLeft = Math.max(
-        0,
-        Math.min(rawLeft, Math.max(maxLeft, 0))
-      );
+      const maxLeft = containerRect.width - INLINE_LINK_DROPDOWN_WIDTH - 8;
+      const clampedLeft = Math.max(0, Math.min(rawLeft, Math.max(maxLeft, 0)));
       setLinkDropdown({
         position: {
           left: clampedLeft,
@@ -684,7 +623,7 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
 
   const insertInternalLink = useCallback(
     (title: string) => {
-      const view = viewRef.current?.view;
+      const view = viewRef.current;
       const start = activeLinkStartRef.current;
       if (!view || start == null) return;
       const head = view.state.selection.main.head;
@@ -744,201 +683,174 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
   }, [linkDropdown, linkResults.length, closeLinkSearch, selectActiveResult]);
 
   useEffect(() => {
-    let disposed = false;
-    let viewInstance: any = null;
-    let cmModules: LoadedCodeMirror | null = null;
-    let blurHandler: (() => void) | null = null;
+    if (!containerRef.current) return;
 
-    const init = async () => {
-      try {
-        cmModules = await loadCodeMirror();
-        if (disposed || !containerRef.current) return;
-
-        const livePreview = createLivePreviewPlugin(
-          cmModules,
-          () => onNavigateToNodeRef.current
-        );
-        const editorKeymap = createEditorKeymap(cmModules);
-        const tripleBacktickHandler = createTripleBacktickHandler(cmModules);
-        const updateListener = cmModules.EditorView.updateListener.of(
-          (update: any) => {
-            if (update.docChanged) {
-              onChangeRef.current(update.state.doc.toString());
-            }
-            if (
-              update.docChanged ||
-              update.selectionSet ||
-              update.viewportChanged
-            ) {
-              evaluateLinkSearch(update.view);
-            }
-          }
-        );
-        const extensions = [
-          cmModules.history(),
-          cmModules.keymap.of([
-            ...editorKeymap,
-            ...cmModules.defaultKeymap,
-            ...cmModules.historyKeymap,
-          ]),
-          cmModules.markdown({
-            base: cmModules.markdownLanguage,
-            codeLanguages: cmModules.languages,
-          }),
-          cmModules.syntaxHighlighting(cmModules.defaultHighlightStyle, {
-            fallback: true,
-          }),
-          cmModules.EditorView.lineWrapping,
-          tripleBacktickHandler,
-          livePreview,
-          updateListener,
-          cmModules.EditorView.theme({
-            "&": {
-              backgroundColor: "transparent",
-              color: "inherit",
-              height: "100%",
-              fontSize: "inherit",
-            },
-            ".cm-content": {
-              fontFamily: "inherit",
-              caretColor: "white",
-            },
-            ".cm-scroller": {
-              overflow: "auto",
-              lineHeight: "1.6",
-            },
-            ".cm-md-hidden": {
-              opacity: 0,
-              width: 0,
-            },
-            ".cm-md-bold": {
-              fontWeight: "bold",
-            },
-            ".cm-md-italic": {
-              fontStyle: "italic",
-            },
-            ".cm-md-h1": {
-              fontSize: "1.4em",
-              fontWeight: "bold",
-              borderBottom: "1px solid rgba(255,255,255,0.2)",
-              display: "inline-block",
-              width: "100%",
-            },
-            ".cm-md-h2": {
-              fontSize: "1.2em",
-              fontWeight: "bold",
-            },
-            ".cm-md-h3": {
-              fontSize: "1.1em",
-              fontWeight: "bold",
-            },
-            ".cm-md-quote": {
-              borderLeft: "2px solid rgba(255,255,255,0.3)",
-              paddingLeft: "0.75rem",
-              fontStyle: "italic",
-              opacity: 0.9,
-            },
-            ".cm-md-code": {
-              fontFamily:
-                "ui-monospace, SFMono-Regular, Menlo, Consolas, Liberation Mono, monospace",
-              backgroundColor: "rgba(255,255,255,0.08)",
-              borderRadius: "4px",
-              padding: "0 0.25rem",
-              fontSize: "0.9em",
-            },
-            ".cm-md-codeblock": {
-              display: "block",
-              position: "relative",
-              backgroundColor: "rgba(15,23,42,0.75)",
-              borderRadius: "0.5rem",
-              padding: "0.75rem",
-              fontFamily:
-                "ui-monospace, SFMono-Regular, Menlo, Consolas, Liberation Mono, monospace",
-              fontSize: "0.9em",
-              margin: "0.25rem 0",
-              whiteSpace: "pre",
-            },
-            ".cm-md-codeblock-lang": {
-              position: "absolute",
-              top: "0.35rem",
-              right: "0.5rem",
-              fontSize: "0.65rem",
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-              color: "rgba(148, 163, 184, 0.9)",
-            },
-            ".cm-md-bullet": {
-              display: "inline-block",
-              width: "1.25rem",
-              color: "rgba(248,250,252,0.9)",
-            },
-            ".cm-md-internal-link": {
-              color: "#7dd3fc",
-              textDecoration: "underline",
-              cursor: "pointer",
-            },
-            ".cm-md-block-hidden": {
-              display: "none",
-            },
-            ".hljs": {
-              color: "#e2e8f0",
-              background: "transparent",
-            },
-            ".hljs-keyword, .hljs-selector-tag, .hljs-literal": {
-              color: "#93c5fd",
-            },
-            ".hljs-string, .hljs-title, .hljs-section, .hljs-attribute": {
-              color: "#bef264",
-            },
-            ".hljs-number, .hljs-name, .hljs-type": {
-              color: "#f472b6",
-            },
-            ".hljs-comment": {
-              color: "#94a3b8",
-              fontStyle: "italic",
-            },
-          }),
-        ];
-
-        if (placeholder) {
-          extensions.push(cmModules.placeholder(placeholder));
-        }
-
-        const state = cmModules.EditorState.create({
-          doc: initialContent,
-          extensions,
-        });
-
-        viewInstance = new cmModules.EditorView({
-          state,
-          parent: containerRef.current,
-        });
-        blurHandler = () => closeLinkSearch();
-        viewInstance.dom.addEventListener("blur", blurHandler);
-        evaluateLinkSearch(viewInstance);
-        viewRef.current = { view: viewInstance, cm: cmModules };
-      } catch (err) {
-        console.error("Failed to load CodeMirror", err);
+    const livePreview = createLivePreviewPlugin(
+      () => onNavigateToNodeRef.current
+    );
+    const editorKeymap = createEditorKeymap();
+    const tripleBacktickHandler = createTripleBacktickHandler();
+    const updateListener = EditorView.updateListener.of((update: any) => {
+      if (update.docChanged) {
+        onChangeRef.current(update.state.doc.toString());
       }
-    };
+      if (update.docChanged || update.selectionSet || update.viewportChanged) {
+        evaluateLinkSearch(update.view);
+      }
+    });
+    const extensions = [
+      history(),
+      keymap.of([...editorKeymap, ...defaultKeymap, ...historyKeymap]),
+      markdown({
+        base: markdownLanguage,
+        codeLanguages: languages,
+      }),
+      syntaxHighlighting(defaultHighlightStyle, {
+        fallback: true,
+      }),
+      EditorView.lineWrapping,
+      tripleBacktickHandler,
+      livePreview,
+      updateListener,
+      EditorView.theme({
+        "&": {
+          backgroundColor: "transparent",
+          color: "inherit",
+          height: "100%",
+          fontSize: "inherit",
+        },
+        ".cm-content": {
+          fontFamily: "inherit",
+          caretColor: "white",
+        },
+        ".cm-scroller": {
+          overflow: "auto",
+          lineHeight: "1.6",
+        },
+        ".cm-md-hidden": {
+          opacity: 0,
+          width: 0,
+        },
+        ".cm-md-bold": {
+          fontWeight: "bold",
+        },
+        ".cm-md-italic": {
+          fontStyle: "italic",
+        },
+        ".cm-md-h1": {
+          fontSize: "1.4em",
+          fontWeight: "bold",
+          borderBottom: "none",
+          textDecoration: "none",
+        },
+        ".cm-md-h2": {
+          fontSize: "1.2em",
+          fontWeight: "bold",
+          borderBottom: "none",
+          textDecoration: "none",
+        },
+        ".cm-md-h3": {
+          fontSize: "1.1em",
+          fontWeight: "bold",
+          borderBottom: "none",
+          textDecoration: "none",
+        },
+        ".cm-md-quote": {
+          borderLeft: "2px solid rgba(255,255,255,0.3)",
+          paddingLeft: "0.75rem",
+          fontStyle: "italic",
+          opacity: 0.9,
+        },
+        ".cm-md-code": {
+          fontFamily:
+            "ui-monospace, SFMono-Regular, Menlo, Consolas, Liberation Mono, monospace",
+          backgroundColor: "rgba(255,255,255,0.08)",
+          borderRadius: "4px",
+          padding: "0 0.25rem",
+          fontSize: "0.9em",
+        },
+        ".cm-md-codeblock": {
+          display: "block",
+          position: "relative",
+          backgroundColor: "rgba(15,23,42,0.75)",
+          borderRadius: "0.5rem",
+          padding: "0.75rem",
+          fontFamily:
+            "ui-monospace, SFMono-Regular, Menlo, Consolas, Liberation Mono, monospace",
+          fontSize: "0.9em",
+          margin: "0.25rem 0",
+          whiteSpace: "pre",
+        },
+        ".cm-md-codeblock-lang": {
+          position: "absolute",
+          top: "0.35rem",
+          right: "0.5rem",
+          fontSize: "0.65rem",
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          color: "rgba(148, 163, 184, 0.9)",
+        },
+        ".cm-md-bullet": {
+          display: "inline-block",
+          width: "1.25rem",
+          color: "rgba(248,250,252,0.9)",
+        },
+        ".cm-md-internal-link": {
+          color: "#7dd3fc",
+          cursor: "pointer",
+        },
+        ".cm-md-block-hidden": {
+          display: "none",
+        },
+        ".hljs": {
+          color: "#e2e8f0",
+          background: "transparent",
+        },
+        ".hljs-keyword, .hljs-selector-tag, .hljs-literal": {
+          color: "#93c5fd",
+        },
+        ".hljs-string, .hljs-title, .hljs-section, .hljs-attribute": {
+          color: "#bef264",
+        },
+        ".hljs-number, .hljs-name, .hljs-type": {
+          color: "#f472b6",
+        },
+        ".hljs-comment": {
+          color: "#94a3b8",
+          fontStyle: "italic",
+        },
+      }),
+    ];
 
-    init();
+    if (placeholder) {
+      extensions.push(cmPlaceholder(placeholder));
+    }
+
+    const state = EditorState.create({
+      doc: initialContent,
+      extensions,
+    });
+
+    const viewInstance = new EditorView({
+      state,
+      parent: containerRef.current,
+    });
+
+    const blurHandler = () => closeLinkSearch();
+    viewInstance.dom.addEventListener("blur", blurHandler);
+    evaluateLinkSearch(viewInstance);
+    viewRef.current = viewInstance;
 
     return () => {
-      disposed = true;
-      if (viewInstance) {
-        if (blurHandler) {
-          viewInstance.dom.removeEventListener("blur", blurHandler);
-        }
-        viewInstance.destroy();
-      }
+      viewInstance.dom.removeEventListener("blur", blurHandler);
+      viewInstance.destroy();
       viewRef.current = null;
     };
   }, [placeholder, evaluateLinkSearch, closeLinkSearch]);
 
   useEffect(() => {
     if (!viewRef.current) return;
-    const { view } = viewRef.current;
+    const view = viewRef.current;
     const current = view.state.doc.toString();
     if (current !== initialContent) {
       view.dispatch({
@@ -949,10 +861,7 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
 
   return (
     <div className="relative h-full w-full">
-      <div
-        ref={containerRef}
-        className={`h-full w-full ${className ?? ""}`}
-      />
+      <div ref={containerRef} className={`h-full w-full ${className ?? ""}`} />
       {linkDropdown && (
         <div
           className="absolute z-50 rounded-xl border border-slate-700 bg-slate-900/95 text-slate-100 shadow-2xl pointer-events-auto backdrop-blur"

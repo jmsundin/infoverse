@@ -159,14 +159,22 @@ export const SearchBar: React.FC<SearchBarProps> = ({
       } else {
         // Keyword Search (Case insensitive)
         const normalizedQuery = query.toLowerCase();
+        const terms = normalizedQuery.split(/\s+/).filter((t) => t.length > 0);
+
         const matchingNodes = nodes.filter((node) => {
-          const titleMatch = node.content
-            .toLowerCase()
-            .includes(normalizedQuery);
-          const aliasMatch = node.aliases?.some((alias) =>
-            alias.toLowerCase().includes(normalizedQuery)
-          );
-          return titleMatch || aliasMatch;
+          if (terms.length === 0) return false;
+
+          const content = (node.content || "").toLowerCase();
+          const summary = (node.summary || "").toLowerCase();
+          const aliases = (node.aliases || []).join(" ").toLowerCase();
+          const messages = (node.messages || [])
+            .map((m) => m.text)
+            .join(" ")
+            .toLowerCase();
+
+          const searchableText = `${content} ${summary} ${aliases} ${messages}`;
+
+          return terms.every((term) => searchableText.includes(term));
         });
         setLocalResults(matchingNodes);
       }

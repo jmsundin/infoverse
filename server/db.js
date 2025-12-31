@@ -59,15 +59,6 @@ const initDb = async () => {
     } catch (e) {
         // Ignore if exists
     }
-
-    // Add is_admin column
-    try {
-        await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE`);
-        // Grant admin to specific user for migration (can be removed later or managed via DB)
-        await query(`UPDATE users SET is_admin = TRUE WHERE email = 'sundinjon@gmail.com'`);
-    } catch (e) {
-        // Ignore
-    }
     
     await query(`
       CREATE TABLE IF NOT EXISTS rate_limits (

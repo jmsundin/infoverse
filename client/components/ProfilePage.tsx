@@ -6,6 +6,8 @@ interface ProfilePageProps {
     username: string;
     email?: string;
     isPaid?: boolean;
+    isAdmin?: boolean;
+    storagePath?: string;
   };
   aiProvider: 'gemini' | 'huggingface';
   onSetAiProvider: (provider: 'gemini' | 'huggingface') => void;
@@ -22,6 +24,20 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, aiProvider, onSe
   const [newPassword, setNewPassword] = useState('');
   const [message, setMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [localPath, setLocalPath] = useState(user.storagePath || '');
+
+  const handlePickPath = async () => {
+    try {
+       const apiBase = (import.meta as any).env.VITE_API_URL || '';
+       const res = await fetch(`${apiBase}/api/system/pick-path`, { credentials: 'include' });
+       const data = await res.json();
+       if (data.path) {
+         setLocalPath(data.path);
+       }
+    } catch (e) {
+      console.error('Picker error:', e);
+    }
+  };
 
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,6 +46,8 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, aiProvider, onSe
 
     try {
       const apiBase = (import.meta as any).env.VITE_API_URL || '';
+      
+      // Update basic profile
       const res = await fetch(`${apiBase}/api/user/profile`, {
         method: 'PUT',
         headers: {
@@ -47,8 +65,29 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, aiProvider, onSe
       const data = await res.json();
 
       if (res.ok) {
+         // Also update storage path setting if changed
+         if (localPath !== user.storagePath) {
+             const settingsRes = await fetch(`${apiBase}/api/user/settings`, {
+                 method: 'POST',
+                 headers: { 'Content-Type': 'application/json' },
+                 credentials: 'include',
+                 body: JSON.stringify({ storagePath: localPath })
+             });
+             if (settingsRes.ok) {
+                 const settingsData = await settingsRes.json();
+                 // Merge user data
+                 onUpdateUser({ ...data.user, ...settingsData.user });
+             } else {
+                 onUpdateUser({ ...data.user });
+                 setMessage('Profile updated but failed to save storage path');
+                 setIsLoading(false);
+                 return;
+             }
+         } else {
+             onUpdateUser({ username: data.user.username, email: data.user.email });
+         }
+
         setMessage('Profile updated successfully');
-        onUpdateUser({ username: data.user.username, email: data.user.email });
         setPassword('');
         setNewPassword('');
       } else {
@@ -168,6 +207,29 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, aiProvider, onSe
                     className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white focus:border-sky-500 focus:outline-none"
                     placeholder="your@email.com"
                   />
+                </div>
+
+                <div>
+                   <label className="block text-sm font-medium text-slate-400 mb-1">Local Storage Path (Legacy)</label>
+                   <div className="flex gap-2">
+                       <input
+                           type="text"
+                           value={localPath}
+                           onChange={(e) => setLocalPath(e.target.value)}
+                           className="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white focus:border-sky-500 focus:outline-none text-sm"
+                           placeholder="/path/to/notes"
+                       />
+                       <button
+                           type="button"
+                           onClick={handlePickPath}
+                           className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors text-sm"
+                       >
+                           Browse...
+                       </button>
+                   </div>
+                   <p className="text-xs text-slate-500 mt-1">
+                       Optional: Set a path on the server to store notes locally instead of the cloud.
+                   </p>
                 </div>
 
                 <div>

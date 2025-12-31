@@ -59,3 +59,6 @@ export const COLORS = {
   edgeStroke: "#475569", // Slate 600
   activeEdgeStroke: "#38bdf8", // Sky 400
 };
+
+export const WIKIDATA_SUBTOPIC_LIMIT = 12;
+export const WIKIDATA_MAX_RECURSIVE_NODES_PER_LEVEL = 5;

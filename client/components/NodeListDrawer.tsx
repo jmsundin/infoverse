@@ -44,8 +44,13 @@ export const NodeListDrawer: React.FC<NodeListDrawerProps> = ({ nodes, isOpen, o
 
     return scopedNodes.filter(node => {
       const content = (node.content || '').toLowerCase();
+      const summary = (node.summary || '').toLowerCase();
+      const aliases = (node.aliases || []).join(' ').toLowerCase();
+      const messages = (node.messages || []).map(m => m.text).join(' ').toLowerCase();
+      const searchableText = `${content} ${summary} ${aliases} ${messages}`;
+
       // "Fuzzy" check: all typed terms must appear in the content
-      return terms.every(term => content.includes(term));
+      return terms.every(term => searchableText.includes(term));
     }).sort((a, b) => (a.content || 'Untitled').localeCompare(b.content || 'Untitled'));
   }, [nodes, searchTerm, typeFilter]);
 

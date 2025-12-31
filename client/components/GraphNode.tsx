@@ -51,6 +51,7 @@ interface GraphNodeProps {
     direction: ResizeDirection
   ) => void;
   onToggleMaximize?: (id: string) => void;
+  onMinimize?: (id: string) => void;
   onOpenLink?: (url: string) => void;
   onNavigateToNode?: (title: string) => void;
   onConnectStart?: (id: string) => void;
@@ -59,7 +60,7 @@ interface GraphNodeProps {
   onSetAutoGraphEnabled?: (enabled: boolean) => void;
   scale?: number;
   cutNodeId: string | null;
-  aiProvider?: 'gemini' | 'huggingface';
+  aiProvider?: "gemini" | "huggingface";
 }
 
 const DELETE_CONFIRM_PREF_KEY = "infoverse_skip_delete_confirm";
@@ -81,6 +82,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     onDelete,
     onResizeStart,
     onToggleMaximize,
+    onMinimize,
     onOpenLink,
     onNavigateToNode,
     onConnectStart,
@@ -89,7 +91,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     onSetAutoGraphEnabled,
     scale = 1,
     cutNodeId,
-    aiProvider = 'gemini',
+    aiProvider = "gemini",
   }) => {
     const [input, setInput] = useState("");
     const [isChatting, setIsChatting] = useState(false);
@@ -108,7 +110,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     // Refs for async callbacks to avoid stale closures
     const onUpdateRef = useRef(onUpdate);
     const onExpandRef = useRef(onExpand);
-    
+
     useEffect(() => {
       onUpdateRef.current = onUpdate;
     }, [onUpdate]);
@@ -296,7 +298,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       setIsChatting(true);
       setStreamingContent("");
 
-      const service = aiProvider === 'huggingface' ? hfService : geminiService;
+      const service = aiProvider === "huggingface" ? hfService : geminiService;
 
       const result = await service.sendChatMessage(
         updatedMessages,
@@ -320,7 +322,9 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         timestamp: Date.now(),
       };
 
-      onUpdateRef.current(node.id, { messages: [...updatedMessages, modelMsg] });
+      onUpdateRef.current(node.id, {
+        messages: [...updatedMessages, modelMsg],
+      });
       setIsChatting(false);
       setStreamingContent(null);
 
@@ -328,7 +332,8 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         node.type === NodeType.CHAT &&
         (node.content === "New Chat" || node.content === "Chat")
       ) {
-        const service = aiProvider === 'huggingface' ? hfService : geminiService;
+        const service =
+          aiProvider === "huggingface" ? hfService : geminiService;
         const newTitle = await service.generateTitle(currentInput, result.text);
         onUpdateRef.current(node.id, { content: newTitle });
       }
@@ -404,10 +409,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
           <ol className="list-decimal pl-4 my-1 space-y-1" {...props} />
         ),
         h1: ({ node, ...props }: any) => (
-          <h1
-            className="text-xl font-bold my-2 border-b border-white/20 pb-1"
-            {...props}
-          />
+          <h1 className="text-xl font-bold my-2" {...props} />
         ),
         h2: ({ node, ...props }: any) => (
           <h2 className="text-lg font-bold my-2" {...props} />
@@ -895,6 +897,35 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     </svg>
                   </button>
                 )}
+
+                {onMinimize && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onMinimize(node.id);
+                    }}
+                    className="min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 rounded hover:bg-slate-700/50 transition-colors text-slate-400 hover:text-orange-400 flex items-center justify-center"
+                    title="Minimize Node"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onTouchStart={(e) => e.stopPropagation()}
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M4 14h6v6" />
+                      <path d="M20 10h-6V4" />
+                      <path d="M14 10l7-7" />
+                      <path d="M3 21l7-7" />
+                    </svg>
+                  </button>
+                )}
               </div>
             </div>
           )}
@@ -955,7 +986,10 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                           [...msgs].reverse().find((m) => m.role === "model")
                             ?.text || "";
                         if (lastUserMsg) {
-                          const service = aiProvider === 'huggingface' ? hfService : geminiService;
+                          const service =
+                            aiProvider === "huggingface"
+                              ? hfService
+                              : geminiService;
                           const newTitle = await service.generateTitle(
                             lastUserMsg,
                             lastModelMsg
@@ -1614,58 +1648,6 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
 
           {!isSidebar && !isCompact && onResizeStart && (
             <>
-              <div
-                className={`${resizeHandleClass} cursor-n-resize top-0 left-4 right-4 h-4 -mt-2`}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onResizeStart(e, node.id, "n");
-                }}
-                onTouchStart={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onResizeStart(e, node.id, "n");
-                }}
-              />
-              <div
-                className={`${resizeHandleClass} cursor-s-resize bottom-0 left-4 right-4 h-4 -mb-2`}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onResizeStart(e, node.id, "s");
-                }}
-                onTouchStart={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onResizeStart(e, node.id, "s");
-                }}
-              />
-              <div
-                className={`${resizeHandleClass} cursor-w-resize left-0 top-4 bottom-4 w-4 -ml-2`}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onResizeStart(e, node.id, "w");
-                }}
-                onTouchStart={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onResizeStart(e, node.id, "w");
-                }}
-              />
-              <div
-                className={`${resizeHandleClass} cursor-e-resize right-0 top-4 bottom-4 w-4 -mr-2`}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onResizeStart(e, node.id, "e");
-                }}
-                onTouchStart={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onResizeStart(e, node.id, "e");
-                }}
-              />
               <div
                 className={`${resizeHandleClass} cursor-nw-resize top-0 left-0 w-5 h-5 -mt-2 -ml-2 rounded-tl`}
                 onMouseDown={(e) => {

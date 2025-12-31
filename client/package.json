@@ -20,6 +20,7 @@
     "codemirror": "^6.0.2",
     "d3": "^7.9.0",
     "dotenv": "^17.2.3",
+    "highlight.js": "^11.11.1",
     "js-yaml": "^4.1.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
