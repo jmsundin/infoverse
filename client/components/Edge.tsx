@@ -1,5 +1,5 @@
 import React from 'react';
-import { GraphEdge, GraphNode, LODLevel, NodeType } from '../types';
+import { GraphEdge, GraphNode, LODLevel, NodeType, EdgeStyle } from '../types';
 import { COLORS, NODE_HEADER_HEIGHT } from '../constants';
 
 interface EdgeProps {
@@ -13,6 +13,7 @@ interface EdgeProps {
   targetIsSelected?: boolean;
   highlightToChildren?: boolean;
   isDragging?: boolean;
+  edgeStyle?: EdgeStyle;
 }
 
 // Helper to find intersection of line from center to target with box
@@ -48,11 +49,57 @@ const getBoxIntersection = (
     x = y / slope;
   }
 
-  const padding = 0; 
-  return { 
-    x: center.x + x + (dx > 0 ? padding : -padding), 
+  const padding = 0;
+  return {
+    x: center.x + x + (dx > 0 ? padding : -padding),
     y: center.y + y + (dy > 0 ? padding : -padding)
   };
+};
+
+/**
+ * Get connection points for Sankey LR layout.
+ * Source: Right edge center, Target: Left edge center
+ */
+const getSankeyConnectionPoints = (
+  sourceCenter: { x: number; y: number },
+  sourceW: number,
+  sourceH: number,
+  targetCenter: { x: number; y: number },
+  targetW: number,
+  targetH: number
+): { start: { x: number; y: number }; end: { x: number; y: number } } => {
+  return {
+    start: { x: sourceCenter.x + sourceW / 2, y: sourceCenter.y },
+    end: { x: targetCenter.x - targetW / 2, y: targetCenter.y }
+  };
+};
+
+/**
+ * Generate a Sankey-style S-curve path for horizontal (LR) layout.
+ * Uses cubic bezier with horizontal tangents at both endpoints.
+ */
+const getSankeyPathLR = (
+  start: { x: number; y: number },
+  end: { x: number; y: number }
+): string => {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+
+  // Handle degenerate case
+  if (Math.abs(dx) < 1 && Math.abs(dy) < 1) {
+    return `M ${start.x} ${start.y} L ${end.x} ${end.y}`;
+  }
+
+  // Control point offset (50% of horizontal distance, min 50px)
+  const controlOffset = Math.max(Math.abs(dx) * 0.5, 50);
+
+  // Control points create horizontal tangents
+  const cp1x = start.x + controlOffset;
+  const cp1y = start.y;
+  const cp2x = end.x - controlOffset;
+  const cp2y = end.y;
+
+  return `M ${start.x} ${start.y} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${end.x} ${end.y}`;
 };
 
 export const Edge: React.FC<EdgeProps> = React.memo(({
@@ -65,7 +112,8 @@ export const Edge: React.FC<EdgeProps> = React.memo(({
     sourceIsSelected = false,
     targetIsSelected = false,
     highlightToChildren = false,
-    isDragging = false
+    isDragging = false,
+    edgeStyle = 'default'
 }) => {
   if (!sourceNode || !targetNode) return null;
 
@@ -163,50 +211,81 @@ export const Edge: React.FC<EdgeProps> = React.memo(({
       }
   }
 
-  // Calculate intersection points on the node boundaries
-  const start = getBoxIntersection({ x: sCx, y: sCy }, sW, sH, { x: tCx, y: tCy });
-  const end = getBoxIntersection({ x: tCx, y: tCy }, tW, tH, { x: sCx, y: sCy });
+  // Calculate connection points and path based on edge style
+  let start: { x: number; y: number };
+  let end: { x: number; y: number };
+  let pathD: string;
+  let labelX: number;
+  let labelY: number;
 
-  // Safety check for invalid coordinates
+  if (edgeStyle === 'sankey-lr') {
+    // Sankey style: connect at horizontal sides with S-curve
+    const points = getSankeyConnectionPoints(
+      { x: sCx, y: sCy }, sW, sH,
+      { x: tCx, y: tCy }, tW, tH
+    );
+    start = points.start;
+    end = points.end;
+    pathD = getSankeyPathLR(start, end);
+
+    // Label position: cubic bezier midpoint at t=0.5
+    const dx = end.x - start.x;
+    const controlOffset = Math.max(Math.abs(dx) * 0.5, 50);
+    const cp1 = { x: start.x + controlOffset, y: start.y };
+    const cp2 = { x: end.x - controlOffset, y: end.y };
+    labelX = 0.125 * start.x + 0.375 * cp1.x + 0.375 * cp2.x + 0.125 * end.x;
+    labelY = 0.125 * start.y + 0.375 * cp1.y + 0.375 * cp2.y + 0.125 * end.y;
+  } else {
+    // Default style: box intersection with quadratic bezier
+    start = getBoxIntersection({ x: sCx, y: sCy }, sW, sH, { x: tCx, y: tCy });
+    end = getBoxIntersection({ x: tCx, y: tCy }, tW, tH, { x: sCx, y: sCy });
+
+    // Safety check for invalid coordinates
+    if (!start || !end || isNaN(start.x) || isNaN(start.y) || isNaN(end.x) || isNaN(end.y)) {
+      return null;
+    }
+
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+
+    // Midpoint
+    const midX = (start.x + end.x) / 2;
+    const midY = (start.y + end.y) / 2;
+
+    // Curvature Logic
+    let curvature = 0;
+    const HORIZONTAL_THRESHOLD = 50;
+
+    if (Math.abs(dy) < HORIZONTAL_THRESHOLD) {
+      curvature = 0;
+    } else if (dy > 0) {
+      curvature = dx > 0 ? 0.2 : -0.2;
+      if (Math.abs(dx) < 10) curvature = 0.2;
+    } else {
+      curvature = dx > 0 ? -0.2 : 0.2;
+      if (Math.abs(dx) < 10) curvature = 0.2;
+    }
+
+    const cpX = midX - dy * curvature;
+    const cpY = midY + dx * curvature;
+
+    pathD = curvature === 0
+      ? `M ${start.x} ${start.y} L ${end.x} ${end.y}`
+      : `M ${start.x} ${start.y} Q ${cpX} ${cpY} ${end.x} ${end.y}`;
+
+    labelX = curvature === 0
+      ? midX
+      : 0.25 * start.x + 0.5 * cpX + 0.25 * end.x;
+
+    labelY = curvature === 0
+      ? midY
+      : 0.25 * start.y + 0.5 * cpY + 0.25 * end.y;
+  }
+
+  // Safety check for invalid coordinates (for sankey path too)
   if (!start || !end || isNaN(start.x) || isNaN(start.y) || isNaN(end.x) || isNaN(end.y)) {
     return null;
   }
-
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  
-  // Midpoint
-  const midX = (start.x + end.x) / 2;
-  const midY = (start.y + end.y) / 2;
-  
-  // Curvature Logic
-  let curvature = 0;
-  const HORIZONTAL_THRESHOLD = 50; 
-
-  if (Math.abs(dy) < HORIZONTAL_THRESHOLD) {
-      curvature = 0; 
-  } else if (dy > 0) {
-      curvature = dx > 0 ? 0.2 : -0.2;
-      if (Math.abs(dx) < 10) curvature = 0.2;
-  } else {
-      curvature = dx > 0 ? -0.2 : 0.2;
-      if (Math.abs(dx) < 10) curvature = 0.2;
-  }
-
-    const cpX = midX - dy * curvature; 
-  const cpY = midY + dx * curvature;
-
-  const pathD = curvature === 0 
-    ? `M ${start.x} ${start.y} L ${end.x} ${end.y}`
-    : `M ${start.x} ${start.y} Q ${cpX} ${cpY} ${end.x} ${end.y}`;
-
-  const labelX = curvature === 0 
-    ? midX 
-    : 0.25 * start.x + 0.5 * cpX + 0.25 * end.x;
-    
-  const labelY = curvature === 0 
-    ? midY 
-    : 0.25 * start.y + 0.5 * cpY + 0.25 * end.y;
 
   const isHighlighted = highlightToChildren;
   const isMediumHighlight = sourceIsSelected && !targetIsSelected && !highlightToChildren;
@@ -276,6 +355,7 @@ export const Edge: React.FC<EdgeProps> = React.memo(({
     prevProps.lodLevel === nextProps.lodLevel &&
     prevProps.isDragging === nextProps.isDragging &&
     prevProps.highlightToChildren === nextProps.highlightToChildren &&
-    prevProps.edge.label === nextProps.edge.label
+    prevProps.edge.label === nextProps.edge.label &&
+    prevProps.edgeStyle === nextProps.edgeStyle
   );
 });

@@ -21,7 +21,7 @@ const TREE_NODE_SIZE_TB: [number, number] = [
   PARENT_NODE_HEIGHT + 50,
 ];
 const TREE_NODE_SIZE_LR: [number, number] = [
-  PARENT_NODE_HEIGHT + 50,
+  100, // Vertical spacing between siblings (reduced for tighter layout)
   PARENT_NODE_WIDTH + 50,
 ];
 

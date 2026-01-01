@@ -1,4 +1,4 @@
-import { GraphNode, GraphEdge, NodeType } from "../types";
+import { GraphNode, GraphEdge, EmbeddedEdge, NodeType } from "../types";
 import yaml from "js-yaml";
 
 // --- NEW: Tracking for debounced saves ---
@@ -77,9 +77,10 @@ const safeCloseOrAbortWritable = async (writable: any, error?: any) => {
   }
 };
 
+// Parse a markdown node file and extract embedded edges
 const parseMarkdownNode = async (
   fileHandle: FileSystemFileHandle
-): Promise<GraphNode | null> => {
+): Promise<{ node: GraphNode; edges: EmbeddedEdge[] } | null> => {
   try {
     const file = await fileHandle.getFile();
     const text = await file.text();
@@ -90,10 +91,19 @@ const parseMarkdownNode = async (
     const metadata = yaml.load(parts[1]) as any;
     const content = parts.slice(2).join("---").trim();
 
-    return {
-      ...metadata,
+    // Extract edges from metadata (if present)
+    const embeddedEdges: EmbeddedEdge[] = metadata.edges || [];
+
+    // Remove edges from node object (they're stored separately in memory)
+    const nodeData = { ...metadata };
+    delete nodeData.edges;
+
+    const node: GraphNode = {
+      ...nodeData,
       content: metadata.content || content || "Untitled",
     };
+
+    return { node, edges: embeddedEdges };
   } catch (e: any) {
     if (isFileSystemAccessApiError(e, ["NotFoundError", "NotReadableError"]))
       return null;
@@ -104,21 +114,36 @@ const parseMarkdownNode = async (
 
 export const loadGraphFromDirectory = async (
   dirHandle: FileSystemDirectoryHandle
-): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> => {
+): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; hasLegacyEdgesFile: boolean }> => {
   const nodesMap = new Map<string, GraphNode>();
-  let edges: GraphEdge[] = [];
+  const allEdges: GraphEdge[] = [];
+  let legacyEdges: GraphEdge[] = [];
+  let hasLegacyEdgesFile = false;
 
   for await (const entry of dirHandle.values()) {
     if (entry.kind === "file") {
       try {
         if (entry.name === "_edges.json") {
+          // Legacy edges file - read for migration purposes
           const file = await (entry as FileSystemFileHandle).getFile();
           const text = await file.text();
-          edges = JSON.parse(text);
+          legacyEdges = JSON.parse(text);
+          hasLegacyEdgesFile = true;
         } else if (entry.name.endsWith(".md")) {
-          const node = await parseMarkdownNode(entry as FileSystemFileHandle);
-          if (node) {
+          const result = await parseMarkdownNode(entry as FileSystemFileHandle);
+          if (result) {
+            const { node, edges: embeddedEdges } = result;
             nodesMap.set(node.id, node);
+
+            // Convert embedded edges to full GraphEdge (add source from node id)
+            for (const edge of embeddedEdges) {
+              allEdges.push({
+                id: edge.id,
+                source: node.id,
+                target: edge.target,
+                label: edge.label,
+              });
+            }
           }
         }
       } catch (e: any) {
@@ -131,13 +156,17 @@ export const loadGraphFromDirectory = async (
     }
   }
 
-  return { nodes: Array.from(nodesMap.values()), edges };
+  // If we have embedded edges, use those; otherwise fall back to legacy edges
+  const edges = allEdges.length > 0 ? allEdges : legacyEdges;
+
+  return { nodes: Array.from(nodesMap.values()), edges, hasLegacyEdgesFile };
 };
 
-// --- NEW FUNCTION: Use this in your UI instead of saveNodeToFile directly ---
+// Schedule a debounced save for a node with its outgoing edges
 export const scheduleSaveNode = (
   dirHandle: FileSystemDirectoryHandle,
   node: GraphNode,
+  outgoingEdges: GraphEdge[] = [],
   delay: number = 2000 // Wait 2 seconds after last edit before saving
 ) => {
   // Clear any pending save for this specific node
@@ -148,12 +177,13 @@ export const scheduleSaveNode = (
   // Schedule a new save
   const timerId = window.setTimeout(() => {
     saveTimers.delete(node.id);
-    saveNodeToFile(dirHandle, node);
+    saveNodeToFile(dirHandle, node, outgoingEdges);
   }, delay);
 
   saveTimers.set(node.id, timerId);
 };
 
+// @deprecated - edges are now embedded in node files. Use scheduleSaveNode with outgoingEdges instead.
 export const scheduleSaveEdges = (
   dirHandle: FileSystemDirectoryHandle,
   edges: GraphEdge[],
@@ -169,9 +199,11 @@ export const scheduleSaveEdges = (
 };
 // --------------------------------------------------------------------------
 
+// Save a node to file with its outgoing edges embedded in frontmatter
 export const saveNodeToFile = async (
   dirHandle: FileSystemDirectoryHandle,
-  node: GraphNode
+  node: GraphNode,
+  outgoingEdges: GraphEdge[] = []
 ) => {
   const newFileName = `${node.id}.md`;
   const lockName = `infoverse:fswrite:${dirHandle.name}:${newFileName}`;
@@ -190,9 +222,21 @@ export const saveNodeToFile = async (
         // This line is what creates the .crswap file
         writable = await fileHandle.createWritable();
 
-        const metadata = { ...node };
-        // @ts-ignore
+        const metadata: any = { ...node };
+        // Remove content from metadata (it goes in the body)
         delete metadata.content;
+
+        // Convert outgoing edges to embedded format (omit source, it's implicit)
+        if (outgoingEdges.length > 0) {
+          metadata.edges = outgoingEdges.map((edge) => ({
+            id: edge.id,
+            target: edge.target,
+            label: edge.label,
+          }));
+        } else {
+          // Remove edges key if no edges
+          delete metadata.edges;
+        }
 
         const frontmatter = yaml.dump(metadata);
 
@@ -276,6 +320,7 @@ export const deleteNodeFile = async (
   }
 };
 
+// @deprecated - edges are now embedded in node files
 export const saveEdgesToFile = async (
   dirHandle: FileSystemDirectoryHandle,
   edges: GraphEdge[]
@@ -313,4 +358,50 @@ export const saveEdgesToFile = async (
       return;
     console.error("Error saving edges:", e);
   }
+};
+
+// Migrate edges from legacy _edges.json to embedded in node files
+export const migrateEdgesToNodes = async (
+  dirHandle: FileSystemDirectoryHandle,
+  nodes: GraphNode[],
+  edges: GraphEdge[]
+): Promise<boolean> => {
+  try {
+    const hasPerm = await verifyPermission(dirHandle, true);
+    if (!hasPerm) return false;
+
+    // Group edges by source node
+    const edgesBySource = new Map<string, GraphEdge[]>();
+    for (const edge of edges) {
+      const existing = edgesBySource.get(edge.source) || [];
+      existing.push(edge);
+      edgesBySource.set(edge.source, existing);
+    }
+
+    // Update each node file with its outgoing edges
+    for (const node of nodes) {
+      const outgoingEdges = edgesBySource.get(node.id) || [];
+      await saveNodeToFile(dirHandle, node, outgoingEdges);
+    }
+
+    // Delete the legacy _edges.json file
+    try {
+      await dirHandle.removeEntry("_edges.json");
+      console.log("Migration complete: _edges.json removed");
+    } catch (e: any) {
+      if (!isFileSystemAccessApiError(e, ["NotFoundError"])) {
+        console.error("Error removing legacy _edges.json:", e);
+      }
+    }
+
+    return true;
+  } catch (e) {
+    console.error("Error during edge migration:", e);
+    return false;
+  }
+};
+
+// Get outgoing edges for a specific node from the full edge list
+export const getOutgoingEdges = (nodeId: string, edges: GraphEdge[]): GraphEdge[] => {
+  return edges.filter((edge) => edge.source === nodeId);
 };

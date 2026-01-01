@@ -15,6 +15,7 @@ import {
   ChatMessage,
   LODLevel,
   SelectionTooltipState,
+  EdgeStyle,
 } from "../types";
 import { SidePanelLayout } from "./SidePanel";
 import { GraphNodeComponent } from "./GraphNode";
@@ -419,6 +420,7 @@ export const Canvas: React.FC<CanvasProps> = ({
   } | null>(null);
   const lastTapRef = useRef<number>(0);
   const [isLayoutMenuOpen, setIsLayoutMenuOpen] = useState(false);
+  const [activeLayout, setActiveLayout] = useState<LayoutType | null>(null);
 
   const dragStartRef = useRef<{
     mouseX: number;
@@ -1207,16 +1209,9 @@ export const Canvas: React.FC<CanvasProps> = ({
       }
 
       // Calculate the effective selection for dragging purposes
-      const effectiveSelectedIds = new Set(selectedNodeIds);
-      if (isShift) {
-        if (!isSelected) effectiveSelectedIds.add(id);
-      } else {
-        if (!isSelected) {
-          effectiveSelectedIds.clear();
-          effectiveSelectedIds.add(id);
-        }
-        // If isSelected, effectiveSelectedIds is just selectedNodeIds (whole group)
-      }
+      // Only drag the single clicked node, not the entire expanded group
+      const effectiveSelectedIds = new Set<string>();
+      effectiveSelectedIds.add(id);
 
       const target = e.target as HTMLElement;
       if (
@@ -1284,15 +1279,15 @@ export const Canvas: React.FC<CanvasProps> = ({
         target === containerRef.current ||
         target.closest(".canvas-background")
       ) {
-        // Only clear selection tooltip, not node selection
-        // Node minimization is now handled by the minimize button in the node tooltip
+        // Clear active node (deselect) but keep nodes expanded
+        // Node minimization is handled by the minimize button in the node tooltip
+        setActiveNodeId(null);
         onSelectionTooltipChange?.(null);
       }
     },
     [
       connectingNodeId,
       onCancelConnect,
-      onNodeSelect,
       contextMenu,
       onSelectionTooltipChange,
     ]
@@ -1516,6 +1511,7 @@ export const Canvas: React.FC<CanvasProps> = ({
 
   const applyLayout = (type: LayoutType) => {
     if (nodes.length === 0) return;
+    setActiveLayout(type);
 
     setNodes((currentNodes) => {
       // Create effective nodes for layout calculation
@@ -1973,6 +1969,7 @@ export const Canvas: React.FC<CanvasProps> = ({
                   sourceIsSelected={selectedNodeIds.has(edge.source)}
                   targetIsSelected={selectedNodeIds.has(edge.target)}
                   isDragging={draggingId !== null}
+                  edgeStyle={activeLayout === 'tree-lr' ? 'sankey-lr' : 'default'}
                 />
               ))}
               {expandingNodeIds.map((id) => {

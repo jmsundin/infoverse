@@ -12,7 +12,9 @@ interface BreadcrumbsProps {
   selectedNodeIds: Set<string>;
   onNavigate: (id: string | null, type: "root" | "scope" | "node") => void;
   onCloseFolder: () => void;
+  onImportFromCloud?: () => void;
   dirName: string | null;
+  isLoggedIn?: boolean;
 }
 
 export const Breadcrumbs: React.FC<BreadcrumbsProps> = ({
@@ -20,7 +22,9 @@ export const Breadcrumbs: React.FC<BreadcrumbsProps> = ({
   selectedNodeIds,
   onNavigate,
   onCloseFolder,
+  onImportFromCloud,
   dirName,
+  isLoggedIn,
 }) => {
   return (
     <div className="absolute top-16 left-4 md:left-20 z-40 flex items-center gap-2 text-sm pointer-events-none flex-wrap">
@@ -48,29 +52,57 @@ export const Breadcrumbs: React.FC<BreadcrumbsProps> = ({
               {crumb.name}
             </button>
             {crumb.type === "root" && dirName && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onCloseFolder();
-                }}
-                className="ml-1 p-0.5 text-slate-500 hover:text-red-400 rounded-full hover:bg-slate-800 transition-colors"
-                title="Close Folder"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+              <>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onCloseFolder();
+                  }}
+                  className="ml-1 p-0.5 text-slate-500 hover:text-red-400 rounded-full hover:bg-slate-800 transition-colors"
+                  title="Close Folder"
                 >
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
+                {isLoggedIn && onImportFromCloud && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onImportFromCloud();
+                    }}
+                    className="ml-1 p-0.5 text-slate-500 hover:text-sky-400 rounded-full hover:bg-slate-800 transition-colors"
+                    title="Import from Cloud"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="7 10 12 15 17 10" />
+                      <line x1="12" y1="15" x2="12" y2="3" />
+                    </svg>
+                  </button>
+                )}
+              </>
             )}
           </div>
         </React.Fragment>

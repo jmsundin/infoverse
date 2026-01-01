@@ -1,16 +1,14 @@
 import { useRef, useMemo, useCallback } from "react";
 import { GraphNode, GraphEdge, ViewportTransform } from "../types";
 import { debounce } from "../services/debounceService";
-import { 
-  scheduleSaveNode, 
-  scheduleSaveEdges 
+import {
+  scheduleSaveNode,
+  getOutgoingEdges,
 } from "../services/storageService";
-import { 
-  saveNodesBatchToApi, 
-  saveEdgesToApi 
+import {
+  saveNodesBatchToApi,
+  saveEdgesToApi
 } from "../services/apiStorageService";
-
-const LOCAL_STORAGE_KEY = "wiki-graph-data";
 
 export const usePersistence = (
   user: any,
@@ -19,83 +17,67 @@ export const usePersistence = (
   const dirtyNodesByIdRef = useRef<Map<string, { node: GraphNode; skipEmbedding: boolean }>>(new Map());
   const edgesDirtyRef = useRef(false);
 
-  const saveGraphToLocalStorage = useCallback(
-    (
-      nodesToSave: GraphNode[],
-      edgesToSave: GraphEdge[],
-      currentViewTransform: ViewportTransform,
-      currentAutoGraphEnabled: boolean,
-      currentScopeId: string | null,
-      currentSelectedNodeIds: Set<string>
-    ) => {
-      if (typeof window === "undefined") return;
-      const data = {
-        nodes: nodesToSave,
-        edges: edgesToSave,
-        viewTransform: currentViewTransform,
-        autoGraphEnabled: currentAutoGraphEnabled,
-        currentScopeId: currentScopeId,
-        selectedNodeIds: Array.from(currentSelectedNodeIds),
-      };
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(data));
-    },
-    []
-  );
-
   const debouncedFlushSaves = useMemo(
     () =>
       debounce(
         async (
           nodesSnapshot: GraphNode[],
           edgesSnapshot: GraphEdge[],
-          currentViewTransform: ViewportTransform,
-          currentAutoGraphEnabled: boolean,
-          currentScopeId: string | null,
-          currentSelectedNodeIds: Set<string>
+          _currentViewTransform: ViewportTransform,
+          _currentAutoGraphEnabled: boolean,
+          _currentScopeId: string | null,
+          _currentSelectedNodeIds: Set<string>
         ) => {
-          // Save to local storage
-          saveGraphToLocalStorage(
-            nodesSnapshot,
-            edgesSnapshot,
-            currentViewTransform,
-            currentAutoGraphEnabled,
-            currentScopeId,
-            currentSelectedNodeIds
-          );
-
           const dirtyNodes = Array.from(dirtyNodesByIdRef.current.values());
           dirtyNodesByIdRef.current.clear();
           const edgesDirty = edgesDirtyRef.current;
           edgesDirtyRef.current = false;
 
-          // Save to file system (Master)
+          // Save to file system (Master) - edges embedded in node files
           if (dirHandle) {
+            // For dirty nodes, include their outgoing edges
             for (const { node } of dirtyNodes) {
-              scheduleSaveNode(dirHandle, node);
+              const outgoingEdges = getOutgoingEdges(node.id, edgesSnapshot);
+              scheduleSaveNode(dirHandle, node, outgoingEdges);
             }
+
+            // If edges changed, we need to update all affected source nodes
             if (edgesDirty) {
-              scheduleSaveEdges(dirHandle, edgesSnapshot);
+              // Find all unique source nodes that have edges
+              const sourceNodeIds = new Set(edgesSnapshot.map(e => e.source));
+
+              // Save each source node with its updated edges
+              for (const sourceId of sourceNodeIds) {
+                const node = nodesSnapshot.find(n => n.id === sourceId);
+                if (node) {
+                  const outgoingEdges = getOutgoingEdges(node.id, edgesSnapshot);
+                  scheduleSaveNode(dirHandle, node, outgoingEdges);
+                }
+              }
             }
           }
 
-          // Save to cloud (Secondary)
-          if (user && !dirHandle) {
+          // Background cloud sync (when user is logged in)
+          if (user) {
             if (dirtyNodes.length > 0) {
-              await saveNodesBatchToApi(
+              // Non-blocking cloud save
+              saveNodesBatchToApi(
                 dirtyNodes.map(({ node, skipEmbedding }) => ({
                   ...(node as any),
                   skipEmbedding,
                 }))
-              );
+              ).catch(err => console.error("Cloud sync error (nodes):", err));
             }
             if (edgesDirty) {
-              saveEdgesToApi(edgesSnapshot);
+              // Non-blocking cloud save
+              saveEdgesToApi(edgesSnapshot)
+                .catch(err => console.error("Cloud sync error (edges):", err));
             }
           }
         },
         2000
       ),
-    [saveGraphToLocalStorage, dirHandle, user]
+    [dirHandle, user]
   );
 
   const markNodeDirty = useCallback((node: GraphNode, skipEmbedding: boolean) => {
@@ -112,4 +94,3 @@ export const usePersistence = (
     markEdgesDirty,
   };
 };
-

@@ -37,8 +37,9 @@ import {
   pickDirectory,
   loadGraphFromDirectory,
   saveNodeToFile,
-  saveEdgesToFile,
   verifyPermission,
+  migrateEdgesToNodes,
+  getOutgoingEdges,
 } from "./services/storageService";
 import {
   getDirectoryHandle,
@@ -50,6 +51,14 @@ import {
   saveNodeToApi,
   saveEdgesToApi,
 } from "./services/apiStorageService";
+import {
+  getAIProvider,
+  setAIProvider as saveAIProvider,
+  getLastDirName,
+  setLastDirName,
+  cleanupLegacyStorage,
+} from "./services/settingsService";
+import { importFromCloud } from "./services/cloudSyncService";
 import { useGraphState } from "./hooks/useGraphState";
 import { usePersistence } from "./hooks/usePersistence";
 import { useSidePanes } from "./hooks/useSidePanes";
@@ -60,8 +69,6 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useBreadcrumbs } from "./hooks/useBreadcrumbs";
 import { createDefaultGraphNodes } from "./utils/graphUtils";
 import { performGreedyClustering } from "./utils/clustering";
-
-const LOCAL_STORAGE_KEY = "wiki-graph-data";
 
 const App: React.FC = () => {
   // --- Hooks for State ---
@@ -114,15 +121,13 @@ const App: React.FC = () => {
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [cutNodeId, setCutNodeId] = useState<string | null>(null);
-  const [aiProvider, setAiProvider] = useState<"gemini" | "huggingface">(() => {
-    if (typeof window !== "undefined") {
-      return (
-        (localStorage.getItem("ai_provider") as "gemini" | "huggingface") ||
-        "gemini"
-      );
-    }
-    return "gemini";
-  });
+  const [aiProvider, setAiProviderState] = useState<"gemini" | "huggingface">(getAIProvider);
+
+  // Wrapper to persist AI provider changes
+  const setAiProvider = useCallback((provider: "gemini" | "huggingface") => {
+    setAiProviderState(provider);
+    saveAIProvider(provider);
+  }, []);
 
   const deletedNodeRef = useRef<{
     nodes: GraphNode[];
@@ -346,18 +351,61 @@ const App: React.FC = () => {
 
   // --- Auth & Sync Logic ---
   useEffect(() => {
-    const checkAuth = async () => {
+    const initializeApp = async () => {
+      // Clean up legacy localStorage on app start
+      cleanupLegacyStorage();
+
       try {
+        // Check for stored directory handle first (local-first approach)
+        const storedHandle = await getDirectoryHandle();
+
+        if (storedHandle) {
+          // Verify permission
+          const hasPermission = await verifyPermission(storedHandle, true);
+
+          if (hasPermission) {
+            setDirHandle(storedHandle);
+            setDirName(storedHandle.name);
+            setLastDirName(storedHandle.name);
+
+            // Load from local directory (MASTER)
+            const { nodes: loadedNodes, edges: loadedEdges, hasLegacyEdgesFile } =
+              await loadGraphFromDirectory(storedHandle);
+
+            if (loadedNodes.length > 0) {
+              setNodes(loadedNodes);
+              setEdges(loadedEdges);
+
+              // Migrate edges if needed
+              if (hasLegacyEdgesFile) {
+                console.log("Migrating edges to node files...");
+                await migrateEdgesToNodes(storedHandle, loadedNodes, loadedEdges);
+              }
+            }
+          } else {
+            // Permission denied - show last known directory name
+            const lastDir = getLastDirName();
+            if (lastDir) {
+              setDirName(`${lastDir} (click to reopen)`);
+            }
+          }
+        }
+
+        // Check authentication
         const apiBase = (import.meta as any).env.VITE_API_URL || "";
         const res = await fetch(`${apiBase}/api/auth/check`, {
           credentials: "include",
         });
         const data = await res.json();
+
         if (data.isAuthenticated) {
           setUser(data.user);
-          const storedHandle = await getDirectoryHandle();
-          if (data.user && !storedHandle) setDirName("Cloud Storage");
-          setIsGraphLoaded(true);
+
+          // If no local directory, use cloud storage
+          if (!storedHandle) {
+            setDirName("Cloud Storage");
+          }
+
           if (
             window.location.hostname === "infoverse.ai" &&
             !window.location.hostname.startsWith("app.")
@@ -365,18 +413,20 @@ const App: React.FC = () => {
             window.location.href = `https://app.infoverse.ai${window.location.pathname}`;
           }
         } else {
-          setIsGraphLoaded(true);
           if (window.location.hostname === "app.infoverse.ai") {
             window.location.href = `https://infoverse.ai${window.location.pathname}`;
           }
         }
+
+        setIsGraphLoaded(true);
       } catch (err) {
-        console.error("Auth check failed", err);
+        console.error("App initialization failed", err);
         setIsGraphLoaded(true);
       }
     };
-    checkAuth();
-  }, []);
+
+    initializeApp();
+  }, [setNodes, setEdges, setIsGraphLoaded]);
 
   const handleLogout = async () => {
     try {
@@ -401,16 +451,32 @@ const App: React.FC = () => {
       await storeDirectoryHandle(handle);
       setDirHandle(handle);
       setDirName(handle.name);
+      setLastDirName(handle.name); // Persist for next session
+
       try {
-        if (nodes.length > 0)
-          for (const node of nodes) await saveNodeToFile(handle, node);
-        if (edges.length > 0) await saveEdgesToFile(handle, edges);
-        const { nodes: loadedNodes, edges: loadedEdges } =
+        // Load graph from directory
+        const { nodes: loadedNodes, edges: loadedEdges, hasLegacyEdgesFile } =
           await loadGraphFromDirectory(handle);
+
         if (loadedNodes.length > 0) {
           setNodes(loadedNodes);
           setEdges(loadedEdges);
+
+          // Migrate edges from _edges.json to embedded in node files
+          if (hasLegacyEdgesFile) {
+            console.log("Migrating edges to node files...");
+            await migrateEdgesToNodes(handle, loadedNodes, loadedEdges);
+          }
+        } else if (nodes.length > 0) {
+          // Directory is empty, save current nodes with their edges
+          for (const node of nodes) {
+            const outgoingEdges = getOutgoingEdges(node.id, edges);
+            await saveNodeToFile(handle, node, outgoingEdges);
+          }
         }
+
+        // Clean up legacy localStorage graph data
+        cleanupLegacyStorage();
         setIsGraphLoaded(true);
       } catch (e) {
         console.error("Error loading from directory", e);
@@ -419,6 +485,29 @@ const App: React.FC = () => {
       }
     }
   }, [nodes, edges, setNodes, setEdges, setIsGraphLoaded]);
+
+  // Import graph from cloud storage
+  const handleImportFromCloud = useCallback(async () => {
+    if (!user) return;
+
+    const cloudData = await importFromCloud();
+    if (cloudData && (cloudData.nodes.length > 0 || cloudData.edges.length > 0)) {
+      setNodes(cloudData.nodes);
+      setEdges(cloudData.edges);
+
+      // If we have a directory handle, save imported data to filesystem
+      if (dirHandle) {
+        for (const node of cloudData.nodes) {
+          const outgoingEdges = getOutgoingEdges(node.id, cloudData.edges);
+          await saveNodeToFile(dirHandle, node, outgoingEdges);
+        }
+      }
+
+      setToast({ visible: true, message: "Imported from cloud successfully" });
+    } else {
+      setToast({ visible: true, message: "No data found in cloud storage" });
+    }
+  }, [user, dirHandle, setNodes, setEdges]);
 
   const handleCloseFolder = useCallback(async () => {
     if ((user as any)?.isPaid) {
@@ -706,7 +795,9 @@ const App: React.FC = () => {
             }
           }}
           onCloseFolder={handleCloseFolder}
+          onImportFromCloud={handleImportFromCloud}
           dirName={dirName}
+          isLoggedIn={!!user}
         />
 
         <ScopeIndicator currentScopeId={currentScopeId} nodes={nodes} />

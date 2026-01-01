@@ -12,6 +12,15 @@ export type ResizeDirection = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 
 export type LODLevel = 'DETAIL' | 'TITLE' | 'CLUSTER';
 
+export type EdgeStyle = 'default' | 'sankey-lr';
+
+// Embedded edge stored in node's markdown frontmatter (outgoing edges only)
+export interface EmbeddedEdge {
+  id: string;
+  target: string;
+  label: string;
+}
+
 export interface GraphNode {
   id: string;
   type: NodeType;
@@ -29,6 +38,7 @@ export interface GraphNode {
   aliases?: string[]; // Alternative names for the node
   clusterCount?: number; // Number of nodes in this cluster
   clusterIds?: string[]; // IDs of nodes in this cluster
+  edges?: EmbeddedEdge[]; // Outgoing edges stored with this node
 }
 
 export interface ChatMessage {
