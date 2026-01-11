@@ -40,9 +40,12 @@ export const extractFirstNounPhrase = (text: string, maxLength: number = 30): st
     }
   }
 
-  // Pattern 3: First N words (up to 4 words or maxLength chars)
-  const words = cleaned.split(/\s+/).slice(0, 4);
+  // Pattern 3: First N words (up to 3 words or maxLength chars)
+  const words = cleaned.split(/\s+/).slice(0, 3);
   let result = words.join(' ');
+
+  // Strip leading articles for more concise noun phrases
+  result = result.replace(/^(The|A|An)\s+/i, '');
 
   if (result.length > maxLength) {
     result = result.substring(0, maxLength - 3).trim() + '...';
@@ -96,8 +99,7 @@ export const cleanTitleMarkdown = (title: string): string => {
   if (!title) return 'Untitled';
 
   return title
-    .replace(/^#+\s*/, '')              // Remove heading markers with space
-    .replace(/^#+/, '')                 // Remove heading markers without space
+    .replace(/^[\s#]+/, '')             // Remove all leading whitespace and # characters (handles "# # # #" pattern)
     .replace(/\*\*(.+?)\*\*/g, '$1')    // Remove bold **
     .replace(/\*(.+?)\*/g, '$1')        // Remove italic *
     .replace(/__(.+?)__/g, '$1')        // Remove bold __

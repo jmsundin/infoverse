@@ -568,7 +568,7 @@ export const Canvas: React.FC<CanvasProps> = ({
     k: Number.isFinite(viewTransform.k) && viewTransform.k > 0 ? viewTransform.k : 1,
   }), [viewTransform.x, viewTransform.y, viewTransform.k]);
 
-  const { visibleNodes, bufferedNodes, visibleEdges, lodLevel, nodeMap } =
+  const { visibleNodes, skeletonNodes, bufferedNodes, visibleEdges, lodLevel, nodeMap } =
     useMemo(() => {
       const { vpX, vpY, vpW, vpH, k } = viewportBounds;
 
@@ -736,8 +736,17 @@ export const Canvas: React.FC<CanvasProps> = ({
         );
       });
 
+      // Separate loaded nodes from skeleton nodes based on _loadState
+      const loadedNodes = visible.filter(
+        (n) => n._loadState === "loaded" || n._loadState === undefined
+      );
+      const skeletonNodes = visible.filter(
+        (n) => n._loadState === "position-only" || n._loadState === "loading"
+      );
+
       return {
-        visibleNodes: visible,
+        visibleNodes: loadedNodes,
+        skeletonNodes,
         bufferedNodes: [], // Deprecated in favor of Quadtree direct query
         visibleEdges: visEdges,
         lodLevel: currentLod,
@@ -2150,14 +2159,23 @@ export const Canvas: React.FC<CanvasProps> = ({
                 transform: `translate(${safeTransform.x}px, ${safeTransform.y}px) scale(${safeTransform.k})`,
               }}
             >
-              {bufferedNodes.map((node) => (
+              {/* Render skeleton nodes (position-only or loading) with LOD awareness */}
+              {skeletonNodes.map((node) => (
                 <NodeSkeleton
                   key={`skeleton-${node.id}`}
                   x={node.x}
                   y={node.y}
                   width={node.width || DEFAULT_NODE_WIDTH}
-                  height={node.height || DEFAULT_NODE_HEIGHT}
+                  height={
+                    lodLevel === "CLUSTER"
+                      ? 40
+                      : lodLevel === "TITLE"
+                      ? NODE_HEADER_HEIGHT
+                      : node.height || DEFAULT_NODE_HEIGHT
+                  }
                   color={node.color}
+                  lodLevel={lodLevel}
+                  isLoading={node._loadState === "loading"}
                 />
               ))}
 
@@ -2210,7 +2228,8 @@ export const Canvas: React.FC<CanvasProps> = ({
 
             <div className="absolute bottom-20 md:bottom-6 left-6 pointer-events-none opacity-50 text-xs text-slate-500 font-mono">
               ZOOM: {Math.round(viewTransform.k * 100)}% | NODES:{" "}
-              {visibleNodes.length}/{nodes.length} | EDGES:{" "}
+              {visibleNodes.length}/{nodes.length}
+              {skeletonNodes.length > 0 && ` (${skeletonNodes.length} loading)`} | EDGES:{" "}
               {visibleEdges.length}/{edges.length}
             </div>
 

@@ -127,7 +127,8 @@ const getAvailableFilename = async (
   node: GraphNode,
   currentFilename: string | null
 ): Promise<string> => {
-  const sanitized = sanitizeFilename(node.content);
+  // Prefer title for filename, fall back to content
+  const sanitized = sanitizeFilename(node.title || '') || sanitizeFilename(node.content);
   const baseName = sanitized || "Untitled";
   const desiredFilename = `${baseName}.md`;
 

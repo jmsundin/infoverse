@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { NODE_COLORS } from '../constants';
-import { NodeColor } from '../types';
+import { NodeColor, LODLevel } from '../types';
 
 interface SkeletonGraphProps {
   x: number;
@@ -13,7 +13,7 @@ interface SkeletonGraphProps {
 export const SkeletonGraph: React.FC<SkeletonGraphProps> = ({ x, y, width = 300, height = 200 }) => {
   const cx = x + width / 2;
   const cy = y + height / 2;
-  
+
   // Generate a small tree structure relative to center with tighter distances (max ~80-100px)
   const nodes = [
       { id: 1, dx: 60, dy: -30, r: 35, delay: 0 },
@@ -53,33 +53,33 @@ export const SkeletonGraph: React.FC<SkeletonGraphProps> = ({ x, y, width = 300,
           const dist = Math.sqrt(Math.pow(tx-px, 2) + Math.pow(ty-py, 2));
 
           return (
-            <line 
+            <line
                 key={`line-${i}`}
-                x1={px} 
-                y1={py} 
-                x2={tx} 
-                y2={ty} 
-                stroke="#475569" 
-                strokeWidth="2" 
+                x1={px}
+                y1={py}
+                x2={tx}
+                y2={ty}
+                stroke="#475569"
+                strokeWidth="2"
                 strokeDasharray={dist}
                 strokeDashoffset={dist}
-                style={{ 
-                    animation: `growLine 0.8s ease-out forwards`, 
+                style={{
+                    animation: `growLine 0.8s ease-out forwards`,
                     animationDelay: `${n.delay}s`
                 }}
             />
           );
       })}
-      
+
       {/* Nodes */}
       {nodes.map((n, i) => (
         <g key={`node-${i}`} style={{ transformBox: 'fill-box', transformOrigin: 'center', animation: `popNode 0.5s cubic-bezier(0.17, 0.67, 0.83, 0.67) forwards`, animationDelay: `${n.delay + 0.3}s`, opacity: 0 }}>
-          <rect 
-            x={cx + n.dx - n.r} 
-            y={cy + n.dy - n.r * 0.6} 
-            width={n.r * 2} 
-            height={n.r * 1.2} 
-            rx="6" 
+          <rect
+            x={cx + n.dx - n.r}
+            y={cy + n.dy - n.r * 0.6}
+            width={n.r * 2}
+            height={n.r * 1.2}
+            rx="6"
             className="fill-slate-800 stroke-slate-600 stroke-1"
           />
           <rect x={cx + n.dx - n.r + 10} y={cy + n.dy - 5} width={n.r * 1.2} height={4} rx="2" className="fill-slate-600/50" />
@@ -90,19 +90,76 @@ export const SkeletonGraph: React.FC<SkeletonGraphProps> = ({ x, y, width = 300,
   );
 };
 
-export const NodeSkeleton: React.FC<{ 
-  x: number; 
-  y: number; 
-  width: number; 
-  height: number; 
+interface NodeSkeletonProps {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
   color?: string;
   className?: string;
-}> = ({ x, y, width, height, color = 'slate', className = '' }) => {
+  lodLevel?: LODLevel;
+  isLoading?: boolean;
+}
+
+/**
+ * NodeSkeleton - A placeholder skeleton for nodes that haven't loaded content yet.
+ * Supports LOD-aware rendering:
+ * - CLUSTER: Small colored dot/rectangle
+ * - TITLE: Header bar only
+ * - DETAIL: Full skeleton with header and body placeholders
+ */
+export const NodeSkeleton: React.FC<NodeSkeletonProps> = ({
+  x,
+  y,
+  width,
+  height,
+  color = 'slate',
+  className = '',
+  lodLevel = 'DETAIL',
+  isLoading = false,
+}) => {
   const colorTheme = NODE_COLORS[color as NodeColor] || NODE_COLORS['slate'];
-  
+  const pulseClass = isLoading ? 'animate-pulse' : '';
+
+  // CLUSTER mode: Small colored dot/rectangle
+  if (lodLevel === 'CLUSTER') {
+    return (
+      <div
+        className={`absolute rounded-lg pointer-events-none ${colorTheme.bg} ${colorTheme.border} border shadow-sm ${pulseClass} ${isLoading ? '' : 'opacity-40'} ${className}`}
+        style={{
+          left: `${x}px`,
+          top: `${y}px`,
+          width: `${Math.min(width, 60)}px`,
+          height: `${Math.min(height, 40)}px`,
+        }}
+      />
+    );
+  }
+
+  // TITLE mode: Header bar only with title placeholder
+  if (lodLevel === 'TITLE') {
+    return (
+      <div
+        className={`absolute rounded-t-xl pointer-events-none ${colorTheme.header} ${colorTheme.border} border shadow-sm ${isLoading ? '' : 'opacity-60'} ${className}`}
+        style={{
+          left: `${x}px`,
+          top: `${y}px`,
+          width: `${width}px`,
+          height: `${height}px`,
+        }}
+      >
+        <div className="flex items-center px-3 h-full gap-2">
+          <div className={`w-5 h-5 rounded bg-black/20 ${pulseClass}`} />
+          <div className={`h-4 w-2/3 bg-black/20 rounded ${pulseClass}`} />
+        </div>
+      </div>
+    );
+  }
+
+  // DETAIL mode: Full skeleton with header and body
   return (
     <div
-      className={`absolute rounded-xl border flex flex-col overflow-hidden pointer-events-none ${colorTheme.bg} ${colorTheme.border} ${className} shadow-sm opacity-60`}
+      className={`absolute rounded-xl border flex flex-col overflow-hidden pointer-events-none ${colorTheme.bg} ${colorTheme.border} shadow-sm ${isLoading ? '' : 'opacity-60'} ${className}`}
       style={{
         left: `${x}px`,
         top: `${y}px`,
@@ -112,16 +169,16 @@ export const NodeSkeleton: React.FC<{
     >
       {/* Header Skeleton */}
       <div className={`h-10 border-b ${colorTheme.border} ${colorTheme.header} flex items-center px-3 gap-2`}>
-         <div className="w-6 h-6 rounded bg-black/20 animate-pulse" />
-         <div className="h-4 w-2/3 bg-black/20 rounded animate-pulse" />
+        <div className={`w-6 h-6 rounded bg-black/20 ${pulseClass}`} />
+        <div className={`h-4 w-2/3 bg-black/20 rounded ${pulseClass}`} />
       </div>
-      
+
       {/* Body Skeleton */}
       <div className="flex-1 p-3 space-y-3">
-         <div className="h-3 w-full bg-black/10 rounded animate-pulse delay-75" />
-         <div className="h-3 w-5/6 bg-black/10 rounded animate-pulse delay-100" />
-         <div className="h-3 w-4/6 bg-black/10 rounded animate-pulse delay-150" />
-         <div className="h-20 w-full bg-black/5 rounded mt-4" />
+        <div className={`h-3 w-full bg-black/10 rounded ${pulseClass}`} style={{ animationDelay: '75ms' }} />
+        <div className={`h-3 w-5/6 bg-black/10 rounded ${pulseClass}`} style={{ animationDelay: '100ms' }} />
+        <div className={`h-3 w-4/6 bg-black/10 rounded ${pulseClass}`} style={{ animationDelay: '150ms' }} />
+        <div className="h-20 w-full bg-black/5 rounded mt-4" />
       </div>
     </div>
   );

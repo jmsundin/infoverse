@@ -146,15 +146,22 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     // Use isExpanded for content expansion, falling back to isSelected for backward compatibility
     const effectiveExpanded = isExpanded ?? isSelected;
     const isClusterMode =
-      lodLevel === "CLUSTER" && !effectiveExpanded && !isSidebar && !isClusterParent;
+      lodLevel === "CLUSTER" &&
+      !effectiveExpanded &&
+      !isSidebar &&
+      !isClusterParent;
     const isClusterParentMode =
-      lodLevel === "CLUSTER" && !effectiveExpanded && !isSidebar && isClusterParent;
-    const isTitleOnly = lodLevel === "TITLE" && !effectiveExpanded && !isSidebar;
+      lodLevel === "CLUSTER" &&
+      !effectiveExpanded &&
+      !isSidebar &&
+      isClusterParent;
+    const isTitleOnly =
+      lodLevel === "TITLE" && !effectiveExpanded && !isSidebar;
     const isCompact = !isSidebar && !effectiveExpanded;
 
-    const titleText = node.title || (
-      node.type === NodeType.CHAT ? node.content : node.summary || node.content
-    );
+    const titleText =
+      node.title ||
+      (node.type === NodeType.CHAT ? node.title : node.summary || node.title);
 
     // --- Long Press & Double Click Handlers ---
 
@@ -280,19 +287,19 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     useEffect(() => {
       if (
         isSelected &&
-        node.content &&
+        node.title &&
         (!node.link || node.link.includes("wikidata.org")) &&
         !isDragging // <-- Add this condition
       ) {
         const checkWiki = async () => {
-          const url = await fetchWikipediaUrl(node.content);
+          const url = await fetchWikipediaUrl(node.title);
           if (url && url !== node.link) {
             onUpdate(node.id, { link: url });
           }
         };
         checkWiki();
       }
-    }, [isSelected, node.content, node.link, node.id, onUpdate, isDragging]);
+    }, [isSelected, node.title, node.link, node.id, onUpdate, isDragging]);
 
     const handleSendMessage = async () => {
       if (!input.trim()) return;
@@ -345,6 +352,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         const service =
           aiProvider === "huggingface" ? hfService : geminiService;
         const rawTitle = await service.generateTitle(currentInput, result.text);
+        console.log("rawTitle", rawTitle);
         const cleanedTitle = cleanTitleMarkdown(rawTitle);
         onUpdateRef.current(node.id, { title: cleanedTitle });
       }
@@ -352,29 +360,17 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
 
     const handleTitleSubmit = () => {
       if (titleEditValue.trim() !== "") {
-        onUpdate(node.id, { content: titleEditValue });
+        onUpdate(node.id, { title: titleEditValue });
       }
       setIsEditingTitle(false);
     };
 
     const handleNoteEditorChange = useCallback(
       (content: string) => {
-        onUpdate(node.id, { content });
+        onUpdate(node.id, { title: content });
       },
       [node.id, onUpdate]
     );
-
-    const openNodeInSidePaneForMobileInput = useCallback(() => {
-      if (isSidebar) return;
-      if (!onToggleMaximize) return;
-      if (!window.matchMedia("(max-width: 768px)").matches) return;
-      onToggleMaximize(node.id);
-    }, [isSidebar, onToggleMaximize, node.id]);
-
-    const handleNotePointerDown = (e: React.MouseEvent | React.TouchEvent) => {
-      e.stopPropagation();
-      openNodeInSidePaneForMobileInput();
-    };
 
     const handleLinkClick = useCallback(
       (e: React.MouseEvent, url: string) => {
@@ -398,13 +394,13 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
 
     const stripMarkdown = (text: string): string => {
       return text
-        .replace(/^#{1,6}\s+/, '')  // Remove heading markers (# ## ### etc.)
-        .replace(/\*\*(.+?)\*\*/g, '$1')  // Remove bold **text**
-        .replace(/\*(.+?)\*/g, '$1')  // Remove italic *text*
-        .replace(/__(.+?)__/g, '$1')  // Remove bold __text__
-        .replace(/_(.+?)_/g, '$1')  // Remove italic _text_
-        .replace(/`(.+?)`/g, '$1')  // Remove inline code `text`
-        .replace(/\[(.+?)\]\(.+?\)/g, '$1')  // Remove links, keep text
+        .replace(/^#{1,6}\s+/, "") // Remove heading markers (# ## ### etc.)
+        .replace(/\*\*(.+?)\*\*/g, "$1") // Remove bold **text**
+        .replace(/\*(.+?)\*/g, "$1") // Remove italic *text*
+        .replace(/__(.+?)__/g, "$1") // Remove bold __text__
+        .replace(/_(.+?)_/g, "$1") // Remove italic _text_
+        .replace(/`(.+?)`/g, "$1") // Remove inline code `text`
+        .replace(/\[(.+?)\]\(.+?\)/g, "$1") // Remove links, keep text
         .trim();
     };
 
@@ -519,6 +515,30 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     const displayMessages = node.messages || [];
 
     if (node.type === NodeType.CLUSTER) {
+      const CLUSTER_SIZE = 120;
+      const DOT_SIZE = 8;
+      const PADDING = 12;
+      const members = node.clusterMemberNodes || [];
+      const internalEdges = node.clusterInternalEdges || [];
+
+      // Limit for performance
+      const MAX_MINI_NODES = 20;
+      const MAX_MINI_EDGES = 30;
+      const displayMembers = members.slice(0, MAX_MINI_NODES);
+      const displayEdges = internalEdges.slice(0, MAX_MINI_EDGES);
+
+      // Create a lookup for member positions
+      const innerSize = CLUSTER_SIZE - PADDING * 2 - DOT_SIZE;
+      const memberPositions = new Map(
+        displayMembers.map((m) => [
+          m.id,
+          {
+            x: PADDING + m.relativeX * innerSize + DOT_SIZE / 2,
+            y: PADDING + m.relativeY * innerSize + DOT_SIZE / 2,
+          },
+        ])
+      );
+
       return (
         <div
           data-node-id={node.id}
@@ -526,8 +546,8 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
           style={{
             left: node.x,
             top: node.y,
-            width: node.width || 64,
-            height: node.height || 64,
+            width: CLUSTER_SIZE,
+            height: CLUSTER_SIZE,
             transform: "translate(-50%, -50%)",
             zIndex: 45,
           }}
@@ -538,13 +558,58 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
             !isSidebar && onMouseDown && onMouseDown(e, node.id)
           }
         >
-          <div className="w-full h-full rounded-full bg-slate-700/90 backdrop-blur-sm border-2 border-slate-500 text-slate-100 flex flex-col items-center justify-center shadow-lg hover:scale-110 hover:bg-slate-600 transition-all">
-            <span className="font-bold text-lg leading-none">
-              {node.clusterCount}
-            </span>
-            <span className="text-[10px] uppercase font-bold text-slate-400">
-              Nodes
-            </span>
+          <div className="w-full h-full rounded-xl bg-slate-800/80 backdrop-blur-sm border border-slate-600 shadow-lg hover:bg-slate-700/80 transition-all relative overflow-hidden">
+            {/* Mini-edges SVG layer */}
+            <svg className="absolute inset-0 w-full h-full pointer-events-none">
+              {displayEdges.map((edge, i) => {
+                const source = memberPositions.get(edge.sourceId);
+                const target = memberPositions.get(edge.targetId);
+                if (!source || !target) return null;
+
+                return (
+                  <line
+                    key={`${edge.sourceId}-${edge.targetId}-${i}`}
+                    x1={source.x}
+                    y1={source.y}
+                    x2={target.x}
+                    y2={target.y}
+                    stroke="#475569"
+                    strokeWidth={1}
+                    opacity={0.6}
+                  />
+                );
+              })}
+            </svg>
+
+            {/* Mini-nodes layer */}
+            {displayMembers.map((member) => {
+              const pos = memberPositions.get(member.id);
+              if (!pos) return null;
+              const colorClass = NODE_COLORS[member.color || "slate"].indicator;
+
+              return (
+                <div
+                  key={member.id}
+                  className={`absolute rounded-full ${colorClass} shadow-sm ring-1 ring-black/20`}
+                  style={{
+                    width: DOT_SIZE,
+                    height: DOT_SIZE,
+                    left: pos.x - DOT_SIZE / 2,
+                    top: pos.y - DOT_SIZE / 2,
+                  }}
+                  title={member.title}
+                />
+              );
+            })}
+
+            {/* Centered title overlay */}
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="bg-slate-900/90 px-2 py-1 rounded text-center">
+                <span className="text-white text-xs font-semibold">
+                  {node.clusterCount} Nodes
+                </span>
+              </div>
+            </div>
           </div>
         </div>
       );
@@ -616,7 +681,9 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         : [];
 
       const overflow = hasChildren ? childNodes.length - MAX_VISIBLE_DOTS : 0;
-      const containerSize = hasChildren ? PREVIEW_SIZE + RADIUS * 2 + DOT_SIZE : 48;
+      const containerSize = hasChildren
+        ? PREVIEW_SIZE + RADIUS * 2 + DOT_SIZE
+        : 48;
 
       return (
         <div
@@ -635,7 +702,11 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
           {/* Parent Node Preview */}
           {hasChildren ? (
             <div
-              className={`absolute flex items-center justify-center rounded-lg shadow-lg border ${colorTheme.border} ${colorTheme.bg} pointer-events-auto cursor-pointer hover:scale-105 transition-transform ${
+              className={`absolute flex items-center justify-center rounded-lg shadow-lg border ${
+                colorTheme.border
+              } ${
+                colorTheme.bg
+              } pointer-events-auto cursor-pointer hover:scale-105 transition-transform ${
                 isSelected ? "ring-2 ring-sky-400" : ""
               }`}
               style={{
@@ -648,17 +719,21 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
               onTouchStart={(e) =>
                 !isSidebar && onMouseDown && onMouseDown(e, node.id)
               }
-              title={node.content}
+              title={node.title}
             >
               <span
                 className={`font-bold text-xs ${colorTheme.text} truncate px-2 text-center`}
               >
-                {titleText.length > 20 ? titleText.substring(0, 20) + "..." : titleText}
+                {titleText.length > 20
+                  ? titleText.substring(0, 20) + "..."
+                  : titleText}
               </span>
             </div>
           ) : (
             <div
-              className={`w-6 h-6 rounded-full ${colorTheme.indicator} shadow-[0_0_8px_rgba(0,0,0,0.8)] ring-2 ring-slate-900 pointer-events-auto cursor-pointer hover:scale-150 transition-transform ${
+              className={`w-6 h-6 rounded-full ${
+                colorTheme.indicator
+              } shadow-[0_0_8px_rgba(0,0,0,0.8)] ring-2 ring-slate-900 pointer-events-auto cursor-pointer hover:scale-150 transition-transform ${
                 isSelected ? "ring-sky-400" : ""
               }`}
               onMouseDown={(e) =>
@@ -667,7 +742,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
               onTouchStart={(e) =>
                 !isSidebar && onMouseDown && onMouseDown(e, node.id)
               }
-              title={node.content}
+              title={node.title}
             />
           )}
 
@@ -938,7 +1013,9 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                       onTogglePin(node.id);
                     }}
                     className={`min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 rounded hover:bg-slate-700/50 transition-colors flex items-center justify-center ${
-                      node.pinned ? 'text-amber-400' : 'text-slate-400 hover:text-amber-400'
+                      node.pinned
+                        ? "text-amber-400"
+                        : "text-slate-400 hover:text-amber-400"
                     }`}
                     title={node.pinned ? "Unpin Node" : "Pin Node"}
                     onMouseDown={(e) => e.stopPropagation()}
@@ -1379,14 +1456,14 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                       }`}
                       onDoubleClick={(e) => {
                         e.stopPropagation();
-                        setTitleEditValue(node.content);
+                        setTitleEditValue(node.title);
                         setIsEditingTitle(true);
                       }}
                       title={"Double click to rename"}
                     >
                       {node.type === NodeType.NOTE
-                        ? (noteTitleLine.trim() || "Empty Note")
-                        : node.content}
+                        ? noteTitleLine.trim() || "Empty Note"
+                        : node.title}
                     </span>
                   </>
                 )}

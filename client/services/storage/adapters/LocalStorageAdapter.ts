@@ -1,5 +1,5 @@
-import { GraphNode, GraphEdge, EmbeddedEdge, NodeType } from '../../../types';
-import { ViewportBounds, NodePositionIndex, StorageAdapter } from '../types';
+import { GraphNode, GraphEdge, EmbeddedEdge, NodeType, NodeColor } from '../../../types';
+import { ViewportBounds, NodePositionIndex, SpatialIndexEntry, StorageAdapter } from '../types';
 import yaml from 'js-yaml';
 import * as d3 from 'd3';
 
@@ -15,6 +15,7 @@ import * as d3 from 'd3';
 export class LocalStorageAdapter implements StorageAdapter {
   private dirHandle: FileSystemDirectoryHandle | null = null;
   private nodeIndex: Map<string, NodePositionIndex> = new Map();
+  private extendedIndex: Map<string, SpatialIndexEntry> = new Map(); // Extended index with metadata
   private quadtree: d3.Quadtree<NodePositionIndex> | null = null;
   private fileIndex: Map<string, string> = new Map(); // nodeId -> filename
   private initialized = false;
@@ -53,16 +54,26 @@ export class LocalStorageAdapter implements StorageAdapter {
     if (!this.dirHandle) return;
 
     this.nodeIndex.clear();
+    this.extendedIndex.clear();
     this.fileIndex.clear();
 
     for await (const entry of this.dirHandle.values()) {
       if (entry.kind === 'file' && entry.name.endsWith('.md') && !entry.name.startsWith('_')) {
         try {
-          const positionInfo = await this.extractPositionFromFile(entry as FileSystemFileHandle);
-          if (positionInfo) {
-            positionInfo.filename = entry.name;
-            this.nodeIndex.set(positionInfo.id, positionInfo);
-            this.fileIndex.set(positionInfo.id, entry.name);
+          const extendedInfo = await this.extractMetadataFromFile(entry as FileSystemFileHandle);
+          if (extendedInfo) {
+            extendedInfo.filename = entry.name;
+            // Store in both indexes
+            this.extendedIndex.set(extendedInfo.id, extendedInfo);
+            this.nodeIndex.set(extendedInfo.id, {
+              id: extendedInfo.id,
+              x: extendedInfo.x,
+              y: extendedInfo.y,
+              width: extendedInfo.width,
+              height: extendedInfo.height,
+              filename: extendedInfo.filename,
+            });
+            this.fileIndex.set(extendedInfo.id, entry.name);
           }
         } catch (e) {
           console.warn(`Failed to index ${entry.name}:`, e);
@@ -87,11 +98,12 @@ export class LocalStorageAdapter implements StorageAdapter {
   }
 
   /**
-   * Extract only position metadata from a file's frontmatter (fast)
+   * Extract metadata from a file's frontmatter for spatial indexing (fast)
+   * Includes position + additional fields for skeleton rendering
    */
-  private async extractPositionFromFile(
+  private async extractMetadataFromFile(
     fileHandle: FileSystemFileHandle
-  ): Promise<NodePositionIndex | null> {
+  ): Promise<SpatialIndexEntry | null> {
     try {
       const file = await fileHandle.getFile();
       const text = await file.text();
@@ -112,6 +124,11 @@ export class LocalStorageAdapter implements StorageAdapter {
         width: metadata.width || 300,
         height: metadata.height || 200,
         filename: fileHandle.name,
+        // Extended fields for skeleton rendering
+        type: metadata.type || NodeType.NOTE,
+        color: metadata.color as NodeColor | undefined,
+        title: metadata.title || metadata.content?.substring(0, 100),
+        parentId: metadata.parentId,
       };
     } catch {
       return null;
@@ -378,6 +395,19 @@ export class LocalStorageAdapter implements StorageAdapter {
           height: node.height || 200,
           filename: newFileName,
         });
+        // Update extended index with full metadata
+        this.extendedIndex.set(node.id, {
+          id: node.id,
+          x: node.x,
+          y: node.y,
+          width: node.width || 300,
+          height: node.height || 200,
+          filename: newFileName,
+          type: node.type,
+          color: node.color,
+          title: node.title || node.content?.substring(0, 100),
+          parentId: node.parentId,
+        });
         this.rebuildQuadtree();
       } catch (e: any) {
         await this.safeCloseOrAbortWritable(writable, e);
@@ -407,6 +437,7 @@ export class LocalStorageAdapter implements StorageAdapter {
     // Update indices
     this.fileIndex.delete(nodeId);
     this.nodeIndex.delete(nodeId);
+    this.extendedIndex.delete(nodeId);
     this.rebuildQuadtree();
   }
 
@@ -431,10 +462,24 @@ export class LocalStorageAdapter implements StorageAdapter {
   }
 
   /**
+   * Get the full spatial index with extended metadata (for two-phase loading)
+   */
+  getAllSpatialIndex(): SpatialIndexEntry[] {
+    return Array.from(this.extendedIndex.values());
+  }
+
+  /**
    * Get node position info from index (fast, no file read)
    */
   getNodePosition(nodeId: string): NodePositionIndex | undefined {
     return this.nodeIndex.get(nodeId);
+  }
+
+  /**
+   * Get extended metadata for a node (fast, no file read)
+   */
+  getExtendedMetadata(nodeId: string): SpatialIndexEntry | undefined {
+    return this.extendedIndex.get(nodeId);
   }
 
   /**

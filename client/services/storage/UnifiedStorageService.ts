@@ -5,6 +5,7 @@ import {
   StorageConfig,
   StorageEvent,
   StorageEventType,
+  SpatialIndexEntry,
   DEFAULT_STORAGE_CONFIG,
 } from './types';
 import { ViewportDataManager } from './ViewportDataManager';
@@ -120,6 +121,67 @@ export class UnifiedStorageService extends EventTarget {
    */
   clearInMemoryData(): void {
     this.viewportManager.getInMemoryAdapter().clear();
+  }
+
+  /**
+   * Load the spatial index only (Phase 1 of two-phase loading)
+   * Returns lightweight position + metadata for all nodes without loading content
+   */
+  async loadSpatialIndex(): Promise<SpatialIndexEntry[]> {
+    // For local storage, get the spatial index from the adapter
+    const localAdapter = this.viewportManager.getLocalAdapter();
+    if (localAdapter.isEnabled()) {
+      return localAdapter.getAllSpatialIndex();
+    }
+
+    // For in-memory mode, convert cached nodes to spatial index entries
+    if (this.config.inMemoryOnly) {
+      const nodes = this.viewportManager.getAllCachedNodes();
+      return nodes.map(node => ({
+        id: node.id,
+        x: node.x,
+        y: node.y,
+        width: node.width || 300,
+        height: node.height || 200,
+        filename: `${node.id}.md`,
+        type: node.type,
+        color: node.color,
+        title: node.title || node.content?.substring(0, 100),
+        parentId: node.parentId,
+      }));
+    }
+
+    // For cloud-only, we'd need to add a cloud endpoint for spatial index
+    // For now, return empty (cloud support can be added later)
+    return [];
+  }
+
+  /**
+   * Load full content for specific nodes (Phase 2 of two-phase loading)
+   * Called when nodes enter the viewport
+   */
+  async loadNodeContent(nodeIds: string[]): Promise<GraphNode[]> {
+    const nodes: GraphNode[] = [];
+
+    for (const nodeId of nodeIds) {
+      const node = await this.viewportManager.getNode(nodeId);
+      if (node) {
+        nodes.push({ ...node, _loadState: 'loaded' });
+      }
+    }
+
+    return nodes;
+  }
+
+  /**
+   * Load all edges (needed for edge rendering even when nodes are skeletons)
+   */
+  async loadAllEdges(): Promise<GraphEdge[]> {
+    const localAdapter = this.viewportManager.getLocalAdapter();
+    if (localAdapter.isEnabled()) {
+      return localAdapter.loadAllEdges();
+    }
+    return this.viewportManager.getAllCachedEdges();
   }
 
   /**

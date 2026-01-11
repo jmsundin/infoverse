@@ -14,6 +14,23 @@ export type LODLevel = 'DETAIL' | 'TITLE' | 'CLUSTER';
 
 export type EdgeStyle = 'default' | 'sankey-lr';
 
+// Cluster visualization data types
+export interface ClusterMemberNode {
+  id: string;
+  relativeX: number;  // 0-1 normalized position within cluster bounds
+  relativeY: number;
+  color: NodeColor;
+  title?: string;
+}
+
+export interface ClusterInternalEdge {
+  sourceId: string;
+  targetId: string;
+}
+
+// Node loading state for viewport-based lazy loading
+export type NodeLoadState = 'position-only' | 'loading' | 'loaded' | 'error';
+
 // Embedded edge stored in node's markdown frontmatter (outgoing edges only)
 export interface EmbeddedEdge {
   id: string;
@@ -39,8 +56,13 @@ export interface GraphNode {
   aliases?: string[]; // Alternative names for the node
   clusterCount?: number; // Number of nodes in this cluster
   clusterIds?: string[]; // IDs of nodes in this cluster
+  clusterMemberNodes?: ClusterMemberNode[]; // Pre-computed mini-node data for visualization
+  clusterInternalEdges?: ClusterInternalEdge[]; // Pre-computed internal edges for visualization
   edges?: EmbeddedEdge[]; // Outgoing edges stored with this node
   pinned?: boolean; // User-pinned anchor for physics simulation
+  // Viewport-based lazy loading state
+  _loadState?: NodeLoadState; // Tracks if full content has been loaded
+  _loadError?: string; // Error message if loading failed
 }
 
 export interface ChatMessage {

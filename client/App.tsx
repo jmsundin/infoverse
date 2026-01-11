@@ -68,6 +68,7 @@ import {
 import { importFromCloud } from "./services/cloudSyncService";
 import { useGraphState } from "./hooks/useGraphState";
 import { usePersistence } from "./hooks/usePersistence";
+import { useViewportStorage, USE_VIEWPORT_STORAGE } from "./hooks/useViewportStorage";
 import { useSidePanes } from "./hooks/useSidePanes";
 import { useExpansion } from "./hooks/useExpansion";
 import { useNavigation } from "./hooks/useNavigation";
@@ -133,6 +134,18 @@ const App: React.FC = () => {
   const [physicsConfig, setPhysicsConfigState] = useState<PhysicsConfig>(getPhysicsConfig);
   const [migrationProgress, setMigrationProgress] = useState<MigrationProgress | null>(null);
 
+  // Window dimensions for viewport-based storage
+  const [windowSize, setWindowSize] = useState({ width: window.innerWidth, height: window.innerHeight });
+
+  // Track window resize for viewport calculations
+  useEffect(() => {
+    const handleResize = () => {
+      setWindowSize({ width: window.innerWidth, height: window.innerHeight });
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   // Wrapper to persist AI provider changes
   const setAiProvider = useCallback((provider: "gemini" | "huggingface") => {
     setAiProviderState(provider);
@@ -159,6 +172,32 @@ const App: React.FC = () => {
     user,
     dirHandle
   );
+
+  // --- Viewport-Based Storage (Two-Phase Loading) ---
+  // When enabled, this provides lazy loading with skeleton placeholders
+  const viewportStorage = useViewportStorage({
+    enabled: USE_VIEWPORT_STORAGE && !!dirHandle,
+    dirHandle,
+    userId: user?.id ?? null,
+    viewTransform,
+    containerWidth: windowSize.width,
+    containerHeight: windowSize.height,
+    bufferMultiplier: 1.3,
+    debounceMs: 150,
+  });
+
+  // When viewport storage is enabled and initialized, sync nodes/edges from it
+  useEffect(() => {
+    if (USE_VIEWPORT_STORAGE && viewportStorage.isInitialized && dirHandle) {
+      // Viewport storage takes over node/edge state management
+      if (viewportStorage.nodes.length > 0) {
+        setNodes(viewportStorage.nodes);
+      }
+      if (viewportStorage.edges.length > 0) {
+        setEdges(viewportStorage.edges);
+      }
+    }
+  }, [viewportStorage.isInitialized, viewportStorage.nodes, viewportStorage.edges, dirHandle, setNodes, setEdges]);
 
   const setNodesCallback = useCallback(
     (newNodes: GraphNode[] | ((prev: GraphNode[]) => GraphNode[])) => {
@@ -611,8 +650,8 @@ const App: React.FC = () => {
   );
 
   const clusteredNodes = useMemo(() => {
-    return performGreedyClustering(filteredNodes, viewTransform.k);
-  }, [filteredNodes, viewTransform.k]);
+    return performGreedyClustering(filteredNodes, edges, viewTransform.k);
+  }, [filteredNodes, edges, viewTransform.k]);
 
   const visibleNodeIds = useMemo(() => {
     const ids = new Set<string>();

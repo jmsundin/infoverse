@@ -27,6 +27,21 @@ export interface NodePositionIndex {
   filename: string;
 }
 
+// Extended spatial index for two-phase loading (includes metadata for skeleton rendering)
+export interface SpatialIndexEntry {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  filename: string;
+  // Additional fields for skeleton rendering
+  type: NodeType;
+  color?: NodeColor;
+  title?: string;
+  parentId?: string;
+}
+
 // Ghost node - minimal info for out-of-viewport edge targets
 export interface GhostNode {
   id: string;

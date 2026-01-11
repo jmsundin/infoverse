@@ -325,16 +325,25 @@ export const Edge: React.FC<EdgeProps> = React.memo(({
 
   const isHighlighted = highlightToChildren;
   const isMediumHighlight = sourceIsSelected && !targetIsSelected && !highlightToChildren;
-  
-  const strokeColor = isHighlighted 
-    ? COLORS.activeEdgeStroke 
-    : isMediumHighlight 
+
+  // Check if either node is a skeleton (position-only or loading)
+  const isSourceSkeleton = sourceNode._loadState === 'position-only' || sourceNode._loadState === 'loading';
+  const isTargetSkeleton = targetNode._loadState === 'position-only' || targetNode._loadState === 'loading';
+  const isGhostEdge = isSourceSkeleton || isTargetSkeleton;
+
+  // Ghost edge styling: dashed, faded for edges connecting to skeleton nodes
+  const strokeColor = isGhostEdge
+    ? 'rgba(148, 163, 184, 0.3)' // Faded slate color for ghost edges
+    : isHighlighted
+    ? COLORS.activeEdgeStroke
+    : isMediumHighlight
       ? COLORS.activeEdgeStroke // Or a lighter shade if available in COLORS, but usually opacity handles 'medium' feel or width
       : COLORS.edgeStroke;
-      
-  const strokeWidth = isHighlighted ? 3 : isMediumHighlight ? 2.5 : 2;
-  const opacity = isMediumHighlight ? 0.6 : 1;
-  const markerId = isHighlighted || isMediumHighlight ? "arrowhead-active" : "arrowhead";
+
+  const strokeWidth = isGhostEdge ? 1.5 : isHighlighted ? 3 : isMediumHighlight ? 2.5 : 2;
+  const opacity = isGhostEdge ? 0.4 : isMediumHighlight ? 0.6 : 1;
+  const markerId = isGhostEdge ? undefined : (isHighlighted || isMediumHighlight ? "arrowhead-active" : "arrowhead");
+  const strokeDasharray = isGhostEdge ? "4,4" : undefined;
 
   return (
     <g
@@ -346,9 +355,10 @@ export const Edge: React.FC<EdgeProps> = React.memo(({
         fill="none"
         stroke={strokeColor}
         strokeWidth={strokeWidth}
+        strokeDasharray={strokeDasharray}
         vectorEffect="non-scaling-stroke"
-        markerEnd={`url(#${markerId})`}
-        className={`edge-path ${isDragging ? '' : 'transition-colors duration-300'} group-hover:stroke-sky-400 group-hover:stroke-[3px]`}
+        markerEnd={markerId ? `url(#${markerId})` : undefined}
+        className={`edge-path ${isDragging ? '' : 'transition-colors duration-300'} ${isGhostEdge ? '' : 'group-hover:stroke-sky-400 group-hover:stroke-[3px]'}`}
       />
       
       {/* Relationship Label Badge - Hide when zoom is low/title only to reduce clutter */}
