@@ -25,34 +25,49 @@ const getBoxIntersection = (
 ) => {
   const dx = target.x - center.x;
   const dy = target.y - center.y;
-  if (dx === 0 && dy === 0) return center;
 
-  const slope = dy / dx;
-  const absSlope = Math.abs(slope);
+  // Handle degenerate case - same point
+  if (dx === 0 && dy === 0) return { x: center.x, y: center.y };
 
-  // Box dimensions relative to center
-  const hw = w / 2;
-  const hh = h / 2;
+  // Box dimensions relative to center (ensure non-zero)
+  const hw = Math.max(w / 2, 1);
+  const hh = Math.max(h / 2, 1);
 
-  // Box ratio slope
-  const boxSlope = hh / hw;
+  let x: number, y: number;
 
-  let x, y;
-
-  if (absSlope <= boxSlope) {
-    // Intersects vertical sides
-    x = dx > 0 ? hw : -hw;
-    y = x * slope;
-  } else {
-    // Intersects horizontal sides
+  // Handle vertical line (dx ≈ 0) - intersects top or bottom
+  if (Math.abs(dx) < 0.001) {
+    x = 0;
     y = dy > 0 ? hh : -hh;
-    x = y / slope;
+  }
+  // Handle horizontal line (dy ≈ 0) - intersects left or right
+  else if (Math.abs(dy) < 0.001) {
+    x = dx > 0 ? hw : -hw;
+    y = 0;
+  }
+  else {
+    const slope = dy / dx;
+    const absSlope = Math.abs(slope);
+    const boxSlope = hh / hw;
+
+    if (absSlope <= boxSlope) {
+      // Intersects vertical sides (left or right)
+      x = dx > 0 ? hw : -hw;
+      y = x * slope;
+    } else {
+      // Intersects horizontal sides (top or bottom)
+      y = dy > 0 ? hh : -hh;
+      x = y / slope;
+    }
   }
 
-  const padding = 0;
+  // Final safety check for NaN
+  if (!Number.isFinite(x)) x = 0;
+  if (!Number.isFinite(y)) y = 0;
+
   return {
-    x: center.x + x + (dx > 0 ? padding : -padding),
-    y: center.y + y + (dy > 0 ? padding : -padding)
+    x: center.x + x,
+    y: center.y + y
   };
 };
 
@@ -116,6 +131,12 @@ export const Edge: React.FC<EdgeProps> = React.memo(({
     edgeStyle = 'default'
 }) => {
   if (!sourceNode || !targetNode) return null;
+
+  // Early return if node positions are invalid (NaN or undefined)
+  if (!Number.isFinite(sourceNode.x) || !Number.isFinite(sourceNode.y) ||
+      !Number.isFinite(targetNode.x) || !Number.isFinite(targetNode.y)) {
+    return null;
+  }
 
   // Determine effective width/height based on LOD and Node Role
   // CLUSTER mode: < 0.25 zoom. Nodes are Dots or Text-only Hubs.
@@ -211,6 +232,14 @@ export const Edge: React.FC<EdgeProps> = React.memo(({
       }
   }
 
+  // Early return if computed values are invalid
+  if (!Number.isFinite(sCx) || !Number.isFinite(sCy) ||
+      !Number.isFinite(tCx) || !Number.isFinite(tCy) ||
+      !Number.isFinite(sW) || !Number.isFinite(sH) ||
+      !Number.isFinite(tW) || !Number.isFinite(tH)) {
+    return null;
+  }
+
   // Calculate connection points and path based on edge style
   let start: { x: number; y: number };
   let end: { x: number; y: number };
@@ -272,6 +301,13 @@ export const Edge: React.FC<EdgeProps> = React.memo(({
     pathD = curvature === 0
       ? `M ${start.x} ${start.y} L ${end.x} ${end.y}`
       : `M ${start.x} ${start.y} Q ${cpX} ${cpY} ${end.x} ${end.y}`;
+
+    // Early return if path calculation produced NaN
+    if (!Number.isFinite(start.x) || !Number.isFinite(start.y) ||
+        !Number.isFinite(end.x) || !Number.isFinite(end.y) ||
+        !Number.isFinite(cpX) || !Number.isFinite(cpY)) {
+      return null;
+    }
 
     labelX = curvature === 0
       ? midX

@@ -615,6 +615,7 @@ app.get('/api/graph', async (req, res) => {
             y: n.y,
             width: n.width,
             height: n.height,
+            title: n.title,
             content: n.content,
             messages: n.messages,
             link: n.link,
@@ -732,14 +733,15 @@ app.post('/api/nodes', async (req, res) => {
 
         // Upsert node
         const query = `
-            INSERT INTO nodes (id, user_id, type, x, y, width, height, content, messages, link, color, parent_id, summary, auto_expand_depth, aliases, embedding, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW())
+            INSERT INTO nodes (id, user_id, type, x, y, width, height, title, content, messages, link, color, parent_id, summary, auto_expand_depth, aliases, embedding, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
             ON CONFLICT (id) DO UPDATE SET
             type = EXCLUDED.type,
             x = EXCLUDED.x,
             y = EXCLUDED.y,
             width = EXCLUDED.width,
             height = EXCLUDED.height,
+            title = EXCLUDED.title,
             content = EXCLUDED.content,
             messages = EXCLUDED.messages,
             link = EXCLUDED.link,
@@ -752,19 +754,20 @@ app.post('/api/nodes', async (req, res) => {
             updated_at = NOW();
         `;
         const values = [
-            node.id, 
-            req.user.id, 
-            node.type, 
-            node.x, 
-            node.y, 
-            node.width, 
-            node.height, 
-            node.content, 
-            JSON.stringify(node.messages || []), 
-            node.link, 
-            node.color, 
-            node.parentId, 
-            node.summary, 
+            node.id,
+            req.user.id,
+            node.type,
+            node.x,
+            node.y,
+            node.width,
+            node.height,
+            node.title || null,
+            node.content,
+            JSON.stringify(node.messages || []),
+            node.link,
+            node.color,
+            node.parentId,
+            node.summary,
             node.autoExpandDepth,
             JSON.stringify(node.aliases || []),
             embedding ? JSON.stringify(embedding) : null
@@ -821,14 +824,15 @@ app.post('/api/nodes/batch', async (req, res) => {
             }
 
             const query = `
-                INSERT INTO nodes (id, user_id, type, x, y, width, height, content, messages, link, color, parent_id, summary, auto_expand_depth, aliases, embedding, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW())
+                INSERT INTO nodes (id, user_id, type, x, y, width, height, title, content, messages, link, color, parent_id, summary, auto_expand_depth, aliases, embedding, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
                 ON CONFLICT (id) DO UPDATE SET
                 type = EXCLUDED.type,
                 x = EXCLUDED.x,
                 y = EXCLUDED.y,
                 width = EXCLUDED.width,
                 height = EXCLUDED.height,
+                title = EXCLUDED.title,
                 content = EXCLUDED.content,
                 messages = EXCLUDED.messages,
                 link = EXCLUDED.link,
@@ -849,6 +853,7 @@ app.post('/api/nodes/batch', async (req, res) => {
                 node.y,
                 node.width,
                 node.height,
+                node.title || null,
                 node.content,
                 JSON.stringify(node.messages || []),
                 node.link,
@@ -1021,10 +1026,147 @@ app.get('/api/search/semantic', async (req, res) => {
     }
 });
 
+// --- Yjs CRDT Sync Endpoints ---
+
+// Push Yjs update for a node
+app.post('/api/nodes/:id/yjs-sync', async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
+
+    const { id } = req.params;
+
+    try {
+        // Read binary data from request body
+        const chunks = [];
+        for await (const chunk of req) {
+            chunks.push(chunk);
+        }
+        const update = Buffer.concat(chunks);
+
+        if (!update || update.length === 0) {
+            return res.status(400).json({ message: 'No update data provided' });
+        }
+
+        // Verify node belongs to user
+        const nodeCheck = await db.query(
+            'SELECT id FROM nodes WHERE id = $1 AND user_id = $2',
+            [id, req.user.id]
+        );
+
+        if (nodeCheck.rows.length === 0) {
+            return res.status(404).json({ message: 'Node not found' });
+        }
+
+        // Update Yjs state and increment clock
+        await db.query(
+            `UPDATE nodes
+             SET yjs_state = $1, yjs_clock = yjs_clock + 1, updated_at = NOW()
+             WHERE id = $2 AND user_id = $3`,
+            [update, id, req.user.id]
+        );
+
+        res.json({ success: true });
+    } catch (e) {
+        console.error('Yjs sync push error:', e);
+        res.status(500).json({ message: 'Sync failed' });
+    }
+});
+
+// Pull Yjs state for a node
+app.get('/api/nodes/:id/yjs-state', async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
+
+    const { id } = req.params;
+
+    try {
+        const result = await db.query(
+            'SELECT yjs_state FROM nodes WHERE id = $1 AND user_id = $2',
+            [id, req.user.id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ message: 'Node not found' });
+        }
+
+        const yjsState = result.rows[0].yjs_state;
+
+        if (!yjsState) {
+            return res.status(204).send(); // No content
+        }
+
+        res.set('Content-Type', 'application/octet-stream');
+        res.send(yjsState);
+    } catch (e) {
+        console.error('Yjs state fetch error:', e);
+        res.status(500).json({ message: 'Fetch failed' });
+    }
+});
+
+// Pull Yjs states for multiple nodes (batch)
+app.post('/api/nodes/yjs-states', async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
+
+    const { nodeIds } = req.body;
+
+    if (!nodeIds || !Array.isArray(nodeIds) || nodeIds.length === 0) {
+        return res.json({ states: {} });
+    }
+
+    try {
+        const result = await db.query(
+            'SELECT id, yjs_state FROM nodes WHERE id = ANY($1) AND user_id = $2',
+            [nodeIds, req.user.id]
+        );
+
+        const states = {};
+        for (const row of result.rows) {
+            if (row.yjs_state) {
+                // Convert Buffer to base64 for JSON transport
+                states[row.id] = row.yjs_state.toString('base64');
+            }
+        }
+
+        res.json({ states });
+    } catch (e) {
+        console.error('Yjs batch states fetch error:', e);
+        res.status(500).json({ message: 'Fetch failed' });
+    }
+});
+
+// Get node positions only (for ghost nodes)
+app.post('/api/nodes/positions', async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
+
+    const { nodeIds } = req.body;
+
+    if (!nodeIds || !Array.isArray(nodeIds) || nodeIds.length === 0) {
+        return res.json({ positions: [] });
+    }
+
+    try {
+        const result = await db.query(
+            'SELECT id, x, y, width, height FROM nodes WHERE id = ANY($1) AND user_id = $2',
+            [nodeIds, req.user.id]
+        );
+
+        const positions = result.rows.map(row => ({
+            id: row.id,
+            x: row.x,
+            y: row.y,
+            width: row.width || 300,
+            height: row.height || 200
+        }));
+
+        res.json({ positions });
+    } catch (e) {
+        console.error('Node positions fetch error:', e);
+        res.status(500).json({ message: 'Fetch failed' });
+    }
+});
+
 // Backfill Embeddings Endpoint (Utility)
 app.post('/api/admin/backfill-embeddings', async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
-    
+
     // In a multi-user real app, this should be an admin-only route or run as a script.
     // Here we let the user backfill their own nodes.
     

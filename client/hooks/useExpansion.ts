@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from "react";
-import { GraphNode, GraphEdge, NodeType, ViewportTransform } from "../types";
-import { 
-  DEFAULT_NODE_WIDTH, 
+import { GraphNode, GraphEdge, NodeType, ViewportTransform, SimulationTrigger } from "../types";
+import {
+  DEFAULT_NODE_WIDTH,
   DEFAULT_NODE_HEIGHT,
   WIKIDATA_SUBTOPIC_LIMIT,
   WIKIDATA_MAX_RECURSIVE_NODES_PER_LEVEL
@@ -10,6 +10,7 @@ import { fetchWikidataSubtopics } from "../services/wikidataService";
 import * as geminiService from "../services/geminiService";
 import * as hfService from "../services/huggingfaceService";
 import { parseTextToNodes } from "../utils/graphUtils";
+import { extractFirstNounPhrase, isShortContent, cleanTitleMarkdown } from "../utils/titleUtils";
 
 export const useExpansion = (
   nodes: GraphNode[],
@@ -19,7 +20,8 @@ export const useExpansion = (
   aiProvider: 'gemini' | 'huggingface',
   setViewTransform: (transform: ViewportTransform) => void,
   setToast: (toast: { visible: boolean; message: string; action?: () => void }) => void,
-  setShowLimitModal: (show: boolean) => void
+  setShowLimitModal: (show: boolean) => void,
+  startSimulation?: (trigger: SimulationTrigger, subtreeRootId?: string) => void
 ) => {
   const [expandingNodeIds, setExpandingNodeIds] = useState<string[]>([]);
   const wikidataExpansionInFlightRef = useRef<Set<string>>(new Set());
@@ -100,6 +102,7 @@ export const useExpansion = (
             type: NodeType.CHAT,
             x: parentNodeX + fixedRadius * Math.cos(angle),
             y: parentNodeY + fixedRadius * Math.sin(angle),
+            title: st.label, // Wikidata labels are already short, use as title
             content: st.label,
             width: DEFAULT_NODE_WIDTH,
             height: DEFAULT_NODE_HEIGHT,
@@ -147,6 +150,13 @@ export const useExpansion = (
 
         setNodesCallback((prev) => [...prev, ...nodesToAdd]);
         setEdgesCallback((prev) => [...prev, ...edgesToAdd]);
+
+        // Physics simulation disabled - user can trigger manually via node menu
+        // if (nodesToAdd.length > 0 && startSimulation) {
+        //   setTimeout(() => {
+        //     startSimulation('node-expansion', id);
+        //   }, 0);
+        // }
 
         if (nodesToAdd.length > 0) {
           let minX = sourceNode.x;
@@ -212,7 +222,7 @@ export const useExpansion = (
         wikidataExpansionInFlightRef.current.delete(id);
       }
     },
-    [nodes, currentScopeId, setNodesCallback, setEdgesCallback, setViewTransform, setToast]
+    [nodes, currentScopeId, setNodesCallback, setEdgesCallback, setViewTransform, setToast, startSimulation]
   );
 
   const handleExpandNode = useCallback(
@@ -264,6 +274,8 @@ export const useExpansion = (
             type: NodeType.CHAT,
             x: parentNodeX,
             y: parentNodeY,
+            // For short topics, use directly; otherwise extract noun phrase as fallback title
+            title: isShortContent(topic) ? topic : extractFirstNounPhrase(topic),
             content: topic,
             width: DEFAULT_NODE_WIDTH,
             height: DEFAULT_NODE_HEIGHT,
@@ -293,6 +305,26 @@ export const useExpansion = (
         if (isContentBreakdown) {
           // --- Local Parsing Mode with Hierarchical Logic ---
           const subItems = parseTextToNodes(topic);
+
+          // Generate titles for items that have long descriptions
+          // Use AI for long content, fallback to noun phrase extraction
+          const titleService = aiProvider === "huggingface" ? hfService : geminiService;
+          const titlePromises = subItems.map(async (item) => {
+            // If description is short enough, use item.name directly
+            if (isShortContent(item.description)) {
+              return item.name;
+            }
+            // Try AI generation, fall back to noun phrase extraction
+            try {
+              const aiTitle = await titleService.generateTitleFromContent(item.description);
+              return cleanTitleMarkdown(aiTitle || extractFirstNounPhrase(item.description));
+            } catch {
+              return cleanTitleMarkdown(extractFirstNounPhrase(item.description));
+            }
+          });
+
+          // Wait for all titles to be generated
+          const generatedTitles = await Promise.all(titlePromises);
 
           // Stack to manage parent context based on indentation
           // Initial context is the source node (or topic node)
@@ -328,6 +360,7 @@ export const useExpansion = (
               type: NodeType.CHAT,
               x: newNodeX,
               y: newNodeY,
+              title: generatedTitles[i], // AI-generated or fallback title
               content: item.name,
               width: DEFAULT_NODE_WIDTH,
               height: DEFAULT_NODE_HEIGHT,
@@ -405,6 +438,7 @@ export const useExpansion = (
                 type: NodeType.CHAT,
                 x: parentNodeX + fixedRadius * Math.cos(angle),
                 y: parentNodeY + fixedRadius * Math.sin(angle),
+                title: n.name, // AI expansion returns short names, use as title
                 content: n.name,
                 width: DEFAULT_NODE_WIDTH,
                 height: DEFAULT_NODE_HEIGHT,
@@ -473,6 +507,13 @@ export const useExpansion = (
         setNodesCallback((prev) => [...prev, ...nodesToAdd]);
         setEdgesCallback((prev) => [...prev, ...edgesToAdd]);
 
+        // Physics simulation disabled - user can trigger manually via node menu
+        // if (nodesToAdd.length > 0 && startSimulation) {
+        //   setTimeout(() => {
+        //     startSimulation('node-expansion', id);
+        //   }, 0);
+        // }
+
         if (nodesToAdd.length > 0) {
           // Calculate bounds of the new cluster + parent
           let minX = sourceNode.x;
@@ -526,7 +567,7 @@ export const useExpansion = (
         setExpandingNodeIds((prev) => prev.filter((nId) => nId !== id));
       }
     },
-    [nodes, currentScopeId, setNodesCallback, setEdgesCallback, aiProvider, handleExpandNodeFromWikidata, setViewTransform, setShowLimitModal]
+    [nodes, currentScopeId, setNodesCallback, setEdgesCallback, aiProvider, handleExpandNodeFromWikidata, setViewTransform, setShowLimitModal, startSimulation]
   );
 
   return {

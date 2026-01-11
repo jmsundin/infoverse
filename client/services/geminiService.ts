@@ -107,6 +107,27 @@ export const generateTitle = async (
 };
 
 /**
+ * Generates a concise title from arbitrary content (for auto-graph nodes).
+ * Returns null if generation fails, allowing caller to use fallback.
+ */
+export const generateTitleFromContent = async (
+  content: string
+): Promise<string | null> => {
+  try {
+    const res = await fetchWithAuth("/api/gemini/title-from-content", {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    });
+    const data = await res.json();
+    return data.title || null;
+  } catch (e: any) {
+    if (e.message === "LIMIT_REACHED") throw e;
+    console.error("Title from content generation failed", e);
+    return null;
+  }
+};
+
+/**
  * Returns the prompt template for analyzing a topic and suggesting breakdown/connections.
  * Kept on client as it's just a string helper, but not used for API call construction anymore.
  */

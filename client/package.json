@@ -26,7 +26,8 @@
     "react-dom": "^19.2.0",
     "react-markdown": "9",
     "react-syntax-highlighter": "^16.1.0",
-    "workbox-window": "^7.4.0"
+    "workbox-window": "^7.4.0",
+    "yjs": "^13.6.28"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.17",

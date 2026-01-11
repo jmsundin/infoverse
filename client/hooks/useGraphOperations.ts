@@ -1,11 +1,12 @@
 import { useCallback } from "react";
 import { v4 as uuidv4 } from "uuid";
-import { GraphNode, GraphEdge, NodeType, ChatMessage, ViewportTransform } from "../types";
+import { GraphNode, GraphEdge, NodeType, ChatMessage, ViewportTransform, SimulationTrigger } from "../types";
 import { DEFAULT_NODE_WIDTH, DEFAULT_NODE_HEIGHT } from "../constants";
 import * as geminiService from "../services/geminiService";
 import * as hfService from "../services/huggingfaceService";
 import { deleteNodeFile } from "../services/storageService";
 import { deleteNodeFromApi } from "../services/apiStorageService";
+import { useStorage } from "../context/StorageContext";
 
 export const useGraphOperations = (
   nodes: GraphNode[],
@@ -27,8 +28,11 @@ export const useGraphOperations = (
   aiProvider: 'gemini' | 'huggingface',
   handleExpandNode: (id: string, topic: string, node?: GraphNode) => void,
   deletedNodeRef: React.MutableRefObject<{ nodes: GraphNode[]; edges: GraphEdge[]; timer: number | null; } | null>,
-  setActiveSidePanes: React.Dispatch<React.SetStateAction<any[]>>
+  setActiveSidePanes: React.Dispatch<React.SetStateAction<any[]>>,
+  startSimulation?: (trigger: SimulationTrigger, subtreeRootId?: string) => void
 ) => {
+  // Get storage mode to skip file/API deletion in memory-only mode
+  const { storageMode } = useStorage();
 
   const handleCreateNode = useCallback(
     (node: GraphNode) => {
@@ -120,7 +124,14 @@ export const useGraphOperations = (
           (edge) => !ids.includes(edge.source) && !ids.includes(edge.target)
         )
       );
-      
+
+      // Physics simulation disabled - user can trigger manually via node menu
+      // if (startSimulation) {
+      //   setTimeout(() => {
+      //     startSimulation('node-deletion');
+      //   }, 0);
+      // }
+
       if (cutNodeId && ids.includes(cutNodeId)) {
         setCutNodeId(null);
       }
@@ -132,13 +143,16 @@ export const useGraphOperations = (
       setSelectedNodeIds(new Set());
 
       const timer = window.setTimeout(async () => {
-        if (dirHandle) {
-          for (const id of ids) {
-            await deleteNodeFile(dirHandle, id);
-          }
-        } else if (user) {
-          for (const id of ids) {
-            await deleteNodeFromApi(id);
+        // Skip file/API deletion in memory-only mode
+        if (storageMode !== 'memory') {
+          if (dirHandle) {
+            for (const id of ids) {
+              await deleteNodeFile(dirHandle, id);
+            }
+          } else if (user) {
+            for (const id of ids) {
+              await deleteNodeFromApi(id);
+            }
           }
         }
         deletedNodeRef.current = null;
@@ -174,7 +188,7 @@ export const useGraphOperations = (
         },
       });
     },
-    [nodes, edges, setNodesCallback, setEdgesCallback, cutNodeId, setCutNodeId, setActiveSidePanes, setSelectedNodeIds, dirHandle, user, deletedNodeRef, setToast]
+    [nodes, edges, setNodesCallback, setEdgesCallback, cutNodeId, setCutNodeId, setActiveSidePanes, setSelectedNodeIds, dirHandle, user, deletedNodeRef, setToast, storageMode, startSimulation]
   );
 
   const handleDeleteNode = useCallback(

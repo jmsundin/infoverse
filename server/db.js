@@ -100,6 +100,13 @@ const initDb = async () => {
         // Ignore if exists
     }
 
+    // Add title column if not exists
+    try {
+        await query(`ALTER TABLE nodes ADD COLUMN IF NOT EXISTS title VARCHAR(255)`);
+    } catch (e) {
+        // Ignore if exists
+    }
+
     // Edges Table
     await query(`
       CREATE TABLE IF NOT EXISTS edges (
@@ -161,6 +168,14 @@ const initDb = async () => {
         await query('CREATE INDEX IF NOT EXISTS nodes_embedding_idx ON nodes USING hnsw (embedding vector_cosine_ops)');
     } catch (e) {
         console.warn('Embedding column/index creation failed. Vector support might be missing.', e.message);
+    }
+
+    // Add Yjs state column for CRDT sync
+    try {
+        await query('ALTER TABLE nodes ADD COLUMN IF NOT EXISTS yjs_state BYTEA');
+        await query('ALTER TABLE nodes ADD COLUMN IF NOT EXISTS yjs_clock INTEGER DEFAULT 0');
+    } catch (e) {
+        console.warn('Yjs columns creation failed.', e.message);
     }
 
     // Enable PostGIS Extension

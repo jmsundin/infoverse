@@ -77,18 +77,18 @@ router.post('/chat', async (req, res) => {
     }
 });
 
-// Generate Title Endpoint
+// Generate Title Endpoint (for chat conversations)
 router.post('/title', async (req, res) => {
     const { userMessage, modelResponse } = req.body;
-    
+
     try {
         const prompt = `
-          Based on the following conversation start, generate a very short, concise title (max 3-5 words) for this chat session. 
+          Based on the following conversation start, generate a very short, concise title (max 3-5 words) for this chat session.
           Do not use quotes.
-          
+
           User: ${userMessage}
           Model: ${modelResponse}
-          
+
           Title:
         `;
         const response = await ai.models.generateContent({
@@ -100,6 +100,36 @@ router.post('/title', async (req, res) => {
     } catch (e) {
         console.error("Title generation failed", e);
         res.json({ title: "New Chat" });
+    }
+});
+
+// Generate Title from Content Endpoint (for auto-graph nodes)
+router.post('/title-from-content', async (req, res) => {
+    const { content } = req.body;
+
+    if (!content) {
+        return res.status(400).json({ message: 'Content is required' });
+    }
+
+    try {
+        const prompt = `
+          Generate a very short, concise title (3-5 words max) for the following content.
+          The title should capture the main topic or key concept.
+          Do not use quotes. Return ONLY the title, nothing else.
+
+          Content: ${content.substring(0, 500)}
+
+          Title:
+        `;
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt
+        });
+        const title = response.text ? response.text.trim().replace(/^["']|["']$/g, '') : null;
+        res.json({ title });
+    } catch (e) {
+        console.error("Title from content generation failed", e);
+        res.json({ title: null });
     }
 });
 

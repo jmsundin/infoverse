@@ -1,5 +1,7 @@
-export const DEFAULT_NODE_WIDTH = 300;
-export const DEFAULT_NODE_HEIGHT = 200;
+import { PhysicsConfig } from './types';
+
+export const DEFAULT_NODE_WIDTH = 400;
+export const DEFAULT_NODE_HEIGHT = 300;
 export const PARENT_NODE_WIDTH = 400;
 export const PARENT_NODE_HEIGHT = 300;
 export const MIN_NODE_WIDTH = 250;
@@ -62,3 +64,18 @@ export const COLORS = {
 
 export const WIKIDATA_SUBTOPIC_LIMIT = 12;
 export const WIKIDATA_MAX_RECURSIVE_NODES_PER_LEVEL = 5;
+
+// Physics simulation defaults
+export const DEFAULT_PHYSICS_CONFIG: PhysicsConfig = {
+  physicsEnabled: true,           // Physics simulation enabled by default
+  springConstant: 0.04,           // Edge spring strength
+  springLength: 200,              // Ideal edge length in pixels
+  springDamping: 0.09,            // Spring force damping
+  gravityConstant: 0.05,          // Pull toward subtree center
+  subtreeRepulsionConstant: -2000, // Negative = repulsion between subtree centroids
+  collisionPadding: 20,           // Extra padding for collision detection
+  childFollowTightness: 0.3,      // How quickly children follow dragged parent
+  velocityThreshold: 0.5,         // Stabilization threshold (pixels/tick)
+  maxIterations: 300,             // Safety limit on simulation ticks
+  dampingFactor: 0.85,            // Velocity decay per tick
+};

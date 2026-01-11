@@ -77,6 +77,78 @@ const safeCloseOrAbortWritable = async (writable: any, error?: any) => {
   }
 };
 
+// Sanitize a title to create a valid filename
+// Only allows alphanumeric, spaces, hyphens, and underscores
+const sanitizeFilename = (title: string): string | null => {
+  if (!title || !title.trim()) return null;
+
+  const sanitized = title
+    .replace(/[^a-zA-Z0-9\s\-_]/g, "") // Keep only alphanumeric, space, hyphen, underscore
+    .replace(/\s+/g, " ") // Normalize whitespace
+    .trim()
+    .slice(0, 200); // Limit length for cross-platform compatibility
+
+  return sanitized || null;
+};
+
+// Find the existing file for a node by searching frontmatter for its ID
+const findExistingFileForNode = async (
+  dirHandle: FileSystemDirectoryHandle,
+  nodeId: string
+): Promise<string | null> => {
+  try {
+    for await (const entry of dirHandle.values()) {
+      if (entry.kind === "file" && entry.name.endsWith(".md")) {
+        try {
+          const file = await (entry as FileSystemFileHandle).getFile();
+          const text = await file.text();
+          // Check if this file contains the node ID in frontmatter
+          if (
+            text.includes(`id: ${nodeId}`) ||
+            text.includes(`id: "${nodeId}"`) ||
+            text.includes(`id: '${nodeId}'`)
+          ) {
+            return entry.name;
+          }
+        } catch {
+          // Skip files that can't be read
+        }
+      }
+    }
+  } catch {
+    // Ignore directory iteration errors
+  }
+  return null;
+};
+
+// Get an available filename for a node, adding suffix on collision
+const getAvailableFilename = async (
+  dirHandle: FileSystemDirectoryHandle,
+  node: GraphNode,
+  currentFilename: string | null
+): Promise<string> => {
+  const sanitized = sanitizeFilename(node.content);
+  const baseName = sanitized || "Untitled";
+  const desiredFilename = `${baseName}.md`;
+
+  // If this is the same filename we already have, keep it
+  if (currentFilename === desiredFilename) {
+    return desiredFilename;
+  }
+
+  // Check if desired filename exists (collision check)
+  try {
+    await dirHandle.getFileHandle(desiredFilename);
+    // File exists - check if it's our own file (same node ID)
+    // If not, add shortId suffix to avoid collision
+    const shortId = node.id.slice(0, 6);
+    return `${baseName}-${shortId}.md`;
+  } catch {
+    // File doesn't exist - use desired filename
+    return desiredFilename;
+  }
+};
+
 // Parse a markdown node file and extract embedded edges
 const parseMarkdownNode = async (
   fileHandle: FileSystemFileHandle
@@ -200,17 +272,31 @@ export const scheduleSaveEdges = (
 // --------------------------------------------------------------------------
 
 // Save a node to file with its outgoing edges embedded in frontmatter
+// Filename is based on node title (content), with collision handling
 export const saveNodeToFile = async (
   dirHandle: FileSystemDirectoryHandle,
   node: GraphNode,
   outgoingEdges: GraphEdge[] = []
 ) => {
-  const newFileName = `${node.id}.md`;
-  const lockName = `infoverse:fswrite:${dirHandle.name}:${newFileName}`;
-
   try {
     const hasPerm = await verifyPermission(dirHandle, true);
     if (!hasPerm) return;
+
+    // Find current file for this node (if exists) by searching frontmatter
+    const currentFilename = await findExistingFileForNode(dirHandle, node.id);
+
+    // Determine new filename based on title (with collision handling)
+    const newFileName = await getAvailableFilename(dirHandle, node, currentFilename);
+    const lockName = `infoverse:fswrite:${dirHandle.name}:${newFileName}`;
+
+    // If filename changed (title renamed), delete old file first
+    if (currentFilename && currentFilename !== newFileName) {
+      try {
+        await dirHandle.removeEntry(currentFilename);
+      } catch {
+        // Ignore if old file doesn't exist
+      }
+    }
 
     await withExclusiveWebLock(lockName, async () => {
       let writable: any = null;
@@ -272,6 +358,7 @@ export const saveNodeToFile = async (
   }
 };
 
+// Delete a node's file by finding it via frontmatter ID
 export const deleteNodeFile = async (
   dirHandle: FileSystemDirectoryHandle,
   nodeId: string
@@ -280,40 +367,25 @@ export const deleteNodeFile = async (
     const hasPerm = await verifyPermission(dirHandle, true);
     if (!hasPerm) return;
 
-    try {
-      await dirHandle.removeEntry(`${nodeId}.md`);
-      return;
-    } catch (e: any) {
-      if (!isFileSystemAccessApiError(e, ["NotFoundError"])) {
-        console.error("Error deleting node:", e);
+    // Find the file by searching for the node ID in frontmatter
+    const filename = await findExistingFileForNode(dirHandle, nodeId);
+
+    if (filename) {
+      try {
+        await dirHandle.removeEntry(filename);
         return;
+      } catch (e: any) {
+        if (!isFileSystemAccessApiError(e, ["NotFoundError"])) {
+          console.error("Error deleting node file:", e);
+        }
       }
     }
 
-    for await (const entry of dirHandle.values()) {
-      if (entry.kind === "file" && entry.name.endsWith(".md")) {
-        const fileHandle = entry as FileSystemFileHandle;
-        try {
-          const file = await fileHandle.getFile();
-          const text = await file.text();
-          if (
-            text.includes(`id: "${nodeId}"`) ||
-            text.includes(`id: ${nodeId}`)
-          ) {
-            await dirHandle.removeEntry(entry.name);
-            break;
-          }
-        } catch (e: any) {
-          if (
-            !isFileSystemAccessApiError(e, [
-              "NotFoundError",
-              "NotReadableError",
-            ])
-          ) {
-            console.error("Error deleting node:", e);
-          }
-        }
-      }
+    // Fallback: try legacy UUID-based filename
+    try {
+      await dirHandle.removeEntry(`${nodeId}.md`);
+    } catch {
+      // File doesn't exist, which is fine
     }
   } catch (e) {
     console.error("Error deleting node:", e);

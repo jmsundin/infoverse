@@ -45,6 +45,13 @@ export const getFirstNonEmptyLine = (text?: string | null) => {
 
 export const getNodeTitleForBreadcrumb = (node: GraphNode) => {
   if (!node) return "Untitled";
+
+  // Use explicit title if available
+  if (node.title) {
+    return node.title;
+  }
+
+  // Fallback logic for backward compatibility
   if (node.type === NodeType.CHAT) {
     return (node.content || "").trim() || "Chat";
   }

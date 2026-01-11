@@ -1,3 +1,6 @@
+import { PhysicsConfig } from '../types';
+import { DEFAULT_PHYSICS_CONFIG } from '../constants';
+
 // localStorage keys for UI settings
 const KEYS = {
   THEME: 'infoverse_theme',
@@ -6,6 +9,7 @@ const KEYS = {
   AI_PROVIDER: 'ai_provider',
   SKIP_DELETE_CONFIRM: 'infoverse_skip_delete_confirm',
   MIGRATED_V2: 'infoverse_migrated_v2',
+  PHYSICS_CONFIG: 'infoverse_physics_config',
 } as const;
 
 export type Theme = 'dark' | 'light' | 'system';
@@ -130,4 +134,32 @@ export const saveSettings = (settings: Partial<UserSettings>): void => {
   if (settings.lastDirName !== undefined) setLastDirName(settings.lastDirName);
   if (settings.aiProvider !== undefined) setAIProvider(settings.aiProvider);
   if (settings.skipDeleteConfirm !== undefined) setSkipDeleteConfirm(settings.skipDeleteConfirm);
+};
+
+// Physics Config
+export const getPhysicsConfig = (): PhysicsConfig => {
+  if (!isBrowser) return DEFAULT_PHYSICS_CONFIG;
+  const stored = localStorage.getItem(KEYS.PHYSICS_CONFIG);
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored);
+      // Merge with defaults to ensure all fields exist
+      return { ...DEFAULT_PHYSICS_CONFIG, ...parsed };
+    } catch {
+      return DEFAULT_PHYSICS_CONFIG;
+    }
+  }
+  return DEFAULT_PHYSICS_CONFIG;
+};
+
+export const setPhysicsConfig = (config: Partial<PhysicsConfig>): void => {
+  if (!isBrowser) return;
+  const current = getPhysicsConfig();
+  const updated = { ...current, ...config };
+  localStorage.setItem(KEYS.PHYSICS_CONFIG, JSON.stringify(updated));
+};
+
+export const resetPhysicsConfig = (): void => {
+  if (!isBrowser) return;
+  localStorage.removeItem(KEYS.PHYSICS_CONFIG);
 };

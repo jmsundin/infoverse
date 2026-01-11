@@ -31,13 +31,16 @@ import {
   NODE_HEADER_HEIGHT,
 } from "../constants";
 import {
-  applyForceLayout,
   applyTreeLayout,
   applyHybridLayout,
   applySubgraphIsolationLayout,
   resolveCollisions as resolveCollisionsService,
-  getSubgraphIds,
 } from "../services/layoutService";
+import {
+  calculateDynamicLOD,
+  DEFAULT_LOD_CONFIG,
+} from "../utils/lodThresholds";
+import { SimulationTrigger } from "../types";
 
 interface CanvasProps {
   nodes: GraphNode[];
@@ -47,9 +50,6 @@ interface CanvasProps {
   setEdges: React.Dispatch<React.SetStateAction<GraphEdge[]>>;
   viewTransform: ViewportTransform;
   onViewTransformChange: (transform: ViewportTransform) => void;
-  onOpenStorage?: () => void;
-  storageConnected?: boolean;
-  storageDirName?: string | null;
   isSaving?: boolean;
   onOpenLink: (url: string) => void;
   onNavigateToNode: (title: string) => void;
@@ -70,7 +70,7 @@ interface CanvasProps {
   autoGraphEnabled?: boolean;
   onSetAutoGraphEnabled?: (enabled: boolean) => void;
   selectedNodeIds: Set<string>;
-  onNodeSelect: (id: string | null, multi?: boolean | 'remove') => void;
+  onNodeSelect: (id: string | null, multi?: boolean | "remove") => void;
   onMultiSelect?: (ids: string[], multi?: boolean) => void;
   canvasShiftX: number;
   canvasShiftY: number;
@@ -78,16 +78,24 @@ interface CanvasProps {
   isResizing?: boolean;
   cutNodeId: string | null;
   setCutNodeId: React.Dispatch<React.SetStateAction<string | null>>;
-  aiProvider?: 'gemini' | 'huggingface';
+  aiProvider?: "gemini" | "huggingface";
+  // Physics simulation props (passed from App.tsx)
+  isSimulating?: boolean;
+  startSimulation?: (trigger: SimulationTrigger, subtreeRootId?: string) => void;
+  stopSimulation?: () => void;
+  physicsStartDrag?: (nodeId: string) => void;
+  physicsUpdateDrag?: (nodeId: string, x: number, y: number) => void;
+  physicsEndDrag?: () => void;
+  pinNode?: (nodeId: string) => void;
+  unpinNode?: (nodeId: string) => void;
+  togglePinNode?: (nodeId: string) => void;
+  // Outline panel props
+  onToggleOutlinePanel?: () => void;
+  isOutlinePanelOpen?: boolean;
 }
 
-// Semantic Zoom Thresholds
-// < 0.25: Cluster/Dot Mode (Infinite Canvas Optimization)
-// 0.25 - 0.5: Title Mode (Headers)
-// > 0.5: Detail Mode (Full Content)
-const LOD_THRESHOLD_CLUSTER = 0.4;
-const LOD_THRESHOLD_TITLE = 0.6;
-const LOD_THRESHOLD_SEMANTIC_SHIFT = 0.05; // Trigger scope up very far out
+// Semantic zoom shift threshold - triggers scope navigation when zoomed very far out
+const LOD_THRESHOLD_SEMANTIC_SHIFT = 0.05;
 
 const CHILD_SURROUND_GAP_PX = 20;
 const CHILD_SURROUND_MIN_RING_SPACING_PX = 100;
@@ -344,9 +352,6 @@ export const Canvas: React.FC<CanvasProps> = ({
   setEdges,
   viewTransform,
   onViewTransformChange,
-  onOpenStorage,
-  storageConnected = false,
-  storageDirName,
   isSaving = false,
   onOpenLink,
   onNavigateToNode,
@@ -376,6 +381,19 @@ export const Canvas: React.FC<CanvasProps> = ({
   cutNodeId,
   setCutNodeId,
   aiProvider,
+  // Physics simulation props
+  isSimulating,
+  startSimulation,
+  stopSimulation,
+  physicsStartDrag,
+  physicsUpdateDrag,
+  physicsEndDrag,
+  pinNode,
+  unpinNode,
+  togglePinNode,
+  // Outline panel props
+  onToggleOutlinePanel,
+  isOutlinePanelOpen,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -412,6 +430,9 @@ export const Canvas: React.FC<CanvasProps> = ({
     currentY: number;
   } | null>(null);
 
+  // Track previous LOD for hysteresis (prevents flickering at thresholds)
+  const [previousLOD, setPreviousLOD] = useState<LODLevel>("DETAIL");
+
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -440,6 +461,7 @@ export const Canvas: React.FC<CanvasProps> = ({
   const draggingIdRef = useRef(draggingId);
   const resizingIdRef = useRef(resizingId);
   const connectingNodeIdRef = useRef(connectingNodeId);
+
   const zoomBehaviorRef = useRef<d3.ZoomBehavior<
     HTMLDivElement,
     unknown
@@ -508,18 +530,80 @@ export const Canvas: React.FC<CanvasProps> = ({
     return pIds;
   }, [edges]);
 
+  // Build map of parent -> children for cluster visualization
+  const childrenByParent = useMemo(() => {
+    const map = new Map<string, GraphNode[]>();
+    nodes.forEach((node) => {
+      if (node.parentId) {
+        const children = map.get(node.parentId) || [];
+        children.push(node);
+        map.set(node.parentId, children);
+      }
+    });
+    return map;
+  }, [nodes]);
+
+  // Memoize viewport bounds separately for better cache hit rate
+  const viewportBounds = useMemo(() => {
+    const k = viewTransform.k || 0.1;
+    return {
+      vpX: -viewTransform.x / k,
+      vpY: -viewTransform.y / k,
+      vpW: containerSize.width / k,
+      vpH: containerSize.height / k,
+      k,
+    };
+  }, [
+    viewTransform.x,
+    viewTransform.y,
+    viewTransform.k,
+    containerSize.width,
+    containerSize.height,
+  ]);
+
+  // Safe transform values to prevent NaN from breaking SVG rendering
+  const safeTransform = useMemo(() => ({
+    x: Number.isFinite(viewTransform.x) ? viewTransform.x : 0,
+    y: Number.isFinite(viewTransform.y) ? viewTransform.y : 0,
+    k: Number.isFinite(viewTransform.k) && viewTransform.k > 0 ? viewTransform.k : 1,
+  }), [viewTransform.x, viewTransform.y, viewTransform.k]);
+
   const { visibleNodes, bufferedNodes, visibleEdges, lodLevel, nodeMap } =
     useMemo(() => {
-      const k = viewTransform.k || 0.1;
-      const vpX = -viewTransform.x / k;
-      const vpY = -viewTransform.y / k;
-      const vpW = containerSize.width / k;
-      const vpH = containerSize.height / k;
+      const { vpX, vpY, vpW, vpH, k } = viewportBounds;
 
-      // Determine LOD Level based on zoom
-      let currentLod: LODLevel = "DETAIL";
-      if (k < LOD_THRESHOLD_CLUSTER) currentLod = "CLUSTER";
-      else if (k < LOD_THRESHOLD_TITLE) currentLod = "TITLE";
+      // First pass: count visible nodes for density calculation
+      // We'll do a quick viewport check before dynamic LOD calculation
+      let roughVisibleCount = 0;
+      quadtree.visit((node, x1, y1, x2, y2) => {
+        if (!node.length) {
+          do {
+            const d = node.data;
+            if (
+              d.x < vpX + vpW + 500 &&
+              d.x + (d.width || 300) > vpX - 500 &&
+              d.y < vpY + vpH + 500 &&
+              d.y + (d.height || 200) > vpY - 500
+            ) {
+              roughVisibleCount++;
+            }
+          } while ((node = node.next));
+        }
+        return (
+          x1 > vpX + vpW + 500 ||
+          y1 > vpY + vpH + 500 ||
+          x2 < vpX - 500 ||
+          y2 < vpY - 500
+        );
+      });
+
+      // Determine LOD Level dynamically based on zoom AND node density
+      const { lodLevel: currentLod } = calculateDynamicLOD(
+        k,
+        roughVisibleCount,
+        previousLOD,
+        DEFAULT_LOD_CONFIG
+      );
 
       // Viewport Calculations
       // Buffer determines how much off-screen content we render to allow smooth panning
@@ -586,13 +670,26 @@ export const Canvas: React.FC<CanvasProps> = ({
         );
       });
 
-      // In CLUSTER mode, do not render edges/connections
+      // Edge visibility calculation
       let visEdges: GraphEdge[] = [];
       const nodeMap = new Map(nodes.map((n) => [n.id, n]));
 
-      // Always render edges regardless of LOD
       // Use a more generous buffer for edge culling to prevent flickering
       const EDGE_CULL_BUFFER = 500; // Extra buffer beyond renderRect
+
+      // Helper to determine if two nodes are in the same cluster (share same parent)
+      const isIntraClusterEdge = (
+        source: GraphNode,
+        target: GraphNode
+      ): boolean => {
+        // If both nodes have the same parent, they're in the same cluster
+        if (source.parentId && source.parentId === target.parentId) return true;
+        // If one node is the parent of the other, it's intra-cluster
+        if (source.id === target.parentId || target.id === source.parentId)
+          return true;
+        return false;
+      };
+
       visEdges = edges.filter((e) => {
         const source = nodeMap.get(e.source);
         const target = nodeMap.get(e.target);
@@ -610,6 +707,11 @@ export const Canvas: React.FC<CanvasProps> = ({
           isNaN(target.x) ||
           isNaN(target.y)
         ) {
+          return false;
+        }
+
+        // In CLUSTER mode, hide intra-cluster edges (edges within the same parent)
+        if (currentLod === "CLUSTER" && isIntraClusterEdge(source, target)) {
           return false;
         }
 
@@ -641,7 +743,12 @@ export const Canvas: React.FC<CanvasProps> = ({
         lodLevel: currentLod,
         nodeMap,
       };
-    }, [nodes, edges, viewTransform, containerSize, quadtree]);
+    }, [nodes, edges, viewTransform, containerSize, quadtree, previousLOD]);
+
+  // Update previous LOD for hysteresis calculation
+  useEffect(() => {
+    setPreviousLOD(lodLevel);
+  }, [lodLevel]);
 
   // Fractal Zoom & Interaction
   useEffect(() => {
@@ -737,6 +844,97 @@ export const Canvas: React.FC<CanvasProps> = ({
       );
     }
   }, [viewTransform]);
+
+  // Capture-phase handler for wheel events (zoom and pan)
+  useEffect(() => {
+    if (!containerRef.current || !zoomBehaviorRef.current) return;
+
+    const container = containerRef.current;
+    const zoom = zoomBehaviorRef.current;
+    const selection = d3.select(container);
+
+    const handleWheelCapture = (event: WheelEvent) => {
+      const target = event.target as HTMLElement;
+      const nodeElement = target.closest(".graph-node") as HTMLElement | null;
+
+      // Check if hovering over a selected node
+      const isOverSelectedNode =
+        nodeElement && selectedNodeIds.has(nodeElement.dataset.nodeId || "");
+
+      if (event.ctrlKey) {
+        // ZOOM: Ctrl+wheel always zooms canvas, even over selected nodes
+        event.preventDefault();
+        event.stopPropagation();
+
+        // Calculate zoom delta (normalize across different browsers/input devices)
+        const delta =
+          -event.deltaY *
+          (event.deltaMode === 1 ? 0.05 : event.deltaMode ? 1 : 0.002);
+
+        const currentTransform = d3.zoomTransform(container);
+        const rect = container.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+
+        const scaleFactor = Math.pow(2, delta);
+        let newK = currentTransform.k * scaleFactor;
+
+        const [minK, maxK] = zoom.scaleExtent();
+        newK = Math.max(minK, Math.min(maxK, newK));
+
+        // Semantic Zoom Shift: Navigate up if zoomed out past threshold
+        // if (
+        //   newK < LOD_THRESHOLD_SEMANTIC_SHIFT &&
+        //   onNavigateUp &&
+        //   currentScopeId
+        // ) {
+        //   onNavigateUp(currentScopeId);
+        //   selection.call(
+        //     zoom.transform,
+        //     d3.zoomIdentity.translate(0, 0).scale(1)
+        //   );
+        //   return;
+        // }
+
+        const newX = x - (x - currentTransform.x) * (newK / currentTransform.k);
+        const newY = y - (y - currentTransform.y) * (newK / currentTransform.k);
+
+        const newTransform = d3.zoomIdentity.translate(newX, newY).scale(newK);
+        selection.call(zoom.transform, newTransform);
+      } else {
+        // PAN: Regular scroll (no Ctrl)
+        if (isOverSelectedNode) {
+          // Over selected node: stop propagation to prevent wheel.pan handler,
+          // but DON'T preventDefault so browser scrolls the node content
+          event.stopPropagation();
+          return;
+        }
+
+        // Over unselected node or canvas: pan the canvas
+        event.preventDefault();
+        event.stopPropagation();
+
+        const currentTransform = d3.zoomTransform(container);
+        zoom.translateBy(
+          selection,
+          -event.deltaX / currentTransform.k,
+          -event.deltaY / currentTransform.k
+        );
+      }
+    };
+
+    // Use capture phase to intercept before child elements handle the event
+    container.addEventListener("wheel", handleWheelCapture, {
+      capture: true,
+      passive: false,
+    });
+
+    return () => {
+      container.removeEventListener("wheel", handleWheelCapture, {
+        capture: true,
+      });
+    };
+  }, [currentScopeId, selectedNodeIds]);
 
   const resolveCollisions = useCallback(
     (fixedNodeId?: string, activeNodeIds?: Set<string>) => {
@@ -922,9 +1120,6 @@ export const Canvas: React.FC<CanvasProps> = ({
         setSelectionBox(null);
       }
 
-      const wasInteracting = draggingId || resizingId;
-      const interactingId = draggingId || resizingId;
-
       // Check for Click on Selected Node (Deselect others)
       if (draggingId && dragStartRef.current) {
         let clientX =
@@ -945,15 +1140,18 @@ export const Canvas: React.FC<CanvasProps> = ({
         }
       }
 
+      // End physics drag mode (simulation continues until stabilized)
+      if (draggingId) {
+        physicsEndDrag();
+      }
+
       setDraggingId(null);
       setResizingId(null);
       setResizeDirection(null);
       dragStartRef.current = null;
-      // Final settle
-      if (wasInteracting && interactingId) {
-        const activeIds = getSubgraphIds(interactingId, edges);
-        resolveCollisions(interactingId, activeIds);
-      }
+
+      // Physics engine now handles collision resolution during simulation
+      // No need for manual resolveCollisions call
     };
 
     const handleMove = (e: MouseEvent | TouchEvent) => {
@@ -994,116 +1192,37 @@ export const Canvas: React.FC<CanvasProps> = ({
       dragStartRef.current.lastY = clientY;
 
       if (draggingId) {
-        const currentDragState = dragStartRef.current; // Capture current value
+        const currentDragState = dragStartRef.current;
         if (!currentDragState) {
           console.error("dragStartRef.current is null during dragging.");
-          return; // Exit early if null
+          return;
         }
 
-        setNodes((prev) => {
-          const nodeMap = new Map(prev.map((n) => [n.id, n]));
-          const deltas = new Map<string, { dx: number; dy: number }>();
-          const processed = new Set<string>();
-          const roots = new Set(currentDragState.initialPositions.keys());
+        // Calculate new position for dragged node
+        const init = currentDragState.initialPositions.get(draggingId);
+        if (init) {
+          const newX = init.x + dx;
+          const newY = init.y + dy;
 
-          // Initialize Physics State if needed
-          if (!currentDragState.velocities) {
-            currentDragState.velocities = new Map();
-            currentDragState.childrenMasses = new Map();
-          }
-          const velocities = currentDragState.velocities;
-          const masses = currentDragState.childrenMasses;
+          // Update the dragged node position directly
+          setNodes((prev) =>
+            prev.map((node) =>
+              node.id === draggingId
+                ? { ...node, x: newX, y: newY }
+                : node
+            )
+          );
 
-          if (!velocities || !masses) {
-            console.error("Physics state not initialized correctly.");
-            return prev;
-          }
-
-          // 1. Calculate deltas for dragged nodes (roots of movement)
-          roots.forEach((id) => {
-            const init = currentDragState.initialPositions.get(id);
-            const current = nodeMap.get(id);
-            if (init && current) {
-              const targetX = init.x + dx;
-              const targetY = init.y + dy;
-              // Parent moves directly (infinite mass/force)
-              deltas.set(id, {
-                dx: targetX - current.x,
-                dy: targetY - current.y,
-              });
-              processed.add(id);
-            }
-          });
-
-          const queue = Array.from(roots);
-
-          while (queue.length > 0) {
-            const parentId = queue.shift();
-            if (!parentId || processed.has(parentId)) continue;
-
-            processed.add(parentId);
-            // Add force to children, proportional to mass
-            edges.forEach((edge) => {
-              if (edge.source === parentId) {
-                const childId = edge.target;
-                const childNode = nodeMap.get(childId);
-                if (
-                  childNode &&
-                  !processed.has(childId) &&
-                  !roots.has(childId) // Don't move if it's a root of another drag
-                ) {
-                  const parentDelta = deltas.get(parentId);
-                  if (parentDelta) {
-                    // Apply force/velocity rather than direct position change
-                    const currentVelocity = velocities.get(childId) || {
-                      vx: 0,
-                      vy: 0,
-                    };
-                    velocities.set(childId, {
-                      vx: currentVelocity.vx + parentDelta.dx * 0.1,
-                      vy: currentVelocity.vy + parentDelta.dy * 0.1,
-                    });
-                    // Propagate to children
-                    queue.push(childId);
-                  }
-                }
-              }
-            });
-          }
-
-          const newNodes = prev.map((node) => {
-            // Apply velocities
-            const velocity = velocities.get(node.id);
-            if (velocity) {
-              nodeMap.set(node.id, {
-                ...node,
-                x: node.x + velocity.vx,
-                y: node.y + velocity.vy,
-              });
-              // Dampen velocity
-              velocities.set(node.id, {
-                vx: velocity.vx * 0.9,
-                vy: velocity.vy * 0.9,
-              });
-            }
-            const delta = deltas.get(node.id);
-            if (delta) {
-              return {
-                ...node,
-                x: node.x + delta.dx,
-                y: node.y + delta.dy,
-              };
-            }
-            return node;
-          });
-
-          return newNodes;
-        });
+          // Update physics engine with new drag position
+          // The physics engine handles subtree following and collisions
+          physicsUpdateDrag(draggingId, newX, newY);
+        }
       } else if (resizingId && nodeWidth && nodeHeight) {
         setNodes((prev) =>
           prev.map((node) => {
             if (node.id === resizingId) {
-              const initPos = dragStartRef.current?.initialPositions.get(resizingId);
+              const initPos =
+                dragStartRef.current?.initialPositions.get(resizingId);
               if (!initPos) return node;
 
               let newWidth = nodeWidth;
@@ -1228,6 +1347,9 @@ export const Canvas: React.FC<CanvasProps> = ({
 
       setDraggingId(id);
 
+      // Start physics simulation for drag
+      physicsStartDrag(id);
+
       const initialPositions = new Map();
       nodes.forEach((n) => {
         if (effectiveSelectedIds.has(n.id)) {
@@ -1243,7 +1365,7 @@ export const Canvas: React.FC<CanvasProps> = ({
         initialPositions,
       };
     },
-    [nodes, connectingNodeId, onConnectEnd, onNodeSelect, selectedNodeIds]
+    [nodes, connectingNodeId, onConnectEnd, onNodeSelect, selectedNodeIds, physicsStartDrag]
   );
 
   const handleBackgroundMouseDown = useCallback((e: React.MouseEvent) => {
@@ -1285,12 +1407,7 @@ export const Canvas: React.FC<CanvasProps> = ({
         onSelectionTooltipChange?.(null);
       }
     },
-    [
-      connectingNodeId,
-      onCancelConnect,
-      contextMenu,
-      onSelectionTooltipChange,
-    ]
+    [connectingNodeId, onCancelConnect, contextMenu, onSelectionTooltipChange]
   );
 
   const openContextMenuAtClientPoint = useCallback(
@@ -1509,9 +1626,35 @@ export const Canvas: React.FC<CanvasProps> = ({
     onViewTransformChange({ x: newX, y: newY, k });
   }, [nodes, selectedNodeId, onViewTransformChange]);
 
+  // Handler for arranging children of a node using physics simulation
+  const handleArrangeChildren = useCallback((nodeId: string) => {
+    if (!startSimulation) return;
+
+    // Find the node to center on
+    const node = nodes.find((n) => n.id === nodeId);
+    if (node) {
+      // Center viewport on the node
+      const nodeCenterX = node.x + (node.width || DEFAULT_NODE_WIDTH) / 2;
+      const nodeCenterY = node.y + (node.height || DEFAULT_NODE_HEIGHT) / 2;
+      const k = viewTransform.k;
+      const newX = window.innerWidth / 2 - nodeCenterX * k;
+      const newY = window.innerHeight / 2 - nodeCenterY * k;
+      onViewTransformChange({ x: newX, y: newY, k });
+    }
+
+    // Start the physics simulation for this node's children
+    startSimulation('manual-subtree', nodeId);
+  }, [nodes, startSimulation, viewTransform.k, onViewTransformChange]);
+
   const applyLayout = (type: LayoutType) => {
     if (nodes.length === 0) return;
     setActiveLayout(type);
+
+    // For force layout, just trigger physics simulation without repositioning
+    if (type === "force") {
+      startSimulation("manual-relayout");
+      return;
+    }
 
     setNodes((currentNodes) => {
       // Create effective nodes for layout calculation
@@ -1525,9 +1668,6 @@ export const Canvas: React.FC<CanvasProps> = ({
       let laidOutNodes: GraphNode[] = currentNodes;
 
       switch (type) {
-        case "force":
-          laidOutNodes = applyForceLayout(effectiveNodes, edges);
-          break;
         case "tree-tb":
           laidOutNodes = applyTreeLayout(effectiveNodes, edges, "TB");
           break;
@@ -1558,6 +1698,11 @@ export const Canvas: React.FC<CanvasProps> = ({
         return pos ? { ...n, x: pos.x, y: pos.y } : n;
       });
     });
+
+    // After initial positioning, run physics simulation to let nodes settle
+    setTimeout(() => {
+      startSimulation("manual-relayout");
+    }, 50);
   };
 
   const addNewNode = (type: NodeType, pos?: { x: number; y: number }) => {
@@ -1719,32 +1864,41 @@ export const Canvas: React.FC<CanvasProps> = ({
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
             </svg>
           </button>
-          {onOpenStorage && (
-            <button
-              onClick={onOpenStorage}
-              className={`p-2 rounded-lg transition-all ${
-                storageConnected
-                  ? "text-green-400"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="24"
-                height="24"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-              </svg>
-            </button>
-          )}
-        </div>
+                  </div>
         <div className="flex flex-row md:flex-col gap-4 md:gap-4 border-l md:border-l-0 md:border-t border-slate-800 pl-4 md:pl-0 md:pt-4 items-center">
+          {/* Outline panel toggle button */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleOutlinePanel?.();
+            }}
+            className={`p-2 rounded-lg transition-all md:mb-2 mr-2 md:mr-0 ${
+              isOutlinePanelOpen
+                ? "text-sky-400 bg-slate-800 ring-1 ring-sky-500/40"
+                : "text-slate-500 hover:text-sky-400 hover:bg-slate-800"
+            }`}
+            title="Toggle Outline View"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              {/* Outline/list tree icon */}
+              <circle cx="5" cy="6" r="1.5" />
+              <line x1="10" y1="6" x2="20" y2="6" />
+              <circle cx="8" cy="12" r="1.5" />
+              <line x1="13" y1="12" x2="20" y2="12" />
+              <circle cx="8" cy="18" r="1.5" />
+              <line x1="13" y1="18" x2="20" y2="18" />
+            </svg>
+          </button>
           <button
             onClick={handleFocusCanvas}
             className="p-2 text-slate-500 hover:text-sky-400 hover:bg-slate-800 rounded-lg md:mb-2 mr-2 md:mr-0"
@@ -1872,261 +2026,267 @@ export const Canvas: React.FC<CanvasProps> = ({
           onTouchStart={handleBackgroundTouchStart}
           onTouchMove={handleBackgroundTouchMove}
           onTouchEnd={handleTouchEnd}
-        />
-
-        {/* Content Container with Margins (for side panel avoidance) */}
-        <div
-          className="absolute inset-0 overflow-visible pointer-events-none"
-          style={{
-            ...canvasStyle,
-            transition: isResizing ? "none" : "margin 0.3s ease-out",
-          }}
         >
-          {/* Mobile Hamburger - Fixed Top Left (stays in layout) */}
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleMenu && onToggleMenu();
+          {/* Content Container with Margins (for side panel avoidance) */}
+          <div
+            className="absolute inset-0 overflow-visible pointer-events-none"
+            style={{
+              ...canvasStyle,
+              transition: isResizing ? "none" : "margin 0.3s ease-out",
             }}
-            className="md:hidden absolute top-4 left-4 z-50 w-10 h-10 rounded-full bg-slate-900/80 backdrop-blur border border-slate-700 text-white flex items-center justify-center shadow-lg pointer-events-auto"
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              className="w-5 h-5"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="white"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <line x1="4" y1="12" x2="20" y2="12" />
-              <line x1="4" y1="6" x2="20" y2="6" />
-              <line x1="4" y1="18" x2="20" y2="18" />
-            </svg>
-          </button>
-
-          {/* Selection Box */}
-          {selectionBox && (
-            <div
-              className="absolute border border-sky-400 bg-sky-400/20 pointer-events-none z-[9999]"
-              style={{
-                left: Math.min(selectionBox.startX, selectionBox.currentX),
-                top: Math.min(selectionBox.startY, selectionBox.currentY),
-                width: Math.abs(selectionBox.startX - selectionBox.currentX),
-                height: Math.abs(selectionBox.startY - selectionBox.currentY),
+            {/* Mobile Hamburger - Fixed Top Left (stays in layout) */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleMenu && onToggleMenu();
               }}
-            />
-          )}
-
-          {connectingNodeId && (
-            <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-sky-900/80 text-sky-200 px-4 py-2 rounded-full text-sm font-bold z-50 pointer-events-none animate-in fade-in slide-in-from-top-4">
-              Click another node to connect
-            </div>
-          )}
-
-          <svg
-            ref={svgRef}
-            className="absolute top-0 left-0 w-full h-full pointer-events-none overflow-visible"
-          >
-            <defs>
-              <marker
-                id="arrowhead"
-                markerWidth="10"
-                markerHeight="7"
-                refX="10"
-                refY="3.5"
-                orient="auto"
-              >
-                <polygon points="0 0, 10 3.5, 0 7" fill={COLORS.edgeStroke} />
-              </marker>
-              <marker
-                id="arrowhead-active"
-                markerWidth="10"
-                markerHeight="7"
-                refX="10"
-                refY="3.5"
-                orient="auto"
-              >
-                <polygon
-                  points="0 0, 10 3.5, 0 7"
-                  fill={COLORS.activeEdgeStroke}
-                />
-              </marker>
-            </defs>
-            <g
-              transform={`translate(${viewTransform.x},${viewTransform.y}) scale(${viewTransform.k})`}
+              className="md:hidden absolute top-4 left-4 z-50 w-10 h-10 rounded-full bg-slate-900/80 backdrop-blur border border-slate-700 text-white flex items-center justify-center shadow-lg pointer-events-auto"
             >
-              {visibleEdges.map((edge) => (
-                <Edge
-                  key={edge.id}
-                  edge={edge}
-                  sourceNode={nodeMap.get(edge.source)!}
-                  targetNode={nodeMap.get(edge.target)!}
-                  lodLevel={lodLevel}
-                  sourceIsParent={parentIds.has(edge.source)}
-                  targetIsParent={parentIds.has(edge.target)}
-                  sourceIsSelected={selectedNodeIds.has(edge.source)}
-                  targetIsSelected={selectedNodeIds.has(edge.target)}
-                  isDragging={draggingId !== null}
-                  edgeStyle={activeLayout === 'tree-lr' ? 'sankey-lr' : 'default'}
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="w-5 h-5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="white"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <line x1="4" y1="12" x2="20" y2="12" />
+                <line x1="4" y1="6" x2="20" y2="6" />
+                <line x1="4" y1="18" x2="20" y2="18" />
+              </svg>
+            </button>
+
+            {/* Selection Box */}
+            {selectionBox && (
+              <div
+                className="absolute border border-sky-400 bg-sky-400/20 pointer-events-none z-[9999]"
+                style={{
+                  left: Math.min(selectionBox.startX, selectionBox.currentX),
+                  top: Math.min(selectionBox.startY, selectionBox.currentY),
+                  width: Math.abs(selectionBox.startX - selectionBox.currentX),
+                  height: Math.abs(selectionBox.startY - selectionBox.currentY),
+                }}
+              />
+            )}
+
+            {connectingNodeId && (
+              <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-sky-900/80 text-sky-200 px-4 py-2 rounded-full text-sm font-bold z-50 pointer-events-none animate-in fade-in slide-in-from-top-4">
+                Click another node to connect
+              </div>
+            )}
+
+            <svg
+              ref={svgRef}
+              className="absolute top-0 left-0 w-full h-full pointer-events-none overflow-visible"
+            >
+              <defs>
+                <marker
+                  id="arrowhead"
+                  markerWidth="10"
+                  markerHeight="7"
+                  refX="10"
+                  refY="3.5"
+                  orient="auto"
+                >
+                  <polygon points="0 0, 10 3.5, 0 7" fill={COLORS.edgeStroke} />
+                </marker>
+                <marker
+                  id="arrowhead-active"
+                  markerWidth="10"
+                  markerHeight="7"
+                  refX="10"
+                  refY="3.5"
+                  orient="auto"
+                >
+                  <polygon
+                    points="0 0, 10 3.5, 0 7"
+                    fill={COLORS.activeEdgeStroke}
+                  />
+                </marker>
+              </defs>
+              <g
+                transform={`translate(${safeTransform.x},${safeTransform.y}) scale(${safeTransform.k})`}
+              >
+                {visibleEdges.map((edge) => (
+                  <Edge
+                    key={edge.id}
+                    edge={edge}
+                    sourceNode={nodeMap.get(edge.source)!}
+                    targetNode={nodeMap.get(edge.target)!}
+                    lodLevel={lodLevel}
+                    sourceIsParent={parentIds.has(edge.source)}
+                    targetIsParent={parentIds.has(edge.target)}
+                    sourceIsSelected={selectedNodeIds.has(edge.source)}
+                    targetIsSelected={selectedNodeIds.has(edge.target)}
+                    isDragging={draggingId !== null}
+                    edgeStyle={
+                      activeLayout === "tree-lr" ? "sankey-lr" : "default"
+                    }
+                  />
+                ))}
+                {expandingNodeIds.map((id) => {
+                  const node = nodes.find((n) => n.id === id);
+                  if (!node) return null;
+                  return (
+                    <SkeletonGraph
+                      key={`skeleton-${id}`}
+                      x={node.x + (node.width || 300) + 50}
+                      y={node.y}
+                    />
+                  );
+                })}
+                {connectingLine}
+              </g>
+            </svg>
+
+            <div
+              className="absolute top-0 left-0 overflow-visible origin-top-left pointer-events-none"
+              style={{
+                width: "0px",
+                height: "0px",
+                transform: `translate(${safeTransform.x}px, ${safeTransform.y}px) scale(${safeTransform.k})`,
+              }}
+            >
+              {bufferedNodes.map((node) => (
+                <NodeSkeleton
+                  key={`skeleton-${node.id}`}
+                  x={node.x}
+                  y={node.y}
+                  width={node.width || DEFAULT_NODE_WIDTH}
+                  height={node.height || DEFAULT_NODE_HEIGHT}
+                  color={node.color}
                 />
               ))}
-              {expandingNodeIds.map((id) => {
-                const node = nodes.find((n) => n.id === id);
-                if (!node) return null;
-                return (
-                  <SkeletonGraph
-                    key={`skeleton-${id}`}
-                    x={node.x + (node.width || 300) + 50}
-                    y={node.y}
+
+              {visibleNodes.map((node) => (
+                <div key={node.id} className="pointer-events-auto">
+                  <GraphNodeComponent
+                    key={node.id}
+                    node={node}
+                    allNodes={allNodes}
+                    childNodes={childrenByParent.get(node.id)}
+                    isSelected={
+                      activeNodeId === node.id || connectingNodeId === node.id
+                    }
+                    isExpanded={
+                      selectedNodeIds.has(node.id) ||
+                      connectingNodeId === node.id
+                    }
+                    isDragging={draggingId === node.id}
+                    viewMode="canvas"
+                    lodLevel={lodLevel}
+                    isClusterParent={parentIds.has(node.id)}
+                    onMouseDown={handleNodeMouseDown}
+                    onUpdate={onUpdateNode}
+                    onExpand={onExpandNode}
+                    onExpandFromWikidata={onExpandNodeFromWikidata}
+                    onDelete={onDeleteNode}
+                    onResizeStart={handleResizeStart}
+                    onToggleMaximize={onMaximizeNode}
+                    onMinimize={(id) => {
+                      onNodeSelect(id, "remove");
+                      if (activeNodeId === id) setActiveNodeId(null);
+                    }}
+                    onOpenLink={onOpenLink}
+                    onNavigateToNode={onNavigateToNode}
+                    onConnectStart={onConnectStart}
+                    onViewSubgraph={(id) => {
+                      if (onNavigateDown) onNavigateDown(id);
+                    }}
+                    autoGraphEnabled={autoGraphEnabled}
+                    onSetAutoGraphEnabled={onSetAutoGraphEnabled}
+                    scale={viewTransform.k}
+                    cutNodeId={cutNodeId}
+                    aiProvider={aiProvider}
+                    onTogglePin={togglePinNode}
+                    onArrangeChildren={startSimulation ? handleArrangeChildren : undefined}
                   />
-                );
-              })}
-              {connectingLine}
-            </g>
-          </svg>
+                </div>
+              ))}
+            </div>
 
-          <div
-            className="absolute top-0 left-0 overflow-visible origin-top-left pointer-events-none"
-            style={{
-              width: "0px",
-              height: "0px",
-              transform: `translate(${viewTransform.x}px, ${viewTransform.y}px) scale(${viewTransform.k})`,
-            }}
-          >
-            {bufferedNodes.map((node) => (
-              <NodeSkeleton
-                key={`skeleton-${node.id}`}
-                x={node.x}
-                y={node.y}
-                width={node.width || DEFAULT_NODE_WIDTH}
-                height={node.height || DEFAULT_NODE_HEIGHT}
-                color={node.color}
-              />
-            ))}
+            <div className="absolute bottom-20 md:bottom-6 left-6 pointer-events-none opacity-50 text-xs text-slate-500 font-mono">
+              ZOOM: {Math.round(viewTransform.k * 100)}% | NODES:{" "}
+              {visibleNodes.length}/{nodes.length} | EDGES:{" "}
+              {visibleEdges.length}/{edges.length}
+            </div>
 
-            {visibleNodes.map((node) => (
-              <div key={node.id} className="pointer-events-auto">
-                <GraphNodeComponent
-                  key={node.id}
-                  node={node}
-                  allNodes={allNodes}
-                  isSelected={
-                    activeNodeId === node.id || connectingNodeId === node.id
-                  }
-                  isExpanded={
-                    selectedNodeIds.has(node.id) || connectingNodeId === node.id
-                  }
-                  isDragging={draggingId === node.id}
-                  viewMode="canvas"
-                  lodLevel={lodLevel}
-                  isClusterParent={parentIds.has(node.id)}
-                  onMouseDown={handleNodeMouseDown}
-                  onUpdate={onUpdateNode}
-                  onExpand={onExpandNode}
-                  onExpandFromWikidata={onExpandNodeFromWikidata}
-                  onDelete={onDeleteNode}
-                  onResizeStart={handleResizeStart}
-                  onToggleMaximize={onMaximizeNode}
-                  onMinimize={(id) => {
-                    onNodeSelect(id, 'remove');
-                    if (activeNodeId === id) setActiveNodeId(null);
-                  }}
-                  onOpenLink={onOpenLink}
-                  onNavigateToNode={onNavigateToNode}
-                  onConnectStart={onConnectStart}
-                  onViewSubgraph={(id) => {
-                    if (onNavigateDown) onNavigateDown(id);
-                  }}
-                  autoGraphEnabled={autoGraphEnabled}
-                  onSetAutoGraphEnabled={onSetAutoGraphEnabled}
-                  scale={viewTransform.k}
-                  cutNodeId={cutNodeId}
-                  aiProvider={aiProvider}
-                />
+            {expandingNodeIds.length > 0 && (
+              <div className="absolute bottom-20 md:bottom-6 right-6 bg-slate-800/90 backdrop-blur text-sky-400 px-4 py-2 rounded-full border border-sky-500/30 shadow-lg animate-pulse flex items-center gap-2 z-[100]">
+                <div className="w-2 h-2 bg-sky-400 rounded-full animate-bounce" />
+                <span className="text-xs font-bold uppercase tracking-wide">
+                  Generating Graph ({expandingNodeIds.length})...
+                </span>
               </div>
-            ))}
-          </div>
+            )}
 
-          <div className="absolute bottom-20 md:bottom-6 left-6 pointer-events-none opacity-50 text-xs text-slate-500 font-mono">
-            ZOOM: {Math.round(viewTransform.k * 100)}% | NODES:{" "}
-            {visibleNodes.length}/{nodes.length} | EDGES: {visibleEdges.length}/
-            {edges.length}
-          </div>
-
-          {expandingNodeIds.length > 0 && (
-            <div className="absolute bottom-20 md:bottom-6 right-6 bg-slate-800/90 backdrop-blur text-sky-400 px-4 py-2 rounded-full border border-sky-500/30 shadow-lg animate-pulse flex items-center gap-2 z-[100]">
-              <div className="w-2 h-2 bg-sky-400 rounded-full animate-bounce" />
-              <span className="text-xs font-bold uppercase tracking-wide">
-                Generating Graph ({expandingNodeIds.length})...
-              </span>
-            </div>
-          )}
-
-          {contextMenu && (
-            <div
-              className="fixed z-[10000] bg-slate-800 text-white rounded-lg shadow-xl border border-slate-700 flex flex-col min-w-[150px] overflow-hidden animate-in fade-in zoom-in duration-100 origin-top-left pointer-events-auto"
-              style={{
-                left: contextMenu.x,
-                top: contextMenu.y,
-              }}
-              onClick={(e) => e.stopPropagation()}
-              onContextMenu={(e) => e.preventDefault()}
-            >
-              <button
-                className="w-full text-left px-4 py-2 hover:bg-slate-700 text-sm flex items-center gap-2"
-                onClick={() => {
-                  addNewNode(NodeType.NOTE, {
-                    x: contextMenu.canvasX,
-                    y: contextMenu.canvasY,
-                  });
+            {contextMenu && (
+              <div
+                className="fixed z-[10000] bg-slate-800 text-white rounded-lg shadow-xl border border-slate-700 flex flex-col min-w-[150px] overflow-hidden animate-in fade-in zoom-in duration-100 origin-top-left pointer-events-auto"
+                style={{
+                  left: contextMenu.x,
+                  top: contextMenu.y,
                 }}
+                onClick={(e) => e.stopPropagation()}
+                onContextMenu={(e) => e.preventDefault()}
               >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="text-slate-400"
+                <button
+                  className="w-full text-left px-4 py-2 hover:bg-slate-700 text-sm flex items-center gap-2"
+                  onClick={() => {
+                    addNewNode(NodeType.NOTE, {
+                      x: contextMenu.canvasX,
+                      y: contextMenu.canvasY,
+                    });
+                  }}
                 >
-                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                </svg>
-                Create Note
-              </button>
-              <button
-                className="w-full text-left px-4 py-2 hover:bg-slate-700 text-sm flex items-center gap-2 border-t border-slate-700"
-                onClick={() => {
-                  addNewNode(NodeType.CHAT, {
-                    x: contextMenu.canvasX,
-                    y: contextMenu.canvasY,
-                  });
-                }}
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="text-slate-400"
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="text-slate-400"
+                  >
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                  </svg>
+                  Create Note
+                </button>
+                <button
+                  className="w-full text-left px-4 py-2 hover:bg-slate-700 text-sm flex items-center gap-2 border-t border-slate-700"
+                  onClick={() => {
+                    addNewNode(NodeType.CHAT, {
+                      x: contextMenu.canvasX,
+                      y: contextMenu.canvasY,
+                    });
+                  }}
                 >
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                </svg>
-                Create AI Chat
-              </button>
-            </div>
-          )}
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="text-slate-400"
+                  >
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                  </svg>
+                  Create AI Chat
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

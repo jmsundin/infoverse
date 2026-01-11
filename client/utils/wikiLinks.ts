@@ -21,6 +21,12 @@ export const extractInternalNodeTitle = (href: string) => {
 };
 
 export const getNodeTitle = (node: GraphNode) => {
+  // Use explicit title if available
+  if (node.title) {
+    return node.title;
+  }
+
+  // Fallback logic for backward compatibility
   if (node.type === NodeType.NOTE) {
     const firstLine = (node.content || "").split("\n")[0]?.trim();
     return firstLine || "Untitled Note";

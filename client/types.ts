@@ -26,6 +26,7 @@ export interface GraphNode {
   type: NodeType;
   x: number;
   y: number;
+  title?: string; // AI-generated display title for LOD view and breadcrumbs
   content: string; // For NOTE, this is the text. For CHAT, initial context or title.
   messages?: ChatMessage[]; // Only for CHAT
   width?: number;
@@ -39,6 +40,7 @@ export interface GraphNode {
   clusterCount?: number; // Number of nodes in this cluster
   clusterIds?: string[]; // IDs of nodes in this cluster
   edges?: EmbeddedEdge[]; // Outgoing edges stored with this node
+  pinned?: boolean; // User-pinned anchor for physics simulation
 }
 
 export interface ChatMessage {
@@ -82,6 +84,30 @@ export interface ExpandResponse {
     relationship: string;
   }[];
 }
+
+// Physics simulation configuration
+export interface PhysicsConfig {
+  physicsEnabled: boolean;          // Master toggle for physics simulation
+  springConstant: number;           // Hooke's law spring constant for edge attraction
+  springLength: number;             // Ideal edge length (rest length)
+  springDamping: number;            // Damping on spring forces
+  gravityConstant: number;          // Pull toward subtree center
+  subtreeRepulsionConstant: number; // Repulsion between subtree centroids
+  collisionPadding: number;         // Padding for collision detection
+  childFollowTightness: number;     // How tightly children follow dragged parent (0-1)
+  velocityThreshold: number;        // Stop simulation when max velocity below this
+  maxIterations: number;            // Maximum simulation ticks before forced stop
+  dampingFactor: number;            // Velocity decay per tick (0-1)
+}
+
+// Triggers that start a physics simulation
+export type SimulationTrigger =
+  | 'drag-start'
+  | 'node-creation'
+  | 'node-expansion'
+  | 'node-deletion'
+  | 'manual-relayout'
+  | 'manual-subtree';
 
 // File System Access API Types
 declare global {

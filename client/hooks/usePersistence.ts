@@ -2,18 +2,24 @@ import { useRef, useMemo, useCallback } from "react";
 import { GraphNode, GraphEdge, ViewportTransform } from "../types";
 import { debounce } from "../services/debounceService";
 import {
-  scheduleSaveNode,
+  saveNodeToFile,
   getOutgoingEdges,
 } from "../services/storageService";
 import {
   saveNodesBatchToApi,
   saveEdgesToApi
 } from "../services/apiStorageService";
+import { useAuth } from "../context/AuthContext";
+import { useStorage } from "../context/StorageContext";
 
 export const usePersistence = (
   user: any,
   dirHandle: FileSystemDirectoryHandle | null
 ) => {
+  // Get storage mode from context to determine if we should persist
+  const { isAuthenticated } = useAuth();
+  const { storageMode } = useStorage();
+
   const dirtyNodesByIdRef = useRef<Map<string, { node: GraphNode; skipEmbedding: boolean }>>(new Map());
   const edgesDirtyRef = useRef(false);
 
@@ -33,12 +39,18 @@ export const usePersistence = (
           const edgesDirty = edgesDirtyRef.current;
           edgesDirtyRef.current = false;
 
+          // In-memory mode: skip all persistence
+          // Data is stored in the in-memory adapter via StorageContext
+          if (storageMode === 'memory') {
+            return;
+          }
+
           // Save to file system (Master) - edges embedded in node files
           if (dirHandle) {
             // For dirty nodes, include their outgoing edges
             for (const { node } of dirtyNodes) {
               const outgoingEdges = getOutgoingEdges(node.id, edgesSnapshot);
-              scheduleSaveNode(dirHandle, node, outgoingEdges);
+              saveNodeToFile(dirHandle, node, outgoingEdges);
             }
 
             // If edges changed, we need to update all affected source nodes
@@ -51,14 +63,14 @@ export const usePersistence = (
                 const node = nodesSnapshot.find(n => n.id === sourceId);
                 if (node) {
                   const outgoingEdges = getOutgoingEdges(node.id, edgesSnapshot);
-                  scheduleSaveNode(dirHandle, node, outgoingEdges);
+                  saveNodeToFile(dirHandle, node, outgoingEdges);
                 }
               }
             }
           }
 
           // Background cloud sync (when user is logged in)
-          if (user) {
+          if (user && isAuthenticated) {
             if (dirtyNodes.length > 0) {
               // Non-blocking cloud save
               saveNodesBatchToApi(
@@ -77,7 +89,7 @@ export const usePersistence = (
         },
         2000
       ),
-    [dirHandle, user]
+    [dirHandle, user, storageMode, isAuthenticated]
   );
 
   const markNodeDirty = useCallback((node: GraphNode, skipEmbedding: boolean) => {

@@ -5,8 +5,8 @@ const rateLimiter = async (req, res, next) => {
     // 1. Identify User
     const userId = req.isAuthenticated() ? req.user.id : null;
 
-    // Unlimited access for admin/specific user
-    if (req.isAuthenticated() && req.user.isAdmin) {
+    // Unlimited access for admin or paid users
+    if (req.isAuthenticated() && (req.user.isAdmin || req.user.isPaid)) {
         return next();
     }
 

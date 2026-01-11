@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { MigrationProgress } from '../services/migration/types';
 
 interface ProfilePageProps {
   user: {
@@ -14,10 +15,28 @@ interface ProfilePageProps {
   onClose: () => void;
   onUpdateUser: (updates: any) => void;
   onLogout: () => void;
+  // Storage tab props
+  storageConnected?: boolean;
+  storageDirName?: string | null;
+  onOpenStorage?: () => void;
+  onStartMigration?: () => void;
+  migrationProgress?: MigrationProgress | null;
 }
 
-export const ProfilePage: React.FC<ProfilePageProps> = ({ user, aiProvider, onSetAiProvider, onClose, onUpdateUser, onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'settings' | 'billing'>('settings');
+export const ProfilePage: React.FC<ProfilePageProps> = ({
+  user,
+  aiProvider,
+  onSetAiProvider,
+  onClose,
+  onUpdateUser,
+  onLogout,
+  storageConnected = false,
+  storageDirName = null,
+  onOpenStorage,
+  onStartMigration,
+  migrationProgress = null,
+}) => {
+  const [activeTab, setActiveTab] = useState<'settings' | 'billing' | 'storage'>('settings');
   const [username, setUsername] = useState(user.username);
   const [email, setEmail] = useState(user.email || '');
   const [password, setPassword] = useState('');
@@ -166,12 +185,22 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, aiProvider, onSe
           <button
             onClick={() => setActiveTab('billing')}
             className={`flex-1 py-3 text-sm font-medium transition-colors ${
-              activeTab === 'billing' 
-                ? 'bg-slate-700 text-sky-400 border-b-2 border-sky-400' 
+              activeTab === 'billing'
+                ? 'bg-slate-700 text-sky-400 border-b-2 border-sky-400'
                 : 'text-slate-400 hover:bg-slate-750 hover:text-white'
             }`}
           >
             Billing & Plan
+          </button>
+          <button
+            onClick={() => setActiveTab('storage')}
+            className={`flex-1 py-3 text-sm font-medium transition-colors ${
+              activeTab === 'storage'
+                ? 'bg-slate-700 text-sky-400 border-b-2 border-sky-400'
+                : 'text-slate-400 hover:bg-slate-750 hover:text-white'
+            }`}
+          >
+            Storage
           </button>
         </div>
 
@@ -336,13 +365,101 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, aiProvider, onSe
 
                 {user.isPaid && (
                   <div className="mt-6 pt-6 border-t border-slate-800">
-                    <button 
+                    <button
                         onClick={handlePortal}
                         className="text-sm text-red-400 hover:text-red-300 hover:underline"
                     >
                       Manage / Cancel Subscription
                     </button>
                   </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'storage' && (
+            <div className="space-y-6">
+              {/* Directory Connection Section */}
+              <div className="bg-slate-900 rounded-lg p-6 border border-slate-700">
+                <h3 className="text-lg font-bold text-white mb-4">Local Storage</h3>
+
+                {/* Connection Status */}
+                <div className="flex items-center gap-3 mb-4">
+                  <div
+                    className={`w-3 h-3 rounded-full ${
+                      storageConnected ? 'bg-green-500' : 'bg-slate-500'
+                    }`}
+                  />
+                  <span className="text-slate-300">
+                    {storageConnected ? storageDirName || 'Connected' : 'Not connected'}
+                  </span>
+                </div>
+
+                {/* Directory Picker Button */}
+                {onOpenStorage && (
+                  <button
+                    onClick={onOpenStorage}
+                    className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg transition-colors"
+                  >
+                    {storageConnected ? 'Change Directory' : 'Select Directory'}
+                  </button>
+                )}
+              </div>
+
+              {/* Schema Migration Section */}
+              <div className="bg-slate-900 rounded-lg p-6 border border-slate-700">
+                <h3 className="text-lg font-bold text-white mb-2">Schema Migration</h3>
+                <p className="text-sm text-slate-400 mb-4">
+                  Validate and repair node metadata to match current schema requirements.
+                  This will generate missing titles and fix invalid field values.
+                </p>
+
+                {/* Migration Controls */}
+                {onStartMigration && (
+                  <button
+                    onClick={onStartMigration}
+                    disabled={!storageConnected || migrationProgress?.isRunning}
+                    className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors"
+                  >
+                    {migrationProgress?.isRunning ? 'Migration Running...' : 'Start Migration'}
+                  </button>
+                )}
+
+                {/* Progress Display */}
+                {migrationProgress && migrationProgress.totalNodes > 0 && (
+                  <div className="mt-4 space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-400">Progress</span>
+                      <span className="text-white">
+                        {migrationProgress.processedNodes} / {migrationProgress.totalNodes}
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-700 rounded-full h-2">
+                      <div
+                        className="bg-sky-500 h-2 rounded-full transition-all"
+                        style={{
+                          width: `${
+                            migrationProgress.totalNodes > 0
+                              ? (migrationProgress.processedNodes / migrationProgress.totalNodes) * 100
+                              : 0
+                          }%`,
+                        }}
+                      />
+                    </div>
+                    <p className="text-xs text-slate-500">{migrationProgress.currentStatus}</p>
+                    {migrationProgress.nodesNeedingUpdates > 0 && (
+                      <p className="text-xs text-amber-400">
+                        {migrationProgress.nodesNeedingUpdates} nodes updated
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Last Migration Info */}
+                {migrationProgress?.lastMigrationTimestamp && !migrationProgress.isRunning && (
+                  <p className="mt-4 text-xs text-slate-500">
+                    Last migration: {new Date(migrationProgress.lastMigrationTimestamp).toLocaleString()}
+                  </p>
                 )}
               </div>
             </div>
