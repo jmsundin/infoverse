@@ -117,6 +117,10 @@ export class LocalStorageAdapter implements StorageAdapter {
         return null;
       }
 
+      // Migration: handle old field names (parentId was scope, outlineParentId becomes parentId)
+      const scopeId = metadata.scopeId ?? metadata.parentId;
+      const parentId = metadata.outlineParentId;
+
       return {
         id: metadata.id,
         x: metadata.x,
@@ -128,7 +132,7 @@ export class LocalStorageAdapter implements StorageAdapter {
         type: metadata.type || NodeType.NOTE,
         color: metadata.color as NodeColor | undefined,
         title: metadata.title || metadata.content?.substring(0, 100),
-        parentId: metadata.parentId,
+        scopeId,
       };
     } catch {
       return null;
@@ -292,6 +296,17 @@ export class LocalStorageAdapter implements StorageAdapter {
       const nodeData = { ...metadata };
       delete nodeData.edges;
 
+      // Migration: rename old field names
+      // Old parentId (scope) -> scopeId, old outlineParentId -> parentId
+      if (nodeData.parentId !== undefined && nodeData.scopeId === undefined) {
+        nodeData.scopeId = nodeData.parentId;
+        delete nodeData.parentId;
+      }
+      if (nodeData.outlineParentId !== undefined) {
+        nodeData.parentId = nodeData.outlineParentId;
+        delete nodeData.outlineParentId;
+      }
+
       const node: GraphNode = {
         ...nodeData,
         content: metadata.content || content || 'Untitled',
@@ -406,7 +421,7 @@ export class LocalStorageAdapter implements StorageAdapter {
           type: node.type,
           color: node.color,
           title: node.title || node.content?.substring(0, 100),
-          parentId: node.parentId,
+          scopeId: node.scopeId,
         });
         this.rebuildQuadtree();
       } catch (e: any) {

@@ -34,7 +34,7 @@ export const useBreadcrumbs = (
       selectedNodeIds.size > 0 ? Array.from(selectedNodeIds)[0] : null;
     const activeNode = activeId ? nodeMap.get(activeId) : null;
     const activeScopeId = activeNode
-      ? activeNode.parentId ?? null
+      ? activeNode.scopeId ?? null
       : currentScopeId ?? null;
     const scopeNode = activeScopeId ? nodeMap.get(activeScopeId) : null;
 
@@ -43,9 +43,9 @@ export const useBreadcrumbs = (
       const stack: GraphNode[] = [];
       const visited = new Set<string>();
       let current: GraphNode | undefined | null = node;
-      while (current?.parentId) {
-        if (visited.has(current.parentId)) break;
-        const parent = nodeMap.get(current.parentId);
+      while (current?.scopeId) {
+        if (visited.has(current.scopeId)) break;
+        const parent = nodeMap.get(current.scopeId);
         if (!parent) break;
         stack.unshift(parent);
         visited.add(parent.id);
@@ -69,8 +69,8 @@ export const useBreadcrumbs = (
       });
     }
 
-    const nodesInScope = nodes.filter((n) => (n.parentId ?? null) === (activeScopeId ?? null));
-    const edgesInScope = edges.filter((e) => (e.parentId ?? null) === (activeScopeId ?? null));
+    const nodesInScope = nodes.filter((n) => (n.scopeId ?? null) === (activeScopeId ?? null));
+    const edgesInScope = edges.filter((e) => (e.scopeId ?? null) === (activeScopeId ?? null));
 
     const buildLineageInScope = () => {
       if (!activeId || !activeNode) return [] as GraphNode[];

@@ -39,7 +39,7 @@ export interface SpatialIndexEntry {
   type: NodeType;
   color?: NodeColor;
   title?: string;
-  parentId?: string;
+  scopeId?: string;
 }
 
 // Ghost node - minimal info for out-of-viewport edge targets
@@ -135,6 +135,7 @@ export interface YjsNodeFields {
   dimensions: { width: number; height: number };
   visual: { color?: NodeColor; type: NodeType };
   metadata: {
+    scopeId?: string;
     parentId?: string;
     link?: string;
     summary?: string;

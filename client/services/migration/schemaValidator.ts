@@ -22,10 +22,20 @@ const VALID_COLORS: NodeColor[] = [
 ];
 
 /**
+ * Edge context for parentId inference during migration
+ */
+export interface EdgeContext {
+  incomingEdgeSources: string[]; // Node IDs that have edges pointing to this node
+}
+
+/**
  * Validate a GraphNode against the current schema
  * Returns validation results with suggested fixes for invalid/missing fields
  */
-export function validateNodeSchema(node: GraphNode): SchemaValidationResult {
+export function validateNodeSchema(
+  node: GraphNode,
+  edgeContext?: EdgeContext
+): SchemaValidationResult {
   const missingFields: string[] = [];
   const invalidFields: Array<{ field: string; reason: string }> = [];
   const suggestedFixes: Partial<GraphNode> = {};
@@ -210,6 +220,26 @@ export function validateNodeSchema(node: GraphNode): SchemaValidationResult {
   if (node.pinned !== undefined && typeof node.pinned !== "boolean") {
     invalidFields.push({ field: "pinned", reason: "pinned must be a boolean" });
     suggestedFixes.pinned = false;
+  }
+
+  // parentId inference from edge relationships
+  // If node has no parentId and is the target of edges, infer parentId from first source
+  if (!node.parentId && edgeContext?.incomingEdgeSources.length) {
+    const sources = edgeContext.incomingEdgeSources;
+    suggestedFixes.parentId = sources[0];
+
+    if (sources.length > 1) {
+      // Multiple potential parents - log as info, use first one
+      invalidFields.push({
+        field: "parentId",
+        reason: `Inferred parentId from edge (${sources.length} sources, using first)`,
+      });
+    } else {
+      invalidFields.push({
+        field: "parentId",
+        reason: "Inferred parentId from edge relationship",
+      });
+    }
   }
 
   return {

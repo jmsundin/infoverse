@@ -1,7 +1,7 @@
-import React, { useState, useRef, useReducer, useCallback } from "react";
+import React, { useState, useCallback } from "react";
 import { GraphNode } from "../types";
 import { useOutlineTree, TreeNodeData } from "../hooks/useOutlineTree";
-import { getNodeTitleForBreadcrumb } from "../utils/graphUtils";
+import { OutlineNode } from "./OutlineNode";
 
 interface OutlineTreePanelProps {
   isOpen: boolean;
@@ -12,77 +12,6 @@ interface OutlineTreePanelProps {
   onFocusNode: (nodeId: string) => void;
 }
 
-interface TreeNodeProps {
-  data: TreeNodeData;
-  collapsedIds: Set<string>;
-  onToggleCollapse: (id: string) => void;
-  onNodeClick: (id: string) => void;
-  selectedNodeId: string | null;
-}
-
-const TreeNode: React.FC<TreeNodeProps> = ({
-  data,
-  collapsedIds,
-  onToggleCollapse,
-  onNodeClick,
-  selectedNodeId,
-}) => {
-  const { node, children, depth } = data;
-  const hasChildren = children.length > 0;
-  const isCollapsed = collapsedIds.has(node.id);
-  const isSelected = node.id === selectedNodeId;
-
-  const title = getNodeTitleForBreadcrumb(node);
-
-  return (
-    <div>
-      <div
-        className={`flex items-center gap-1 py-1.5 px-2 cursor-pointer rounded transition-colors ${
-          isSelected
-            ? "bg-slate-700 text-sky-400"
-            : "text-slate-300 hover:bg-slate-800"
-        }`}
-        style={{ paddingLeft: `${depth * 16 + 8}px` }}
-        onClick={() => onNodeClick(node.id)}
-      >
-        {/* Collapse/expand toggle */}
-        {hasChildren ? (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleCollapse(node.id);
-            }}
-            className="w-4 h-4 flex items-center justify-center text-slate-500 hover:text-white shrink-0"
-          >
-            {isCollapsed ? ">" : "\u2304"}
-          </button>
-        ) : (
-          <span className="w-4 shrink-0" />
-        )}
-
-        {/* Node title */}
-        <span className="truncate text-sm">{title}</span>
-      </div>
-
-      {/* Render children if not collapsed */}
-      {hasChildren && !isCollapsed && (
-        <div>
-          {children.map((child) => (
-            <TreeNode
-              key={child.node.id}
-              data={child}
-              collapsedIds={collapsedIds}
-              onToggleCollapse={onToggleCollapse}
-              onNodeClick={onNodeClick}
-              selectedNodeId={selectedNodeId}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-};
-
 export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
   isOpen,
   onClose,
@@ -92,25 +21,13 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
   onFocusNode,
 }) => {
   const [panelWidth, setPanelWidth] = useState(280);
-  // Use useRef to persist collapse state across re-renders without causing updates
-  const collapsedIdsRef = useRef<Set<string>>(new Set());
-  const [, forceUpdate] = useReducer((x) => x + 1, 0);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
-  const { ancestors, tree, selectedNode } = useOutlineTree(
+  const { tree } = useOutlineTree(
     nodes,
     selectedNodeIds,
     currentScopeId
   );
-
-  const toggleCollapse = useCallback((nodeId: string) => {
-    const set = collapsedIdsRef.current;
-    if (set.has(nodeId)) {
-      set.delete(nodeId);
-    } else {
-      set.add(nodeId);
-    }
-    forceUpdate();
-  }, []);
 
   const handleNodeClick = useCallback(
     (nodeId: string) => {
@@ -118,6 +35,18 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
     },
     [onFocusNode]
   );
+
+  const handleToggleExpand = useCallback((nodeId: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) {
+        next.delete(nodeId);
+      } else {
+        next.add(nodeId);
+      }
+      return next;
+    });
+  }, []);
 
   const handleResizeMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -141,9 +70,40 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
     [panelWidth]
   );
 
+  // Recursive function to render tree nodes
+  const renderTreeNode = (treeNode: TreeNodeData): React.ReactNode => {
+    const { node, depth, hasChildren, children } = treeNode;
+    const isExpanded = expandedIds.has(node.id);
+    const isSelected = selectedNodeIds.has(node.id);
+
+    return (
+      <div key={node.id}>
+        <OutlineNode
+          node={node}
+          depth={depth}
+          hasChildren={hasChildren}
+          isExpanded={isExpanded}
+          isSelected={isSelected}
+          onClick={() => handleNodeClick(node.id)}
+          onToggleExpand={() => handleToggleExpand(node.id)}
+        />
+        {isExpanded && children.length > 0 && (
+          <div>{children.map(renderTreeNode)}</div>
+        )}
+      </div>
+    );
+  };
+
+  // Count total nodes in tree recursively
+  const countNodes = (treeNodes: TreeNodeData[]): number => {
+    return treeNodes.reduce((acc, node) => {
+      return acc + 1 + countNodes(node.children);
+    }, 0);
+  };
+
   if (!isOpen) return null;
 
-  const selectedNodeId = selectedNode?.id ?? null;
+  const totalCount = countNodes(tree);
 
   return (
     <div
@@ -155,7 +115,7 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
         <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
           Outline
           <span className="text-xs font-normal text-slate-500 bg-slate-800 px-2 py-0.5 rounded-full">
-            {tree.length}
+            {totalCount}
           </span>
         </h2>
         <button
@@ -179,28 +139,7 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
         </button>
       </div>
 
-      {/* Ancestor breadcrumbs */}
-      {ancestors.length > 0 && selectedNode && (
-        <div className="px-3 py-2 border-b border-slate-800 flex items-center gap-1 text-xs text-slate-500 overflow-x-auto shrink-0">
-          {ancestors.map((ancestor, i) => (
-            <React.Fragment key={ancestor.id}>
-              <button
-                onClick={() => onFocusNode(ancestor.id)}
-                className="hover:text-sky-400 truncate max-w-[100px] shrink-0"
-                title={getNodeTitleForBreadcrumb(ancestor)}
-              >
-                {getNodeTitleForBreadcrumb(ancestor)}
-              </button>
-              <span className="shrink-0">&gt;</span>
-            </React.Fragment>
-          ))}
-          <span className="text-slate-400 truncate">
-            {getNodeTitleForBreadcrumb(selectedNode)}
-          </span>
-        </div>
-      )}
-
-      {/* Tree container */}
+      {/* Content */}
       <div className="flex-1 overflow-y-auto p-2 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
         {tree.length === 0 ? (
           <div className="text-slate-500 text-center p-8 flex flex-col items-center gap-2">
@@ -221,18 +160,7 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
             <p className="text-sm">No nodes in this scope</p>
           </div>
         ) : (
-          <div>
-            {tree.map((treeNode) => (
-              <TreeNode
-                key={treeNode.node.id}
-                data={treeNode}
-                collapsedIds={collapsedIdsRef.current}
-                onToggleCollapse={toggleCollapse}
-                onNodeClick={handleNodeClick}
-                selectedNodeId={selectedNodeId}
-              />
-            ))}
-          </div>
+          <div>{tree.map(renderTreeNode)}</div>
         )}
       </div>
 

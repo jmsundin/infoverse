@@ -54,7 +54,7 @@ function spatialIndexToSkeletonNode(entry: SpatialIndexEntry): GraphNode {
     content: entry.title || '',
     title: entry.title,
     color: entry.color,
-    parentId: entry.parentId,
+    scopeId: entry.scopeId,
     _loadState: 'position-only' as NodeLoadState,
   };
 }

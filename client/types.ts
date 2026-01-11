@@ -50,7 +50,8 @@ export interface GraphNode {
   height?: number;
   link?: string; // Wikipedia link
   color?: NodeColor;
-  parentId?: string; // For hierarchical scoping
+  scopeId?: string; // For hierarchical scoping (viewport)
+  parentId?: string; // For outline tree hierarchy (expansion/creation parent)
   summary?: string; // High-level summary for semantic zoom
   autoExpandDepth?: number; // Number of levels to automatically expand
   aliases?: string[]; // Alternative names for the node
@@ -76,7 +77,7 @@ export interface GraphEdge {
   source: string;
   target: string;
   label: string; // Relationship description
-  parentId?: string; // For hierarchical scoping
+  scopeId?: string; // For hierarchical scoping
 }
 
 export interface ViewportTransform {

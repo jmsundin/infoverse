@@ -107,6 +107,16 @@ const initDb = async () => {
         // Ignore if exists
     }
 
+    // Migration: Add scope_id column and migrate parent_id -> scope_id for viewport scoping
+    // The parent_id column is now used for outline/expansion hierarchy (was outlineParentId)
+    try {
+        await query(`ALTER TABLE nodes ADD COLUMN IF NOT EXISTS scope_id TEXT`);
+        // Migrate existing parent_id values to scope_id (one-time migration)
+        await query(`UPDATE nodes SET scope_id = parent_id WHERE scope_id IS NULL AND parent_id IS NOT NULL`);
+    } catch (e) {
+        console.warn('scope_id migration notice:', e.message);
+    }
+
     // Edges Table
     await query(`
       CREATE TABLE IF NOT EXISTS edges (
@@ -115,11 +125,20 @@ const initDb = async () => {
         source TEXT,
         target TEXT,
         label TEXT,
-        parent_id TEXT,
+        scope_id TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    
+
+    // Migration: Add scope_id column to edges and migrate from parent_id
+    try {
+        await query(`ALTER TABLE edges ADD COLUMN IF NOT EXISTS scope_id TEXT`);
+        // Migrate existing parent_id values to scope_id (one-time migration)
+        await query(`UPDATE edges SET scope_id = parent_id WHERE scope_id IS NULL AND parent_id IS NOT NULL`);
+    } catch (e) {
+        console.warn('edges scope_id migration notice:', e.message);
+    }
+
     // Attempt to migrate existing table if it lacks user_id or correct PK
     try {
         await query(`ALTER TABLE rate_limits ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id)`);

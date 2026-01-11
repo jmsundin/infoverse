@@ -147,7 +147,7 @@ export class UnifiedStorageService extends EventTarget {
         type: node.type,
         color: node.color,
         title: node.title || node.content?.substring(0, 100),
-        parentId: node.parentId,
+        scopeId: node.scopeId,
       }));
     }
 

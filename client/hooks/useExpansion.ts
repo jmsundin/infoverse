@@ -73,7 +73,7 @@ export const useExpansion = (
         const edgesToAdd: GraphEdge[] = [];
 
         const existingNodesInScope = nodes.filter(
-          (n) => (n.parentId ?? null) === (currentScopeId ?? null)
+          (n) => (n.scopeId ?? null) === (currentScopeId ?? null)
         );
 
         const existingByLowerLabel = new Map<string, GraphNode>();
@@ -107,7 +107,8 @@ export const useExpansion = (
             width: DEFAULT_NODE_WIDTH,
             height: DEFAULT_NODE_HEIGHT,
             link: st.wikidataUrl,
-            parentId: currentScopeId || undefined,
+            scopeId: currentScopeId || undefined,
+            parentId: id, // Set outline hierarchy parent
             summary: st.description,
             autoExpandDepth: sourceNode.autoExpandDepth,
             messages: st.description
@@ -130,7 +131,7 @@ export const useExpansion = (
             source: parentNodeId,
             target: newNode.id,
             label: "subtopic",
-            parentId: currentScopeId || undefined,
+            scopeId: currentScopeId || undefined,
           });
         }
 
@@ -144,7 +145,7 @@ export const useExpansion = (
             source: parentNodeId,
             target: existingNode.id,
             label: "subtopic",
-            parentId: currentScopeId || undefined,
+            scopeId: currentScopeId || undefined,
           });
         }
 
@@ -279,7 +280,8 @@ export const useExpansion = (
             content: topic,
             width: DEFAULT_NODE_WIDTH,
             height: DEFAULT_NODE_HEIGHT,
-            parentId: currentScopeId || undefined,
+            scopeId: currentScopeId || undefined,
+            parentId: id, // Set outline hierarchy parent
             autoExpandDepth: sourceNode.autoExpandDepth, // Inherit expansion settings
             messages: [
               {
@@ -296,7 +298,7 @@ export const useExpansion = (
             source: id,
             target: topicNodeId,
             label: "includes",
-            parentId: currentScopeId || undefined,
+            scopeId: currentScopeId || undefined,
           });
 
           parentNodeId = topicNodeId;
@@ -364,7 +366,8 @@ export const useExpansion = (
               content: item.name,
               width: DEFAULT_NODE_WIDTH,
               height: DEFAULT_NODE_HEIGHT,
-              parentId: currentScopeId || undefined,
+              scopeId: currentScopeId || undefined,
+              parentId: parent.id, // Set outline hierarchy parent
               summary: item.description,
               autoExpandDepth: sourceNode.autoExpandDepth,
               messages: [
@@ -383,7 +386,7 @@ export const useExpansion = (
               source: parent.id,
               target: newNodeId,
               label: item.indent > parent.indent ? "sub-item" : "related",
-              parentId: currentScopeId || undefined,
+              scopeId: currentScopeId || undefined,
             });
 
             // Push current node to stack as a potential parent for subsequent items
@@ -412,7 +415,7 @@ export const useExpansion = (
 
           // --- Gemini API Mode ---
           const existingNodeNames = nodes
-            .filter((n) => (n.parentId ?? null) === (currentScopeId ?? null))
+            .filter((n) => (n.scopeId ?? null) === (currentScopeId ?? null))
             .map((n) => n.content);
           const result = await (aiProvider === "huggingface"
             ? hfService
@@ -443,7 +446,8 @@ export const useExpansion = (
                 width: DEFAULT_NODE_WIDTH,
                 height: DEFAULT_NODE_HEIGHT,
                 link: n.wikiLink,
-                parentId: currentScopeId || undefined,
+                scopeId: currentScopeId || undefined,
+                parentId: parentNodeId, // Set outline hierarchy parent
                 summary: n.description, // Store description for semantic zoom
                 autoExpandDepth: sourceNode.autoExpandDepth,
                 messages: [
@@ -466,7 +470,7 @@ export const useExpansion = (
               );
               const targetExistingNode = nodes.find(
                 (n) =>
-                  n.content === e.targetName && (n.parentId ?? null) === (currentScopeId ?? null)
+                  n.content === e.targetName && (n.scopeId ?? null) === (currentScopeId ?? null)
               );
 
               if (targetSubNode) {
@@ -475,7 +479,7 @@ export const useExpansion = (
                   source: parentNodeId,
                   target: targetSubNode.id,
                   label: e.relationship,
-                  parentId: currentScopeId || undefined,
+                  scopeId: currentScopeId || undefined,
                 });
               } else if (targetExistingNode) {
                 edgesToAdd.push({
@@ -483,7 +487,7 @@ export const useExpansion = (
                   source: parentNodeId,
                   target: targetExistingNode.id,
                   label: e.relationship,
-                  parentId: currentScopeId || undefined,
+                  scopeId: currentScopeId || undefined,
                 });
               }
             });
@@ -497,7 +501,7 @@ export const useExpansion = (
                   source: parentNodeId,
                   target: sn.id,
                   label: "related",
-                  parentId: currentScopeId || undefined,
+                  scopeId: currentScopeId || undefined,
                 });
               }
             });

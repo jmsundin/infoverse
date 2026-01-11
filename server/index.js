@@ -620,6 +620,7 @@ app.get('/api/graph', async (req, res) => {
             messages: n.messages,
             link: n.link,
             color: n.color,
+            scopeId: n.scope_id,
             parentId: n.parent_id,
             summary: n.summary,
             autoExpandDepth: n.auto_expand_depth,
@@ -631,7 +632,7 @@ app.get('/api/graph', async (req, res) => {
             source: e.source,
             target: e.target,
             label: e.label,
-            parentId: e.parent_id
+            scopeId: e.scope_id
         }));
 
         return res.json({ nodes, edges });
@@ -733,8 +734,8 @@ app.post('/api/nodes', async (req, res) => {
 
         // Upsert node
         const query = `
-            INSERT INTO nodes (id, user_id, type, x, y, width, height, title, content, messages, link, color, parent_id, summary, auto_expand_depth, aliases, embedding, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
+            INSERT INTO nodes (id, user_id, type, x, y, width, height, title, content, messages, link, color, scope_id, parent_id, summary, auto_expand_depth, aliases, embedding, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW())
             ON CONFLICT (id) DO UPDATE SET
             type = EXCLUDED.type,
             x = EXCLUDED.x,
@@ -746,6 +747,7 @@ app.post('/api/nodes', async (req, res) => {
             messages = EXCLUDED.messages,
             link = EXCLUDED.link,
             color = EXCLUDED.color,
+            scope_id = EXCLUDED.scope_id,
             parent_id = EXCLUDED.parent_id,
             summary = EXCLUDED.summary,
             auto_expand_depth = EXCLUDED.auto_expand_depth,
@@ -766,6 +768,7 @@ app.post('/api/nodes', async (req, res) => {
             JSON.stringify(node.messages || []),
             node.link,
             node.color,
+            node.scopeId,
             node.parentId,
             node.summary,
             node.autoExpandDepth,
@@ -824,8 +827,8 @@ app.post('/api/nodes/batch', async (req, res) => {
             }
 
             const query = `
-                INSERT INTO nodes (id, user_id, type, x, y, width, height, title, content, messages, link, color, parent_id, summary, auto_expand_depth, aliases, embedding, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
+                INSERT INTO nodes (id, user_id, type, x, y, width, height, title, content, messages, link, color, scope_id, parent_id, summary, auto_expand_depth, aliases, embedding, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW())
                 ON CONFLICT (id) DO UPDATE SET
                 type = EXCLUDED.type,
                 x = EXCLUDED.x,
@@ -837,6 +840,7 @@ app.post('/api/nodes/batch', async (req, res) => {
                 messages = EXCLUDED.messages,
                 link = EXCLUDED.link,
                 color = EXCLUDED.color,
+                scope_id = EXCLUDED.scope_id,
                 parent_id = EXCLUDED.parent_id,
                 summary = EXCLUDED.summary,
                 auto_expand_depth = EXCLUDED.auto_expand_depth,
@@ -858,6 +862,7 @@ app.post('/api/nodes/batch', async (req, res) => {
                 JSON.stringify(node.messages || []),
                 node.link,
                 node.color,
+                node.scopeId,
                 node.parentId,
                 node.summary,
                 node.autoExpandDepth,
@@ -965,15 +970,15 @@ app.post('/api/edges', async (req, res) => {
         
         for (const edge of edges) {
             const query = `
-                INSERT INTO edges (id, user_id, source, target, label, parent_id, created_at)
+                INSERT INTO edges (id, user_id, source, target, label, scope_id, created_at)
                 VALUES ($1, $2, $3, $4, $5, $6, NOW())
                 ON CONFLICT (id) DO UPDATE SET
                 source = EXCLUDED.source,
                 target = EXCLUDED.target,
                 label = EXCLUDED.label,
-                parent_id = EXCLUDED.parent_id;
+                scope_id = EXCLUDED.scope_id;
             `;
-            const values = [edge.id, req.user.id, edge.source, edge.target, edge.label, edge.parentId];
+            const values = [edge.id, req.user.id, edge.source, edge.target, edge.label, edge.scopeId];
             await db.query(query, values);
         }
         

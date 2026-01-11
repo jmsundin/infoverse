@@ -65,6 +65,7 @@ export function initializeDocumentFromNode(doc: Y.Doc, node: GraphNode): void {
   // Metadata (LWW)
   const metadata = new Y.Map<any>();
   if (node.title) metadata.set('title', node.title);
+  if (node.scopeId) metadata.set('scopeId', node.scopeId);
   if (node.parentId) metadata.set('parentId', node.parentId);
   if (node.link) metadata.set('link', node.link);
   if (node.summary) metadata.set('summary', node.summary);
@@ -147,6 +148,7 @@ export function documentToNode(doc: Y.Doc): GraphNode {
   // Optional metadata
   if (metadata) {
     const title = metadata.get('title');
+    const scopeId = metadata.get('scopeId');
     const parentId = metadata.get('parentId');
     const link = metadata.get('link');
     const summary = metadata.get('summary');
@@ -155,6 +157,7 @@ export function documentToNode(doc: Y.Doc): GraphNode {
     const clusterIds = metadata.get('clusterIds');
 
     if (title) node.title = title;
+    if (scopeId) node.scopeId = scopeId;
     if (parentId) node.parentId = parentId;
     if (link) node.link = link;
     if (summary) node.summary = summary;
@@ -383,6 +386,7 @@ export function applyNodeUpdate(doc: Y.Doc, updates: Partial<GraphNode>): void {
     // Handle metadata updates
     if (
       updates.title !== undefined ||
+      updates.scopeId !== undefined ||
       updates.parentId !== undefined ||
       updates.link !== undefined ||
       updates.summary !== undefined ||
@@ -394,6 +398,7 @@ export function applyNodeUpdate(doc: Y.Doc, updates: Partial<GraphNode>): void {
       const metadata = root.get(NODE_KEYS.METADATA) as Y.Map<any>;
       if (metadata) {
         if (updates.title !== undefined) metadata.set('title', updates.title);
+        if (updates.scopeId !== undefined) metadata.set('scopeId', updates.scopeId);
         if (updates.parentId !== undefined) metadata.set('parentId', updates.parentId);
         if (updates.link !== undefined) metadata.set('link', updates.link);
         if (updates.summary !== undefined) metadata.set('summary', updates.summary);

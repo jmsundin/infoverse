@@ -35,7 +35,7 @@ import { cleanTitleMarkdown } from "../utils/titleUtils";
 interface GraphNodeProps {
   node: GraphNode;
   allNodes?: GraphNode[];
-  childNodes?: GraphNode[]; // Hierarchical children (nodes with parentId = this node's id)
+  childNodes?: GraphNode[]; // Hierarchical children (nodes with scopeId = this node's id)
   isSelected?: boolean;
   isExpanded?: boolean;
   isDragging?: boolean;
@@ -352,7 +352,6 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         const service =
           aiProvider === "huggingface" ? hfService : geminiService;
         const rawTitle = await service.generateTitle(currentInput, result.text);
-        console.log("rawTitle", rawTitle);
         const cleanedTitle = cleanTitleMarkdown(rawTitle);
         onUpdateRef.current(node.id, { title: cleanedTitle });
       }
@@ -391,6 +390,8 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       },
       [onNavigateToNode, onOpenLink]
     );
+    const formattedTitle = useMemo(() => formatInternalNodeLinks(node.title || ""), [node.title]);
+    const formattedContent = useMemo(() => formatInternalNodeLinks(node.content || ""), [node.content]);
 
     const stripMarkdown = (text: string): string => {
       return text
@@ -406,9 +407,9 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
 
     const noteTitleLine = useMemo(() => {
       if (node.type !== NodeType.NOTE) return "";
-      const firstLine = (node.content || "").split("\n")[0] || "";
+      const firstLine = (node.title || "").split("\n")[0] || "";
       return stripMarkdown(firstLine);
-    }, [node.type, node.content]);
+    }, [node.type, node.title]);
 
     const formattedNoteContent = useMemo(
       () => formatInternalNodeLinks(node.content || ""),
@@ -1468,7 +1469,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                   </>
                 )}
 
-                {!isSidebar && node.parentId && (
+                {!isSidebar && node.scopeId && (
                   <span className="text-[10px] bg-sky-900/50 text-sky-300 px-1 rounded ml-1 border border-sky-800">
                     SUB
                   </span>
@@ -1633,8 +1634,8 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                   isSelected || isSidebar ? (
                     <div
                       className="w-full h-full pointer-events-auto"
-                      onMouseDown={handleNotePointerDown}
-                      onTouchStart={handleNotePointerDown}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onTouchStart={(e) => e.stopPropagation()}
                     >
                       <MarkdownEditor
                         initialContent={node.content || ""}
@@ -1800,12 +1801,8 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                         onKeyDown={(e) =>
                           e.key === "Enter" && handleSendMessage()
                         }
-                        onFocus={openNodeInSidePaneForMobileInput}
                         onMouseDown={(e) => e.stopPropagation()}
-                        onTouchStart={(e) => {
-                          e.stopPropagation();
-                          openNodeInSidePaneForMobileInput();
-                        }}
+                        onTouchStart={(e) => e.stopPropagation()}
                       />
                       <button
                         onClick={handleSendMessage}

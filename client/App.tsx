@@ -454,7 +454,6 @@ const App: React.FC = () => {
 
               // Migrate edges if needed
               if (hasLegacyEdgesFile) {
-                console.log("Migrating edges to node files...");
                 await migrateEdgesToNodes(storedHandle, loadedNodes, loadedEdges);
               }
             }
@@ -565,9 +564,16 @@ const App: React.FC = () => {
 
     try {
       await migrationService.runMigration(
-        // loadNode
+        // loadNode - include edges for parentId inference during migration
         async (nodeId: string) => {
-          return nodes.find((n) => n.id === nodeId) || null;
+          const node = nodes.find((n) => n.id === nodeId);
+          if (!node) return null;
+          // Include outgoing edges in the node for migration
+          const outgoingEdges = edges.filter((e) => e.source === nodeId);
+          return {
+            ...node,
+            edges: outgoingEdges.map((e) => ({ id: e.id, target: e.target, label: e.label })),
+          };
         },
         // saveNode
         async (node: GraphNode) => {
@@ -645,7 +651,7 @@ const App: React.FC = () => {
   // --- Clustering and Filtering for Rendering ---
   const filteredNodes = useMemo(
     () =>
-      nodes.filter((n) => (n.parentId ?? null) === (currentScopeId ?? null)),
+      nodes.filter((n) => (n.scopeId ?? null) === (currentScopeId ?? null)),
     [nodes, currentScopeId]
   );
 
@@ -668,7 +674,7 @@ const App: React.FC = () => {
   const filteredEdges = useMemo(
     () =>
       edges.filter((e) => {
-        if ((e.parentId ?? null) !== (currentScopeId ?? null)) return false;
+        if ((e.scopeId ?? null) !== (currentScopeId ?? null)) return false;
         const sourceVisible = visibleNodeIds.has(e.source);
         const targetVisible = visibleNodeIds.has(e.target);
         return sourceVisible && targetVisible;
@@ -771,7 +777,7 @@ const App: React.FC = () => {
           n.aliases?.some((a) => normalize(a) === target)
       );
       if (!matchedNode) return;
-      setCurrentScopeId(matchedNode.parentId ?? null);
+      setCurrentScopeId(matchedNode.scopeId ?? null);
       setSelectedNodeIds(new Set([matchedNode.id]));
       const k = viewTransform.k;
       const nodeCenterX =

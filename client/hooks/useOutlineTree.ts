@@ -5,6 +5,7 @@ export interface TreeNodeData {
   node: GraphNode;
   children: TreeNodeData[];
   depth: number;
+  hasChildren: boolean;
 }
 
 export interface OutlineTreeResult {
@@ -24,6 +25,7 @@ export const useOutlineTree = (
     // Build children lookup (parentId -> children[])
     const childrenByParent = new Map<string | null, GraphNode[]>();
     nodes.forEach((node) => {
+      // Use parentId for tree hierarchy, fall back to null for roots
       const parentKey = node.parentId ?? null;
       const children = childrenByParent.get(parentKey) || [];
       children.push(node);
@@ -43,17 +45,18 @@ export const useOutlineTree = (
       const node = nodeMap.get(nodeId);
       if (!node) return null;
 
-      const children = childrenByParent.get(nodeId) || [];
+      const childNodes = childrenByParent.get(nodeId) || [];
       return {
         node,
         depth,
-        children: children
+        hasChildren: childNodes.length > 0,
+        children: childNodes
           .map((c) => buildSubtree(c.id, depth + 1, new Set(visited)))
           .filter(Boolean) as TreeNodeData[],
       };
     };
 
-    // Get ancestors (up to 2 levels)
+    // Get ancestors (up to 2 levels) using parentId
     const getAncestors = (nodeId: string): GraphNode[] => {
       const ancestors: GraphNode[] = [];
       const visited = new Set<string>();
@@ -76,36 +79,15 @@ export const useOutlineTree = (
       selectedNodeIds.size > 0 ? Array.from(selectedNodeIds)[0] : null;
     const selectedNode = selectedId ? nodeMap.get(selectedId) ?? null : null;
 
-    if (selectedNode) {
-      // MODE: Node selected
-      // Get ancestors (up to 2 levels)
-      const ancestors = getAncestors(selectedNode.id);
+    // Get ancestors if there's a selected node
+    const ancestors = selectedNode ? getAncestors(selectedNode.id) : [];
 
-      // Get siblings (nodes with same parentId as selected)
-      const siblingParentId = selectedNode.parentId ?? null;
-      const siblings = childrenByParent.get(siblingParentId) || [];
+    // Always build full tree from root nodes in current scope
+    const rootNodes = childrenByParent.get(currentScopeId ?? null) || [];
+    const tree: TreeNodeData[] = rootNodes
+      .map((n) => buildSubtree(n.id, 0))
+      .filter(Boolean) as TreeNodeData[];
 
-      // Build tree: siblings at root, with selected node's subtree expanded
-      const tree: TreeNodeData[] = siblings
-        .map((sibling) => {
-          if (sibling.id === selectedNode.id) {
-            // Full subtree for selected node
-            return buildSubtree(sibling.id, 0);
-          } else {
-            // Just the sibling node (children can be expanded by user)
-            return buildSubtree(sibling.id, 0);
-          }
-        })
-        .filter(Boolean) as TreeNodeData[];
-
-      return { ancestors, tree, selectedNode };
-    } else {
-      // MODE: No selection - show all in current scope
-      const rootNodes = childrenByParent.get(currentScopeId ?? null) || [];
-      const tree: TreeNodeData[] = rootNodes
-        .map((n) => buildSubtree(n.id, 0))
-        .filter(Boolean) as TreeNodeData[];
-      return { ancestors: [], tree, selectedNode: null };
-    }
+    return { ancestors, tree, selectedNode };
   }, [nodes, selectedNodeIds, currentScopeId]);
 };

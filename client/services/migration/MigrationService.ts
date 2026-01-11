@@ -15,6 +15,7 @@ export class MigrationService {
   private running = false;
   private shouldCancel = false;
   private progressCallback: ProgressCallback | null = null;
+  private edgeTargetIndex: Map<string, string[]> = new Map(); // target nodeId -> source nodeIds
 
   private progress: MigrationProgress = {
     isRunning: false,
@@ -25,6 +26,30 @@ export class MigrationService {
     lastMigrationTimestamp: null,
     errors: [],
   };
+
+  /**
+   * Build reverse edge index: maps target nodeId -> source nodeIds
+   * This allows us to infer parentId for nodes that are targets of edges
+   */
+  private async buildEdgeTargetIndex(
+    loadNode: (nodeId: string) => Promise<GraphNode | null>,
+    nodeIds: string[]
+  ): Promise<void> {
+    this.edgeTargetIndex.clear();
+
+    for (const nodeId of nodeIds) {
+      if (this.shouldCancel) break;
+
+      const node = await loadNode(nodeId);
+      if (node?.edges) {
+        for (const edge of node.edges) {
+          const sources = this.edgeTargetIndex.get(edge.target) || [];
+          sources.push(nodeId);
+          this.edgeTargetIndex.set(edge.target, sources);
+        }
+      }
+    }
+  }
 
   /**
    * Start migration process.
@@ -53,10 +78,16 @@ export class MigrationService {
       totalNodes: nodeIds.length,
       processedNodes: 0,
       nodesNeedingUpdates: 0,
-      currentStatus: 'Starting migration...',
+      currentStatus: 'Building edge index...',
       lastMigrationTimestamp: null,
       errors: [],
     };
+    this.emitProgress();
+
+    // Phase 1: Build edge target index for parentId inference
+    await this.buildEdgeTargetIndex(loadNode, nodeIds);
+
+    this.progress.currentStatus = 'Starting migration...';
     this.emitProgress();
 
     try {
@@ -164,7 +195,10 @@ export class MigrationService {
         return false;
       }
 
-      const validation = validateNodeSchema(node);
+      // Get incoming edge sources for parentId inference
+      const incomingEdgeSources = this.edgeTargetIndex.get(nodeId) || [];
+
+      const validation = validateNodeSchema(node, { incomingEdgeSources });
 
       if (!validation.isValid || Object.keys(validation.suggestedFixes).length > 0) {
         // Apply fixes

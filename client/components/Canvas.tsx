@@ -312,7 +312,7 @@ const resolveCollisionsInScope = (
   selectedNodeIds: Set<string>,
   activeNodeIds?: Set<string>
 ) => {
-  const scopeNodes = allNodes.filter((n) => n.parentId == currentScopeId);
+  const scopeNodes = allNodes.filter((n) => n.scopeId == currentScopeId);
   if (scopeNodes.length === 0) return allNodes;
 
   // Map to effective layout nodes (handling compact size for unselected)
@@ -530,14 +530,14 @@ export const Canvas: React.FC<CanvasProps> = ({
     return pIds;
   }, [edges]);
 
-  // Build map of parent -> children for cluster visualization
-  const childrenByParent = useMemo(() => {
+  // Build map of scope -> children for cluster visualization
+  const childrenByScope = useMemo(() => {
     const map = new Map<string, GraphNode[]>();
     nodes.forEach((node) => {
-      if (node.parentId) {
-        const children = map.get(node.parentId) || [];
+      if (node.scopeId) {
+        const children = map.get(node.scopeId) || [];
         children.push(node);
-        map.set(node.parentId, children);
+        map.set(node.scopeId, children);
       }
     });
     return map;
@@ -677,15 +677,15 @@ export const Canvas: React.FC<CanvasProps> = ({
       // Use a more generous buffer for edge culling to prevent flickering
       const EDGE_CULL_BUFFER = 500; // Extra buffer beyond renderRect
 
-      // Helper to determine if two nodes are in the same cluster (share same parent)
+      // Helper to determine if two nodes are in the same cluster (share same scope)
       const isIntraClusterEdge = (
         source: GraphNode,
         target: GraphNode
       ): boolean => {
-        // If both nodes have the same parent, they're in the same cluster
-        if (source.parentId && source.parentId === target.parentId) return true;
-        // If one node is the parent of the other, it's intra-cluster
-        if (source.id === target.parentId || target.id === source.parentId)
+        // If both nodes have the same scope, they're in the same cluster
+        if (source.scopeId && source.scopeId === target.scopeId) return true;
+        // If one node is the scope parent of the other, it's intra-cluster
+        if (source.id === target.scopeId || target.id === source.scopeId)
           return true;
         return false;
       };
@@ -1736,7 +1736,7 @@ export const Canvas: React.FC<CanvasProps> = ({
       width: DEFAULT_NODE_WIDTH,
       height: DEFAULT_NODE_HEIGHT,
       messages: [],
-      parentId: currentScopeId || undefined,
+      scopeId: currentScopeId || undefined,
     };
     setNodes((prev) => [...prev, newNode]);
     onNodeSelect(newNode.id);
@@ -2185,7 +2185,7 @@ export const Canvas: React.FC<CanvasProps> = ({
                     key={node.id}
                     node={node}
                     allNodes={allNodes}
-                    childNodes={childrenByParent.get(node.id)}
+                    childNodes={childrenByScope.get(node.id)}
                     isSelected={
                       activeNodeId === node.id || connectingNodeId === node.id
                     }

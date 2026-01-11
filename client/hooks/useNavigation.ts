@@ -107,7 +107,7 @@ export const useNavigation = (
       if (exitingScopeId) {
         const exitingNode = nodes.find((n) => n.id === exitingScopeId);
         if (exitingNode) {
-          setCurrentScopeId(exitingNode.parentId || null);
+          setCurrentScopeId(exitingNode.scopeId || null);
           setSelectedNodeIds(new Set([exitingNode.id]));
           const k = 1.0;
           const nodeCenterX = exitingNode.x + (exitingNode.width || DEFAULT_NODE_WIDTH) / 2;
@@ -121,7 +121,7 @@ export const useNavigation = (
 
       if (currentScopeId) {
         const currentNode = nodes.find((n) => n.id === currentScopeId);
-        setCurrentScopeId(currentNode?.parentId || null);
+        setCurrentScopeId(currentNode?.scopeId || null);
         if (currentNode) setSelectedNodeIds(new Set([currentNode.id]));
       }
     },
@@ -133,8 +133,8 @@ export const useNavigation = (
       const node = nodes.find((n) => n.id === nodeId);
       if (!node) return;
 
-      if ((node.parentId ?? null) !== (currentScopeId ?? null)) {
-        setCurrentScopeId(node.parentId || null);
+      if ((node.scopeId ?? null) !== (currentScopeId ?? null)) {
+        setCurrentScopeId(node.scopeId || null);
       }
 
       setSelectedNodeIds(new Set([nodeId]));
