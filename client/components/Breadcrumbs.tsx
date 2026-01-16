@@ -34,7 +34,7 @@ export const Breadcrumbs: React.FC<BreadcrumbsProps> = ({
           <div className="flex items-center gap-1 pointer-events-auto">
             <button
               onClick={() => onNavigate(crumb.id, crumb.type)}
-              className={`transition-colors ${
+              className={`transition-colors max-w-[150px] truncate ${
                 crumb.id &&
                 selectedNodeIds.has(crumb.id) &&
                 selectedNodeIds.size === 1
@@ -48,6 +48,7 @@ export const Breadcrumbs: React.FC<BreadcrumbsProps> = ({
                   selectedNodeIds.size === 1
                 )
               }
+              title={crumb.name}
             >
               {crumb.name}
             </button>
