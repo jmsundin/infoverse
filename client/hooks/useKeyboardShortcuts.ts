@@ -9,7 +9,10 @@ export const useKeyboardShortcuts = (
   handlePaste: (pos: { x: number; y: number }) => void,
   viewTransform: ViewportTransform,
   toastVisible: boolean,
-  toastAction?: () => void
+  toastAction?: () => void,
+  // Deletion stack support
+  deletionStackSize?: number,
+  restoreFromDeletionStack?: () => Promise<void>
 ) => {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -22,8 +25,13 @@ export const useKeyboardShortcuts = (
       // Undo (Ctrl+Z / Cmd+Z)
       if ((e.ctrlKey || e.metaKey) && e.key === "z") {
         if (toastVisible && toastAction) {
+          // Immediate undo during grace period (5 second window)
           e.preventDefault();
           toastAction();
+        } else if (deletionStackSize && deletionStackSize > 0 && restoreFromDeletionStack) {
+          // Restore from deletion stack (multi-level undo)
+          e.preventDefault();
+          restoreFromDeletionStack();
         }
       }
 
@@ -69,6 +77,8 @@ export const useKeyboardShortcuts = (
     viewTransform,
     toastVisible,
     toastAction,
+    deletionStackSize,
+    restoreFromDeletionStack,
   ]);
 };
 

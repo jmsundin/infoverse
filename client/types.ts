@@ -1,32 +1,15 @@
-import React from 'react';
-
 export enum NodeType {
   NOTE = 'NOTE',
-  CHAT = 'CHAT',
-  CLUSTER = 'CLUSTER'
+  CHAT = 'CHAT'
 }
 
 export type NodeColor = 'slate' | 'red' | 'green' | 'blue' | 'amber' | 'purple';
 
 export type ResizeDirection = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 
-export type LODLevel = 'DETAIL' | 'TITLE' | 'CLUSTER';
+export type LODLevel = 'DETAIL' | 'TITLE';
 
 export type EdgeStyle = 'default' | 'sankey-lr';
-
-// Cluster visualization data types
-export interface ClusterMemberNode {
-  id: string;
-  relativeX: number;  // 0-1 normalized position within cluster bounds
-  relativeY: number;
-  color: NodeColor;
-  title?: string;
-}
-
-export interface ClusterInternalEdge {
-  sourceId: string;
-  targetId: string;
-}
 
 // Node loading state for viewport-based lazy loading
 export type NodeLoadState = 'position-only' | 'loading' | 'loaded' | 'error';
@@ -38,32 +21,41 @@ export interface EmbeddedEdge {
   label: string;
 }
 
-export interface GraphNode {
+// Persisted fields (stored in markdown frontmatter)
+export interface GraphNodeFrontmatter {
   id: string;
   type: NodeType;
   x: number;
   y: number;
-  title?: string; // AI-generated display title for LOD view and breadcrumbs
-  content: string; // For NOTE, this is the text. For CHAT, initial context or title.
-  messages?: ChatMessage[]; // Only for CHAT
   width?: number;
   height?: number;
-  link?: string; // Wikipedia link
   color?: NodeColor;
-  scopeId?: string; // For hierarchical scoping (viewport)
-  parentId?: string; // For outline tree hierarchy (expansion/creation parent)
-  summary?: string; // High-level summary for semantic zoom
+  pinned?: boolean;
+  scopeId?: string | null; // For hierarchical scoping (viewport)
+  parentId?: string | null; // For outline tree hierarchy (expansion/creation parent)
+  edges?: EmbeddedEdge[]; // Labeled outgoing edges stored with this node
   autoExpandDepth?: number; // Number of levels to automatically expand
-  aliases?: string[]; // Alternative names for the node
-  clusterCount?: number; // Number of nodes in this cluster
-  clusterIds?: string[]; // IDs of nodes in this cluster
-  clusterMemberNodes?: ClusterMemberNode[]; // Pre-computed mini-node data for visualization
-  clusterInternalEdges?: ClusterInternalEdge[]; // Pre-computed internal edges for visualization
-  edges?: EmbeddedEdge[]; // Outgoing edges stored with this node
-  pinned?: boolean; // User-pinned anchor for physics simulation
-  // Viewport-based lazy loading state
-  _loadState?: NodeLoadState; // Tracks if full content has been loaded
-  _loadError?: string; // Error message if loading failed
+}
+
+// Runtime node with derived fields
+export interface GraphNode extends GraphNodeFrontmatter {
+  // Content fields (body is source of truth, but these are parsed for runtime use)
+  content: string; // The markdown body content
+  title?: string; // Derived from first # heading in body
+
+  // Runtime-derived fields (parsed from body, not in frontmatter)
+  // For CHAT nodes: messages parsed from body (**role**: text format)
+  messages?: ChatMessage[];
+  // Aliases derived from wiki-links in body
+  aliases?: string[];
+  // External link (first markdown link in body, e.g. Wikipedia)
+  link?: string;
+  // Summary for display (can be derived from content or AI-generated)
+  summary?: string;
+
+  // Viewport-based lazy loading state (runtime only)
+  _loadState?: NodeLoadState;
+  _loadError?: string;
 }
 
 export interface ChatMessage {

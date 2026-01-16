@@ -2,14 +2,13 @@ import {
   GraphNode,
   NodeType,
   EmbeddedEdge,
-  ChatMessage,
   NodeColor,
 } from "../../types";
 import {
   extractFirstNounPhrase,
   cleanTitleMarkdown,
 } from "../../utils/titleUtils";
-import { SchemaValidationResult } from "./types";
+import { SchemaValidationResult, OldSchemaFields, OldChatMessage } from "./types";
 
 const VALID_NODE_TYPES = Object.values(NodeType);
 const VALID_COLORS: NodeColor[] = [
@@ -29,6 +28,169 @@ export interface EdgeContext {
 }
 
 /**
+ * Detect fields from old schema that need migration
+ */
+export function detectOldSchemaFields(node: Record<string, unknown>): OldSchemaFields {
+  const oldFields: OldSchemaFields = {};
+
+  // Check for deprecated fields in frontmatter
+  if ('summary' in node && node.summary !== undefined) {
+    oldFields.summary = node.summary as string;
+  }
+  if ('aliases' in node && Array.isArray(node.aliases)) {
+    oldFields.aliases = node.aliases as string[];
+  }
+  if ('link' in node && typeof node.link === 'string') {
+    oldFields.link = node.link;
+  }
+  if ('messages' in node && Array.isArray(node.messages)) {
+    oldFields.messages = node.messages as OldChatMessage[];
+  }
+
+  // Check for cluster fields (CLUSTER type is removed)
+  if ('clusterCount' in node) {
+    oldFields.clusterCount = node.clusterCount as number;
+  }
+  if ('clusterIds' in node && Array.isArray(node.clusterIds)) {
+    oldFields.clusterIds = node.clusterIds as string[];
+  }
+  if ('clusterMemberNodes' in node && Array.isArray(node.clusterMemberNodes)) {
+    oldFields.clusterMemberNodes = node.clusterMemberNodes;
+  }
+  if ('clusterInternalEdges' in node && Array.isArray(node.clusterInternalEdges)) {
+    oldFields.clusterInternalEdges = node.clusterInternalEdges;
+  }
+
+  // Check for old field names (parentId used to be scope, outlineParentId -> parentId)
+  if ('outlineParentId' in node && node.outlineParentId !== undefined) {
+    oldFields.outlineParentId = node.outlineParentId as string;
+  }
+
+  // Check if title is in frontmatter (should be derived from body now)
+  if ('title' in node && typeof node.title === 'string') {
+    oldFields.title = node.title;
+  }
+
+  return oldFields;
+}
+
+/**
+ * Check if node has any old schema fields that need migration
+ */
+export function needsMigration(oldFields: OldSchemaFields): boolean {
+  return (
+    oldFields.title !== undefined ||
+    oldFields.summary !== undefined ||
+    oldFields.aliases !== undefined ||
+    oldFields.link !== undefined ||
+    oldFields.messages !== undefined ||
+    oldFields.clusterCount !== undefined ||
+    oldFields.clusterIds !== undefined ||
+    oldFields.clusterMemberNodes !== undefined ||
+    oldFields.clusterInternalEdges !== undefined ||
+    oldFields.outlineParentId !== undefined
+  );
+}
+
+/**
+ * Migrate node content from old schema to new schema
+ * Transforms frontmatter fields into body content
+ */
+export function migrateNodeContent(
+  node: GraphNode,
+  oldFields: OldSchemaFields
+): { content: string; removedFields: string[] } {
+  let body = node.content || '';
+  const removedFields: string[] = [];
+
+  // 1. Add title as heading if not present in body
+  if (oldFields.title && !body.match(/^#\s+.+$/m)) {
+    body = `# ${oldFields.title}\n\n${body}`;
+    removedFields.push('title');
+  }
+
+  // 2. Convert messages array to markdown (CHAT nodes)
+  if (oldFields.messages?.length) {
+    const messagesMd = oldFields.messages
+      .map(m => {
+        // Normalize 'model' to 'assistant' for new schema
+        const role = m.role === 'model' ? 'assistant' : m.role;
+        return `**${role}**: ${m.text}`;
+      })
+      .join('\n\n');
+
+    // If body already has a title heading, insert messages after it
+    const headingMatch = body.match(/^(#\s+.+\n\n?)/);
+    if (headingMatch) {
+      body = headingMatch[1] + '\n' + messagesMd + body.slice(headingMatch[0].length);
+    } else if (body.trim()) {
+      // Body has content but no heading - prepend messages
+      body = messagesMd + '\n\n' + body;
+    } else {
+      body = messagesMd;
+    }
+    removedFields.push('messages');
+  }
+
+  // 3. Convert link to markdown (append to body)
+  if (oldFields.link) {
+    const linkMd = `\n\n[Source](${oldFields.link})`;
+    body = body.trimEnd() + linkMd;
+    removedFields.push('link');
+  }
+
+  // 4. Mark other deprecated fields for removal (they don't transform to body)
+  if (oldFields.summary !== undefined) removedFields.push('summary');
+  if (oldFields.aliases !== undefined) removedFields.push('aliases');
+  if (oldFields.clusterCount !== undefined) removedFields.push('clusterCount');
+  if (oldFields.clusterIds !== undefined) removedFields.push('clusterIds');
+  if (oldFields.clusterMemberNodes !== undefined) removedFields.push('clusterMemberNodes');
+  if (oldFields.clusterInternalEdges !== undefined) removedFields.push('clusterInternalEdges');
+
+  return { content: body.trim(), removedFields };
+}
+
+/**
+ * Migrate field names from old schema to new schema
+ * - Old parentId (scope) -> scopeId
+ * - Old outlineParentId -> parentId
+ */
+export function migrateFieldNames(
+  node: Record<string, unknown>,
+  oldFields: OldSchemaFields
+): Partial<GraphNode> {
+  const fixes: Partial<GraphNode> = {};
+
+  // Old outlineParentId becomes new parentId
+  if (oldFields.outlineParentId !== undefined) {
+    fixes.parentId = oldFields.outlineParentId;
+  }
+
+  // If node has old parentId but no scopeId, and no outlineParentId,
+  // then old parentId was actually the scope
+  const hasOldParentIdAsScopeId =
+    !('scopeId' in node) &&
+    'parentId' in node &&
+    oldFields.outlineParentId === undefined;
+
+  if (hasOldParentIdAsScopeId) {
+    fixes.scopeId = node.parentId as string | null;
+  }
+
+  return fixes;
+}
+
+/**
+ * Migrate CLUSTER type to NOTE (CLUSTER is removed from schema)
+ */
+export function migrateClusterType(node: Record<string, unknown>): Partial<GraphNode> {
+  if (node.type === 'CLUSTER') {
+    return { type: NodeType.NOTE };
+  }
+  return {};
+}
+
+/**
  * Validate a GraphNode against the current schema
  * Returns validation results with suggested fixes for invalid/missing fields
  */
@@ -40,14 +202,25 @@ export function validateNodeSchema(
   const invalidFields: Array<{ field: string; reason: string }> = [];
   const suggestedFixes: Partial<GraphNode> = {};
 
+  // Detect old schema fields
+  const oldSchemaFields = detectOldSchemaFields(node as unknown as Record<string, unknown>);
+  const hasOldSchema = needsMigration(oldSchemaFields);
+
   // Required fields
   if (!node.id || typeof node.id !== "string") {
     missingFields.push("id");
   }
 
+  // Type validation - also handle CLUSTER -> NOTE migration
   if (!node.type || !VALID_NODE_TYPES.includes(node.type)) {
-    invalidFields.push({ field: "type", reason: `Invalid type: ${node.type}` });
-    suggestedFixes.type = NodeType.NOTE;
+    // Check if it's a CLUSTER type that needs migration
+    if ((node as unknown as Record<string, unknown>).type === 'CLUSTER') {
+      invalidFields.push({ field: "type", reason: "CLUSTER type removed, migrating to NOTE" });
+      suggestedFixes.type = NodeType.NOTE;
+    } else {
+      invalidFields.push({ field: "type", reason: `Invalid type: ${node.type}` });
+      suggestedFixes.type = NodeType.NOTE;
+    }
   }
 
   if (typeof node.x !== "number" || isNaN(node.x)) {
@@ -65,7 +238,7 @@ export function validateNodeSchema(
     suggestedFixes.content = "";
   }
 
-  // Title validation - generate if missing or empty
+  // Title validation - generate if missing or empty (title is now derived from body)
   if (!node.title || node.title.trim() === "") {
     const generatedTitle = generateTitleFromContent(node.content || "");
     suggestedFixes.title = generatedTitle;
@@ -75,7 +248,6 @@ export function validateNodeSchema(
     });
   } else {
     // Clean existing title of markdown artifacts
-    console.log("node.title", node.title);
     const cleanedTitle = cleanTitleMarkdown(node.title);
     if (cleanedTitle !== node.title) {
       suggestedFixes.title = cleanedTitle;
@@ -134,64 +306,6 @@ export function validateNodeSchema(
     }
   }
 
-  // Messages array validation (for CHAT nodes)
-  if (node.type === NodeType.CHAT && node.messages !== undefined) {
-    if (!Array.isArray(node.messages)) {
-      invalidFields.push({
-        field: "messages",
-        reason: "messages must be an array",
-      });
-      suggestedFixes.messages = [];
-    } else {
-      const validMessages = node.messages.filter(isValidChatMessage);
-      if (validMessages.length !== node.messages.length) {
-        invalidFields.push({
-          field: "messages",
-          reason: "Some messages have invalid structure",
-        });
-        suggestedFixes.messages = validMessages;
-      }
-    }
-  }
-
-  // Aliases validation
-  if (node.aliases !== undefined) {
-    if (!Array.isArray(node.aliases)) {
-      invalidFields.push({
-        field: "aliases",
-        reason: "aliases must be an array",
-      });
-      suggestedFixes.aliases = [];
-    } else if (!node.aliases.every((a) => typeof a === "string")) {
-      invalidFields.push({
-        field: "aliases",
-        reason: "aliases must be strings",
-      });
-      suggestedFixes.aliases = node.aliases.filter(
-        (a) => typeof a === "string"
-      );
-    }
-  }
-
-  // ClusterIds validation
-  if (node.clusterIds !== undefined) {
-    if (!Array.isArray(node.clusterIds)) {
-      invalidFields.push({
-        field: "clusterIds",
-        reason: "clusterIds must be an array",
-      });
-      suggestedFixes.clusterIds = [];
-    } else if (!node.clusterIds.every((id) => typeof id === "string")) {
-      invalidFields.push({
-        field: "clusterIds",
-        reason: "clusterIds must be strings",
-      });
-      suggestedFixes.clusterIds = node.clusterIds.filter(
-        (id) => typeof id === "string"
-      );
-    }
-  }
-
   // autoExpandDepth validation
   if (
     node.autoExpandDepth !== undefined &&
@@ -202,18 +316,6 @@ export function validateNodeSchema(
       reason: "autoExpandDepth must be a number",
     });
     suggestedFixes.autoExpandDepth = 0;
-  }
-
-  // clusterCount validation
-  if (
-    node.clusterCount !== undefined &&
-    typeof node.clusterCount !== "number"
-  ) {
-    invalidFields.push({
-      field: "clusterCount",
-      reason: "clusterCount must be a number",
-    });
-    suggestedFixes.clusterCount = 0;
   }
 
   // pinned validation
@@ -242,11 +344,52 @@ export function validateNodeSchema(
     }
   }
 
+  // Apply old schema migration fixes if needed
+  if (hasOldSchema) {
+    // Migrate content (title, messages, link -> body)
+    const { content: migratedContent, removedFields } = migrateNodeContent(node, oldSchemaFields);
+    if (removedFields.length > 0) {
+      suggestedFixes.content = migratedContent;
+      for (const field of removedFields) {
+        invalidFields.push({
+          field,
+          reason: `Deprecated field migrated to body content`,
+        });
+      }
+    }
+
+    // Migrate field names (parentId <-> scopeId)
+    const fieldNameFixes = migrateFieldNames(
+      node as unknown as Record<string, unknown>,
+      oldSchemaFields
+    );
+    Object.assign(suggestedFixes, fieldNameFixes);
+    if (fieldNameFixes.scopeId !== undefined) {
+      invalidFields.push({
+        field: "scopeId",
+        reason: "Migrated from old parentId field",
+      });
+    }
+    if (fieldNameFixes.parentId !== undefined && oldSchemaFields.outlineParentId !== undefined) {
+      invalidFields.push({
+        field: "parentId",
+        reason: "Migrated from outlineParentId field",
+      });
+    }
+
+    // Migrate CLUSTER type
+    const typeFixes = migrateClusterType(node as unknown as Record<string, unknown>);
+    if (typeFixes.type !== undefined) {
+      suggestedFixes.type = typeFixes.type;
+    }
+  }
+
   return {
     isValid: missingFields.length === 0 && invalidFields.length === 0,
     missingFields,
     invalidFields,
     suggestedFixes,
+    oldSchemaFields: hasOldSchema ? oldSchemaFields : undefined,
   };
 }
 
@@ -260,19 +403,6 @@ function isValidEmbeddedEdge(edge: unknown): edge is EmbeddedEdge {
     typeof e.id === "string" &&
     typeof e.target === "string" &&
     typeof e.label === "string"
-  );
-}
-
-/**
- * Check if a message has valid ChatMessage structure
- */
-function isValidChatMessage(msg: unknown): msg is ChatMessage {
-  if (typeof msg !== "object" || msg === null) return false;
-  const m = msg as Record<string, unknown>;
-  return (
-    (m.role === "user" || m.role === "model") &&
-    typeof m.text === "string" &&
-    typeof m.timestamp === "number"
   );
 }
 

@@ -1,12 +1,11 @@
 import { useCallback } from "react";
 import { v4 as uuidv4 } from "uuid";
-import { GraphNode, GraphEdge, NodeType, ChatMessage, ViewportTransform, SimulationTrigger } from "../types";
+import { GraphNode, GraphEdge, NodeType, ViewportTransform, SimulationTrigger } from "../types";
 import { DEFAULT_NODE_WIDTH, DEFAULT_NODE_HEIGHT } from "../constants";
 import * as geminiService from "../services/geminiService";
 import * as hfService from "../services/huggingfaceService";
-import { deleteNodeFile } from "../services/storageService";
-import { deleteNodeFromApi } from "../services/apiStorageService";
 import { useStorage } from "../context/StorageContext";
+import { formatChatContent, appendChatMessage, updateLastAssistantMessage } from "../utils/chatFormatUtils";
 
 export const useGraphOperations = (
   nodes: GraphNode[],
@@ -29,23 +28,26 @@ export const useGraphOperations = (
   handleExpandNode: (id: string, topic: string, node?: GraphNode) => void,
   deletedNodeRef: React.MutableRefObject<{ nodes: GraphNode[]; edges: GraphEdge[]; timer: number | null; } | null>,
   setActiveSidePanes: React.Dispatch<React.SetStateAction<any[]>>,
-  startSimulation?: (trigger: SimulationTrigger, subtreeRootId?: string) => void
+  startSimulation?: (trigger: SimulationTrigger, subtreeRootId?: string) => void,
+  viewportStorageDeleteNode?: (nodeId: string) => Promise<void>
 ) => {
-  // Get storage mode to skip file/API deletion in memory-only mode
-  const { storageMode } = useStorage();
+  // Get storage context for proper delete handling (fallback if viewportStorageDeleteNode not provided)
+  const { deleteNode: contextDeleteNode } = useStorage();
+  const storageDeleteNode = viewportStorageDeleteNode || contextDeleteNode;
 
   const handleCreateNode = useCallback(
     (node: GraphNode) => {
       setNodesCallback((prevNodes) => [...prevNodes, node]);
       setSelectedNodeIds(new Set([node.id]));
       setCurrentScopeId(node.parentId || null);
-      setViewTransform((prevTransform) => ({
-        ...prevTransform,
-        x: prevTransform.x + 100,
-        y: prevTransform.y + 100,
-      }));
+      // Pan view slightly when creating a node
+      setViewTransform({
+        ...viewTransform,
+        x: viewTransform.x + 100,
+        y: viewTransform.y + 100,
+      });
     },
-    [setNodesCallback, setSelectedNodeIds, setCurrentScopeId, setViewTransform]
+    [setNodesCallback, setSelectedNodeIds, setCurrentScopeId, setViewTransform, viewTransform]
   );
 
   const handleUpdateNode = useCallback(
@@ -143,17 +145,9 @@ export const useGraphOperations = (
       setSelectedNodeIds(new Set());
 
       const timer = window.setTimeout(async () => {
-        // Skip file/API deletion in memory-only mode
-        if (storageMode !== 'memory') {
-          if (dirHandle) {
-            for (const id of ids) {
-              await deleteNodeFile(dirHandle, id);
-            }
-          } else if (user) {
-            for (const id of ids) {
-              await deleteNodeFromApi(id);
-            }
-          }
+        // Use UnifiedStorageService for proper deletion across all storage backends
+        for (const id of ids) {
+          await storageDeleteNode(id);
         }
         deletedNodeRef.current = null;
       }, 5000);
@@ -188,18 +182,16 @@ export const useGraphOperations = (
         },
       });
     },
-    [nodes, edges, setNodesCallback, setEdgesCallback, cutNodeId, setCutNodeId, setActiveSidePanes, setSelectedNodeIds, dirHandle, user, deletedNodeRef, setToast, storageMode, startSimulation]
+    [nodes, edges, setNodesCallback, setEdgesCallback, cutNodeId, setCutNodeId, setActiveSidePanes, setSelectedNodeIds, deletedNodeRef, setToast, storageDeleteNode]
   );
 
   const handleDeleteNode = useCallback(
     (id: string) => {
-      if (selectedNodeIds.has(id)) {
-        confirmDeleteNode(Array.from(selectedNodeIds));
-      } else {
-        confirmDeleteNode([id]);
-      }
+      // Always delete only the specific node that was requested
+      // Multi-select delete should be explicit (e.g., via a separate "Delete All Selected" action)
+      confirmDeleteNode([id]);
     },
-    [confirmDeleteNode, selectedNodeIds]
+    [confirmDeleteNode]
   );
 
   const handleConnectStart = useCallback((id: string) => {
@@ -219,7 +211,7 @@ export const useGraphOperations = (
             source: sourceId,
             target: targetId,
             label: "related",
-            parentId: currentScopeId || undefined,
+            scopeId: currentScopeId || undefined,
           },
         ];
       });
@@ -244,37 +236,26 @@ export const useGraphOperations = (
       }
 
       const promptTemplate = geminiService.getTopicSummaryPrompt(selectionTooltip.text);
-      const initialMessages: ChatMessage[] =
-        type === NodeType.CHAT
-          ? [
-              {
-                role: "user",
-                text: selectionTooltip.text,
-                timestamp: Date.now(),
-              },
-            ]
-          : [];
-      const initialModelMsg: ChatMessage | undefined =
-        type === NodeType.CHAT
-          ? { role: "model", text: "", timestamp: Date.now() }
-          : undefined;
-      const startMessages =
-        type === NodeType.CHAT && initialModelMsg
-          ? [...initialMessages, initialModelMsg]
-          : initialMessages;
+
+      // Build initial content based on node type
+      let initialContent: string;
+      if (type === NodeType.CHAT) {
+        // Chat content: starts with user message and empty assistant response
+        initialContent = formatChatContent([
+          { role: 'user', text: selectionTooltip.text },
+          { role: 'assistant', text: '' }
+        ]);
+      } else {
+        // Note content: the selected text with a title
+        initialContent = `# ${selectionTooltip.text.length > 50 ? selectionTooltip.text.substring(0, 50) + '...' : selectionTooltip.text}\n\n${selectionTooltip.text}`;
+      }
 
       const newNode: GraphNode = {
         id: crypto.randomUUID(),
         type,
         x: newNodeX,
         y: newNodeY,
-        content:
-          type === NodeType.NOTE
-            ? selectionTooltip.text
-            : selectionTooltip.text.length > 30
-            ? selectionTooltip.text.substring(0, 30) + "..."
-            : selectionTooltip.text,
-        messages: startMessages,
+        content: initialContent,
         width: DEFAULT_NODE_WIDTH,
         height: DEFAULT_NODE_HEIGHT,
         parentId: currentScopeId || undefined,
@@ -295,7 +276,7 @@ export const useGraphOperations = (
             source: selectionTooltip.sourceId!,
             target: newNode.id,
             label: labelText,
-            parentId: currentScopeId || undefined,
+            scopeId: currentScopeId || undefined,
           },
         ]);
       }
@@ -310,34 +291,16 @@ export const useGraphOperations = (
             currentText += chunk;
             setNodesCallback((prev) =>
               prev.map((n) =>
-                n.id === newNode.id && n.messages
-                  ? {
-                      ...n,
-                      messages: [
-                        ...n.messages.slice(0, -1),
-                        {
-                          ...n.messages[n.messages.length - 1],
-                          text: currentText,
-                        },
-                      ],
-                    }
+                n.id === newNode.id
+                  ? { ...n, content: updateLastAssistantMessage(n.content, currentText) }
                   : n
               )
             );
           });
           setNodesCallback((prev) =>
             prev.map((n) =>
-              n.id === newNode.id && n.messages
-                ? {
-                    ...n,
-                    messages: [
-                      ...n.messages.slice(0, -1),
-                      {
-                        ...n.messages[n.messages.length - 1],
-                        text: result.text,
-                      },
-                    ],
-                  }
+              n.id === newNode.id
+                ? { ...n, content: updateLastAssistantMessage(n.content, result.text) }
                 : n
             )
           );
@@ -358,26 +321,29 @@ export const useGraphOperations = (
 
       const newNodeId = crypto.randomUUID();
 
-      const initialMessages: ChatMessage[] = isWiki
-        ? [{ role: "model", text: `Topic: ${topic}`, timestamp: Date.now() }]
-        : [
-            { role: "user", text: topic, timestamp: Date.now() },
-            { role: "model", text: "", timestamp: Date.now() },
-          ];
+      // Build content based on type
+      let initialContent: string;
+      if (isWiki) {
+        // Wiki topic: include link in body
+        const wikiUrl = `https://en.wikipedia.org/wiki/${encodeURIComponent(topic.replace(/ /g, "_"))}`;
+        initialContent = `# ${topic}\n\n**assistant**: Topic: ${topic}\n\n[Wikipedia](${wikiUrl})`;
+      } else {
+        // Chat: user message + empty assistant response
+        initialContent = formatChatContent([
+          { role: 'user', text: topic },
+          { role: 'assistant', text: '' }
+        ], topic);
+      }
 
       const newNode: GraphNode = {
         id: newNodeId,
         type: NodeType.CHAT,
         x: centerX,
         y: centerY,
-        content: topic,
+        content: initialContent,
         width: DEFAULT_NODE_WIDTH,
         height: DEFAULT_NODE_HEIGHT,
-        link: isWiki
-          ? `https://en.wikipedia.org/wiki/${encodeURIComponent(topic.replace(/ /g, "_"))}`
-          : undefined,
         color: isWiki ? "slate" : "green",
-        messages: initialMessages,
         parentId: currentScopeId || undefined,
       };
 
@@ -401,36 +367,30 @@ export const useGraphOperations = (
         const prompt = geminiService.getTopicSummaryPrompt(topic);
         let currentText = "";
 
-        const updateNodeMessage = (text: string) => {
+        const updateNodeContent = (text: string) => {
           setNodesCallback((prev) =>
-            prev.map((n) => {
-              if (n.id === newNodeId && n.messages) {
-                const newMsgs = [...n.messages];
-                const lastMsg = newMsgs[newMsgs.length - 1];
-                if (lastMsg.role === "model") {
-                  newMsgs[newMsgs.length - 1] = { ...lastMsg, text };
-                }
-                return { ...n, messages: newMsgs };
-              }
-              return n;
-            })
+            prev.map((n) =>
+              n.id === newNodeId
+                ? { ...n, content: updateLastAssistantMessage(n.content, text) }
+                : n
+            )
           );
         };
 
         (aiProvider === "huggingface" ? hfService : geminiService)
           .sendChatMessage([], prompt, (chunk) => {
             currentText += chunk;
-            updateNodeMessage(currentText);
+            updateNodeContent(currentText);
           })
           .then((result) => {
-            updateNodeMessage(result.text);
+            updateNodeContent(result.text);
           })
           .catch((err: any) => {
             if (err.message === "LIMIT_REACHED") {
               setShowLimitModal(true);
-              updateNodeMessage("Limit reached.");
+              updateNodeContent("Limit reached.");
             } else {
-              updateNodeMessage("Error generating content.");
+              updateNodeContent("Error generating content.");
             }
           });
       }

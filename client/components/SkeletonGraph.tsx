@@ -121,21 +121,6 @@ export const NodeSkeleton: React.FC<NodeSkeletonProps> = ({
   const colorTheme = NODE_COLORS[color as NodeColor] || NODE_COLORS['slate'];
   const pulseClass = isLoading ? 'animate-pulse' : '';
 
-  // CLUSTER mode: Small colored dot/rectangle
-  if (lodLevel === 'CLUSTER') {
-    return (
-      <div
-        className={`absolute rounded-lg pointer-events-none ${colorTheme.bg} ${colorTheme.border} border shadow-sm ${pulseClass} ${isLoading ? '' : 'opacity-40'} ${className}`}
-        style={{
-          left: `${x}px`,
-          top: `${y}px`,
-          width: `${Math.min(width, 60)}px`,
-          height: `${Math.min(height, 40)}px`,
-        }}
-      />
-    );
-  }
-
   // TITLE mode: Header bar only with title placeholder
   if (lodLevel === 'TITLE') {
     return (

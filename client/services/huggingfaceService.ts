@@ -27,12 +27,13 @@ const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
 export const sendChatMessage = async (
   history: { role: "user" | "model"; text: string }[],
   newMessage: string,
-  onToken?: (text: string) => void
+  onToken?: (text: string) => void,
+  context?: { topic?: string }
 ): Promise<{ text: string; sources?: { uri: string; title: string }[] }> => {
   try {
     const response = await fetchWithAuth("/api/huggingface/chat", {
       method: "POST",
-      body: JSON.stringify({ history, newMessage }),
+      body: JSON.stringify({ history, newMessage, context }),
     });
 
     if (!response.body) throw new Error("No response body");

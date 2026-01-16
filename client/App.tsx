@@ -84,7 +84,7 @@ import { StorageTest } from './components/StorageTest';
 const App: React.FC = () => {
   // --- Auth & Storage from Context ---
   const { user, setUser, login, logout, isLoading: authLoading } = useAuth();
-  const { storageMode, isMigrating, initializeInMemory } = useStorage();
+  const { storageMode, isMigrating, initializeInMemory, restoreLastDeletedNode, getDeletionStackSize } = useStorage();
 
   // --- Hooks for State ---
   const {
@@ -129,6 +129,7 @@ const App: React.FC = () => {
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isOutlinePanelOpen, setIsOutlinePanelOpen] = useState(false);
+  const [lastSelectedNodeId, setLastSelectedNodeId] = useState<string | null>(null);
   const [cutNodeId, setCutNodeId] = useState<string | null>(null);
   const [aiProvider, setAiProviderState] = useState<"gemini" | "huggingface">(getAIProvider);
   const [physicsConfig, setPhysicsConfigState] = useState<PhysicsConfig>(getPhysicsConfig);
@@ -186,10 +187,13 @@ const App: React.FC = () => {
     debounceMs: 150,
   });
 
-  // When viewport storage is enabled and initialized, sync nodes/edges from it
+  // When viewport storage is enabled and initialized, do initial sync of nodes/edges
+  // This should only run once on initialization, not on every viewportStorage state change
+  const viewportStorageSyncedRef = useRef(false);
   useEffect(() => {
-    if (USE_VIEWPORT_STORAGE && viewportStorage.isInitialized && dirHandle) {
-      // Viewport storage takes over node/edge state management
+    if (USE_VIEWPORT_STORAGE && viewportStorage.isInitialized && dirHandle && !viewportStorageSyncedRef.current) {
+      viewportStorageSyncedRef.current = true;
+      // Viewport storage takes over node/edge state management (initial load only)
       if (viewportStorage.nodes.length > 0) {
         setNodes(viewportStorage.nodes);
       }
@@ -218,17 +222,27 @@ const App: React.FC = () => {
               p.summary !== n.summary ||
               JSON.stringify(p.aliases || []) !==
                 JSON.stringify(n.aliases || []);
-            markNodeDirty(n, !semanticChanged);
+
+            // Use viewport storage when enabled, otherwise fall back to legacy persistence
+            if (USE_VIEWPORT_STORAGE && viewportStorage.isInitialized) {
+              viewportStorage.updateNode(n, !semanticChanged);
+            } else {
+              markNodeDirty(n, !semanticChanged);
+            }
           }
         }
-        debouncedFlushSaves(
-          uniqueNodes,
-          edges,
-          viewTransform,
-          autoGraphEnabled,
-          currentScopeId,
-          selectedNodeIds
-        );
+
+        // Only use legacy flush when viewport storage is not active
+        if (!USE_VIEWPORT_STORAGE || !viewportStorage.isInitialized) {
+          debouncedFlushSaves(
+            uniqueNodes,
+            edges,
+            viewTransform,
+            autoGraphEnabled,
+            currentScopeId,
+            selectedNodeIds
+          );
+        }
         return uniqueNodes;
       });
     },
@@ -241,6 +255,7 @@ const App: React.FC = () => {
       debouncedFlushSaves,
       markNodeDirty,
       setNodes,
+      viewportStorage,
     ]
   );
 
@@ -249,15 +264,21 @@ const App: React.FC = () => {
       setEdges((prev) => {
         const resolvedEdges =
           typeof newEdges === "function" ? newEdges(prev) : newEdges;
-        markEdgesDirty();
-        debouncedFlushSaves(
-          nodes,
-          resolvedEdges,
-          viewTransform,
-          autoGraphEnabled,
-          currentScopeId,
-          selectedNodeIds
-        );
+
+        // Use viewport storage when enabled, otherwise fall back to legacy persistence
+        if (USE_VIEWPORT_STORAGE && viewportStorage.isInitialized) {
+          viewportStorage.updateEdges(resolvedEdges);
+        } else {
+          markEdgesDirty();
+          debouncedFlushSaves(
+            nodes,
+            resolvedEdges,
+            viewTransform,
+            autoGraphEnabled,
+            currentScopeId,
+            selectedNodeIds
+          );
+        }
         return resolvedEdges;
       });
     },
@@ -270,6 +291,7 @@ const App: React.FC = () => {
       debouncedFlushSaves,
       markEdgesDirty,
       setEdges,
+      viewportStorage,
     ]
   );
 
@@ -341,7 +363,8 @@ const App: React.FC = () => {
     handleExpandNode,
     deletedNodeRef,
     setActiveSidePanes,
-    startSimulation
+    startSimulation,
+    USE_VIEWPORT_STORAGE && dirHandle ? viewportStorage.deleteNode : undefined
   );
 
   // --- Navigation ---
@@ -360,6 +383,19 @@ const App: React.FC = () => {
     );
 
   // --- Keyboard Shortcuts ---
+  const handleRestoreFromDeletionStack = useCallback(async () => {
+    const entry = await restoreLastDeletedNode();
+    if (entry) {
+      // Update local state with restored node and edges
+      setNodes((prev) => [...prev, entry.node]);
+      setEdges((prev) => [...prev, ...entry.edges]);
+      setToast({
+        visible: true,
+        message: "Node restored",
+      });
+    }
+  }, [restoreLastDeletedNode, setNodes, setEdges]);
+
   useKeyboardShortcuts(
     selectedNodeIds,
     confirmDeleteNode,
@@ -368,7 +404,9 @@ const App: React.FC = () => {
     handlePaste,
     viewTransform,
     toast.visible,
-    toast.action
+    toast.action,
+    getDeletionStackSize(),
+    handleRestoreFromDeletionStack
   );
 
   // --- Breadcrumbs ---
@@ -655,19 +693,14 @@ const App: React.FC = () => {
     [nodes, currentScopeId]
   );
 
+  // Clustering has been removed - just use filtered nodes directly
   const clusteredNodes = useMemo(() => {
     return performGreedyClustering(filteredNodes, edges, viewTransform.k);
   }, [filteredNodes, edges, viewTransform.k]);
 
   const visibleNodeIds = useMemo(() => {
     const ids = new Set<string>();
-    clusteredNodes.forEach((n) => {
-      if (n.type === NodeType.CLUSTER && n.clusterIds) {
-        n.clusterIds.forEach((id) => ids.add(id));
-      } else {
-        ids.add(n.id);
-      }
-    });
+    clusteredNodes.forEach((n) => ids.add(n.id));
     return ids;
   }, [clusteredNodes]);
 
@@ -682,30 +715,10 @@ const App: React.FC = () => {
     [edges, currentScopeId, visibleNodeIds]
   );
 
+  // Edges to render - simplified without clustering
   const edgesToRender = useMemo(() => {
-    const idToRenderedId = new Map<string, string>();
-    clusteredNodes.forEach((n) => {
-      if (n.type === NodeType.CLUSTER && n.clusterIds) {
-        n.clusterIds.forEach((id) => idToRenderedId.set(id, n.id));
-      } else {
-        idToRenderedId.set(n.id, n.id);
-      }
-    });
-    const seenEdges = new Set<string>();
-    const renderedEdges: GraphEdge[] = [];
-    filteredEdges.forEach((e) => {
-      const sourceId = idToRenderedId.get(e.source);
-      const targetId = idToRenderedId.get(e.target);
-      if (sourceId && targetId && sourceId !== targetId) {
-        const key = `${sourceId}-${targetId}`;
-        if (!seenEdges.has(key)) {
-          seenEdges.add(key);
-          renderedEdges.push({ ...e, source: sourceId, target: targetId });
-        }
-      }
-    });
-    return renderedEdges;
-  }, [filteredEdges, clusteredNodes]);
+    return filteredEdges;
+  }, [filteredEdges]);
 
   const handleMaximizeNode = useCallback(
     (id: string) => {
@@ -987,6 +1000,7 @@ const App: React.FC = () => {
             onNodeSelect={(id, multi) => {
               if (id === null) {
                 setSelectedNodeIds(new Set());
+                setLastSelectedNodeId(null);
               } else if (multi === 'remove') {
                 // Remove this specific node from selection (for minimize)
                 setSelectedNodeIds((prev) => {
@@ -997,8 +1011,14 @@ const App: React.FC = () => {
               } else if (multi) {
                 // Add to existing selection without clearing others
                 setSelectedNodeIds((prev) => new Set([...prev, id]));
+                setLastSelectedNodeId(id);
               } else {
                 setSelectedNodeIds(new Set([id]));
+                setLastSelectedNodeId(id);
+              }
+              // Auto-open outline panel when a node is selected
+              if (id !== null) {
+                setIsOutlinePanelOpen(true);
               }
             }}
             canvasShiftX={canvasShiftX}
@@ -1031,6 +1051,7 @@ const App: React.FC = () => {
         onClose={() => setIsOutlinePanelOpen(false)}
         nodes={nodes}
         selectedNodeIds={selectedNodeIds}
+        lastSelectedNodeId={lastSelectedNodeId}
         currentScopeId={currentScopeId}
         onFocusNode={handleFocusNode}
       />

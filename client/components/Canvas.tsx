@@ -608,7 +608,7 @@ export const Canvas: React.FC<CanvasProps> = ({
       // Viewport Calculations
       // Buffer determines how much off-screen content we render to allow smooth panning
       // At low zoom (high info density), we reduce buffer to save performance
-      const bufferMultiplier = currentLod === "CLUSTER" ? 0.5 : 1.5;
+      const bufferMultiplier = 1.5;
       const bufferX = vpW * bufferMultiplier;
       const bufferY = vpH * bufferMultiplier;
 
@@ -710,10 +710,6 @@ export const Canvas: React.FC<CanvasProps> = ({
           return false;
         }
 
-        // In CLUSTER mode, hide intra-cluster edges (edges within the same parent)
-        if (currentLod === "CLUSTER" && isIntraClusterEdge(source, target)) {
-          return false;
-        }
 
         const sW = source.width || DEFAULT_NODE_WIDTH;
         const sH = source.height || DEFAULT_NODE_HEIGHT;
@@ -2167,9 +2163,7 @@ export const Canvas: React.FC<CanvasProps> = ({
                   y={node.y}
                   width={node.width || DEFAULT_NODE_WIDTH}
                   height={
-                    lodLevel === "CLUSTER"
-                      ? 40
-                      : lodLevel === "TITLE"
+                    lodLevel === "TITLE"
                       ? NODE_HEADER_HEIGHT
                       : node.height || DEFAULT_NODE_HEIGHT
                   }

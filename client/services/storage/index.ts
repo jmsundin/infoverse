@@ -9,6 +9,8 @@ export {
   getStorageService,
   resetStorageService,
 } from './UnifiedStorageService';
+export { DeletionStackService } from './DeletionStackService';
+export { NodeArchiveService } from './NodeArchiveService';
 
 // Adapters
 export { LocalStorageAdapter } from './adapters/LocalStorageAdapter';

@@ -10,7 +10,7 @@ import { fetchWikidataSubtopics } from "../services/wikidataService";
 import * as geminiService from "../services/geminiService";
 import * as hfService from "../services/huggingfaceService";
 import { parseTextToNodes } from "../utils/graphUtils";
-import { extractFirstNounPhrase, isShortContent, cleanTitleMarkdown } from "../utils/titleUtils";
+import { extractFirstNounPhrase, isShortContent, cleanTitleMarkdown, deriveTitleFromContent } from "../utils/titleUtils";
 
 export const useExpansion = (
   nodes: GraphNode[],
@@ -102,8 +102,8 @@ export const useExpansion = (
             type: NodeType.CHAT,
             x: parentNodeX + fixedRadius * Math.cos(angle),
             y: parentNodeY + fixedRadius * Math.sin(angle),
-            title: st.label, // Wikidata labels are already short, use as title
-            content: st.label,
+            // Title is now derived from content's first # heading
+            content: `# ${st.label}${st.description ? `\n\n**assistant**: ${st.description}` : ''}`,
             width: DEFAULT_NODE_WIDTH,
             height: DEFAULT_NODE_HEIGHT,
             link: st.wikidataUrl,
@@ -111,15 +111,6 @@ export const useExpansion = (
             parentId: id, // Set outline hierarchy parent
             summary: st.description,
             autoExpandDepth: sourceNode.autoExpandDepth,
-            messages: st.description
-              ? [
-                  {
-                    role: "model",
-                    text: st.description,
-                    timestamp: Date.now(),
-                  },
-                ]
-              : [],
           };
         });
 
@@ -201,7 +192,7 @@ export const useExpansion = (
             nodesForRecursion.map((node) =>
               handleExpandNodeFromWikidata(
                 node.id,
-                node.content,
+                deriveTitleFromContent(node.content),
                 node,
                 depthToUse - 1
               )
@@ -270,26 +261,19 @@ export const useExpansion = (
           parentNodeX = sourceNode.x + offset * Math.cos(angle);
           parentNodeY = sourceNode.y + offset * Math.sin(angle);
 
+          // Title is derived from content's first # heading
+          const topicTitle = isShortContent(topic) ? topic : extractFirstNounPhrase(topic);
           topicNode = {
             id: topicNodeId,
             type: NodeType.CHAT,
             x: parentNodeX,
             y: parentNodeY,
-            // For short topics, use directly; otherwise extract noun phrase as fallback title
-            title: isShortContent(topic) ? topic : extractFirstNounPhrase(topic),
-            content: topic,
+            content: `# ${topicTitle}\n\n**assistant**: Expanded topic from "${sourceNode.content}".`,
             width: DEFAULT_NODE_WIDTH,
             height: DEFAULT_NODE_HEIGHT,
             scopeId: currentScopeId || undefined,
             parentId: id, // Set outline hierarchy parent
             autoExpandDepth: sourceNode.autoExpandDepth, // Inherit expansion settings
-            messages: [
-              {
-                role: "model",
-                text: `Expanded topic from "${sourceNode.content}".`,
-                timestamp: Date.now(),
-              },
-            ],
           };
 
           nodesToAdd.push(topicNode);
@@ -357,26 +341,19 @@ export const useExpansion = (
             const newNodeX = parent.x + dist * Math.cos(angle);
             const newNodeY = parent.y + dist * Math.sin(angle);
 
+            // Title is derived from content's first # heading
             const newNode: GraphNode = {
               id: newNodeId,
               type: NodeType.CHAT,
               x: newNodeX,
               y: newNodeY,
-              title: generatedTitles[i], // AI-generated or fallback title
-              content: item.name,
+              content: `# ${generatedTitles[i]}\n\n**assistant**: ${item.description}`,
               width: DEFAULT_NODE_WIDTH,
               height: DEFAULT_NODE_HEIGHT,
               scopeId: currentScopeId || undefined,
               parentId: parent.id, // Set outline hierarchy parent
               summary: item.description,
               autoExpandDepth: sourceNode.autoExpandDepth,
-              messages: [
-                {
-                  role: "model",
-                  text: item.description,
-                  timestamp: Date.now(),
-                },
-              ],
             };
 
             nodesToAdd.push(newNode);
@@ -398,22 +375,7 @@ export const useExpansion = (
             });
           });
         } else {
-          // --- Wikidata Check ---
-          // Try to expand from Wikidata first
-          const wikidataSuccess = await handleExpandNodeFromWikidata(
-            id,
-            topic,
-            sourceNode,
-            depth,
-            { suppressToast: true }
-          );
-
-          if (wikidataSuccess) return;
-
-          // Restart spinner if fallback (it was removed by handleExpandNodeFromWikidata)
-          setExpandingNodeIds((prev) => [...prev, id]);
-
-          // --- Gemini API Mode ---
+          // --- Gemini API Mode (AI Expansion) ---
           const existingNodeNames = nodes
             .filter((n) => (n.scopeId ?? null) === (currentScopeId ?? null))
             .map((n) => n.content);
@@ -436,13 +398,13 @@ export const useExpansion = (
               const angle =
                 startAngle + (i / result.nodes.length) * 2 * Math.PI;
 
+              // Title is derived from content's first # heading
               return {
                 id: crypto.randomUUID(),
                 type: NodeType.CHAT,
                 x: parentNodeX + fixedRadius * Math.cos(angle),
                 y: parentNodeY + fixedRadius * Math.sin(angle),
-                title: n.name, // AI expansion returns short names, use as title
-                content: n.name,
+                content: `# ${n.name}\n\n**assistant**: ${n.description}`,
                 width: DEFAULT_NODE_WIDTH,
                 height: DEFAULT_NODE_HEIGHT,
                 link: n.wikiLink,
@@ -450,27 +412,31 @@ export const useExpansion = (
                 parentId: parentNodeId, // Set outline hierarchy parent
                 summary: n.description, // Store description for semantic zoom
                 autoExpandDepth: sourceNode.autoExpandDepth,
-                messages: [
-                  {
-                    role: "model",
-                    text: n.description,
-                    timestamp: Date.now(),
-                  },
-                ],
               };
             });
 
             nodesToAdd.push(...subNodes);
             nextNodesToExpand = subNodes; // Mark these for potential recursion
 
+            // Create map for edge matching using original AI names
+            const nameToNode = new Map<string, GraphNode>();
+            result.nodes.forEach((n, i) => {
+              nameToNode.set(n.name, subNodes[i]);
+            });
+
             // Connect edges
             result.edges.forEach((e) => {
-              const targetSubNode = subNodes.find(
-                (sn) => sn.content === e.targetName
-              );
+              // Match against original AI-returned name (exact match)
+              const targetSubNode = nameToNode.get(e.targetName);
+
+              // For existing nodes, also try case-insensitive match
               const targetExistingNode = nodes.find(
-                (n) =>
-                  n.content === e.targetName && (n.scopeId ?? null) === (currentScopeId ?? null)
+                (n) => {
+                  const nodeTitle = deriveTitleFromContent(n.content);
+                  return (nodeTitle === e.targetName ||
+                          nodeTitle.toLowerCase() === e.targetName.toLowerCase()) &&
+                         (n.scopeId ?? null) === (currentScopeId ?? null);
+                }
               );
 
               if (targetSubNode) {

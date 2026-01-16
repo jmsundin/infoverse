@@ -30,6 +30,8 @@ export interface SchemaValidationResult {
   missingFields: string[];
   invalidFields: Array<{ field: string; reason: string }>;
   suggestedFixes: Partial<GraphNode>;
+  /** Fields from old schema that need migration */
+  oldSchemaFields?: OldSchemaFields;
 }
 
 /**
@@ -40,4 +42,35 @@ export interface MigrationResult {
   nodesUpdated: number;
   errors: MigrationError[];
   timestamp: number;
+}
+
+/**
+ * Old chat message format (from frontmatter)
+ */
+export interface OldChatMessage {
+  role: 'user' | 'model' | 'assistant' | 'system';
+  text: string;
+  timestamp?: number;
+}
+
+/**
+ * Fields from old schema that need migration
+ */
+export interface OldSchemaFields {
+  // Deprecated fields that may exist in old files
+  title?: string;          // Now derived from body
+  summary?: string;        // Removed, use embeddings
+  aliases?: string[];      // Derived from wiki-links
+  link?: string;           // Move to body as markdown
+  messages?: OldChatMessage[]; // Convert to body format
+
+  // Cluster fields (removed)
+  clusterCount?: number;
+  clusterIds?: string[];
+  clusterMemberNodes?: unknown[];
+  clusterInternalEdges?: unknown[];
+
+  // Old field names
+  outlineParentId?: string; // Now parentId
+  // parentId in old schema was scopeId (when outlineParentId is absent)
 }

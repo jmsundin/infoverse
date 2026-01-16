@@ -11,7 +11,7 @@ router.use(rateLimiter);
 
 // Chat Endpoint
 router.post('/chat', async (req, res) => {
-    const { history, newMessage } = req.body;
+    const { history, newMessage, context } = req.body;
 
     if (!newMessage) {
         return res.status(400).json({ message: 'Message is required' });
@@ -19,21 +19,32 @@ router.post('/chat', async (req, res) => {
 
     try {
         const historyContext = history ? history.map(h => `${h.role === 'user' ? 'User' : 'Model'}: ${h.text}`).join('\n') : '';
+
+        // Build topic context if provided
+        const topicContext = context?.topic
+            ? `The user is asking about: "${context.topic}". Use this as context for their questions.`
+            : '';
+
         const fullPrompt = `
           ${historyContext}
           User: ${newMessage}
-          
-          System: You are a helpful assistant in a knowledge graph application. 
+
+          System: You are a helpful assistant in a knowledge graph application.
           Users use you to explore Wikidata and Wikipedia information.
+          ${topicContext}
           Keep answers concise and relevant. If referring to specific articles, verify with search.
         `;
+
+        const systemInstruction = context?.topic
+            ? `You are an intelligent assistant connected to an infinite canvas. Help the user explore topics using data from Wikipedia and Wikidata. The current topic is "${context.topic}".`
+            : "You are an intelligent assistant connected to an infinite canvas. Help the user explore topics using data from Wikipedia and Wikidata.";
 
         const result = await ai.models.generateContentStream({
             model: 'gemini-2.5-flash',
             contents: fullPrompt,
             config: {
                 tools: [{ googleSearch: {} }],
-                systemInstruction: "You are an intelligent assistant connected to an infinite canvas. Help the user explore topics using data from Wikipedia and Wikidata."
+                systemInstruction
             }
         });
 

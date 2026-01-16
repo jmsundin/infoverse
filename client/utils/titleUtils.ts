@@ -111,3 +111,41 @@ export const cleanTitleMarkdown = (title: string): string => {
     .replace(/\s+/g, ' ')               // Normalize whitespace
     .trim() || 'Untitled';
 };
+
+/**
+ * Derive a display title from markdown content.
+ * Priority: first # heading -> noun phrase extraction -> "Untitled"
+ */
+export const deriveTitleFromContent = (content: string): string => {
+  if (!content) return 'Untitled';
+
+  // Try to extract first # heading (level 1 only)
+  const headingMatch = content.match(/^#\s+(.+)$/m);
+  if (headingMatch) {
+    return cleanTitleMarkdown(headingMatch[1].trim());
+  }
+
+  // Fallback to noun phrase extraction
+  return extractFirstNounPhrase(content, 50) || 'Untitled';
+};
+
+/**
+ * Update or add the title heading in markdown content.
+ * If content has a # heading, replaces it. Otherwise prepends a new heading.
+ */
+export const updateTitleInContent = (content: string, newTitle: string): string => {
+  const headingPattern = /^#\s+.+$/m;
+  const newHeading = `# ${newTitle}`;
+
+  if (headingPattern.test(content)) {
+    // Replace existing heading
+    return content.replace(headingPattern, newHeading);
+  } else {
+    // Prepend new heading
+    const trimmedContent = content.trim();
+    if (trimmedContent) {
+      return `${newHeading}\n\n${trimmedContent}`;
+    }
+    return newHeading;
+  }
+};

@@ -207,6 +207,24 @@ export class MigrationService {
           ...validation.suggestedFixes,
         };
 
+        // Remove deprecated fields that were migrated
+        // These fields are no longer part of the new schema
+        if (validation.oldSchemaFields) {
+          const nodeAny = fixedNode as unknown as Record<string, unknown>;
+          // Remove deprecated frontmatter fields
+          delete nodeAny.summary;
+          delete nodeAny.aliases;
+          delete nodeAny.link;
+          delete nodeAny.messages;
+          // Remove cluster fields
+          delete nodeAny.clusterCount;
+          delete nodeAny.clusterIds;
+          delete nodeAny.clusterMemberNodes;
+          delete nodeAny.clusterInternalEdges;
+          // Remove old field names (they've been migrated to new names)
+          delete nodeAny.outlineParentId;
+        }
+
         await saveNode(fixedNode);
         this.progress.nodesNeedingUpdates++;
 

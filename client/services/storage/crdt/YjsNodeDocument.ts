@@ -63,8 +63,8 @@ export function initializeDocumentFromNode(doc: Y.Doc, node: GraphNode): void {
   root.set(NODE_KEYS.VISUAL, visual);
 
   // Metadata (LWW)
+  // Note: title is derived from content's first # heading, not stored separately
   const metadata = new Y.Map<any>();
-  if (node.title) metadata.set('title', node.title);
   if (node.scopeId) metadata.set('scopeId', node.scopeId);
   if (node.parentId) metadata.set('parentId', node.parentId);
   if (node.link) metadata.set('link', node.link);
@@ -72,12 +72,7 @@ export function initializeDocumentFromNode(doc: Y.Doc, node: GraphNode): void {
   if (node.autoExpandDepth !== undefined) {
     metadata.set('autoExpandDepth', node.autoExpandDepth);
   }
-  if (node.clusterCount !== undefined) {
-    metadata.set('clusterCount', node.clusterCount);
-  }
-  if (node.clusterIds) {
-    metadata.set('clusterIds', node.clusterIds);
-  }
+  if (node.pinned) metadata.set('pinned', node.pinned);
   root.set(NODE_KEYS.METADATA, metadata);
 
   // Content (Text CRDT)
@@ -146,24 +141,21 @@ export function documentToNode(doc: Y.Doc): GraphNode {
   }
 
   // Optional metadata
+  // Note: title is derived from content's first # heading, not stored in metadata
   if (metadata) {
-    const title = metadata.get('title');
     const scopeId = metadata.get('scopeId');
     const parentId = metadata.get('parentId');
     const link = metadata.get('link');
     const summary = metadata.get('summary');
     const autoExpandDepth = metadata.get('autoExpandDepth');
-    const clusterCount = metadata.get('clusterCount');
-    const clusterIds = metadata.get('clusterIds');
+    const pinned = metadata.get('pinned');
 
-    if (title) node.title = title;
     if (scopeId) node.scopeId = scopeId;
     if (parentId) node.parentId = parentId;
     if (link) node.link = link;
     if (summary) node.summary = summary;
     if (autoExpandDepth !== undefined) node.autoExpandDepth = autoExpandDepth;
-    if (clusterCount !== undefined) node.clusterCount = clusterCount;
-    if (clusterIds) node.clusterIds = clusterIds;
+    if (pinned) node.pinned = pinned;
   }
 
   // Optional aliases
@@ -384,20 +376,18 @@ export function applyNodeUpdate(doc: Y.Doc, updates: Partial<GraphNode>): void {
     }
 
     // Handle metadata updates
+    // Note: title is derived from content's first # heading, not stored in metadata
     if (
-      updates.title !== undefined ||
       updates.scopeId !== undefined ||
       updates.parentId !== undefined ||
       updates.link !== undefined ||
       updates.summary !== undefined ||
       updates.autoExpandDepth !== undefined ||
-      updates.clusterCount !== undefined ||
-      updates.clusterIds !== undefined
+      updates.pinned !== undefined
     ) {
       const root = doc.getMap('root');
       const metadata = root.get(NODE_KEYS.METADATA) as Y.Map<any>;
       if (metadata) {
-        if (updates.title !== undefined) metadata.set('title', updates.title);
         if (updates.scopeId !== undefined) metadata.set('scopeId', updates.scopeId);
         if (updates.parentId !== undefined) metadata.set('parentId', updates.parentId);
         if (updates.link !== undefined) metadata.set('link', updates.link);
@@ -405,12 +395,7 @@ export function applyNodeUpdate(doc: Y.Doc, updates: Partial<GraphNode>): void {
         if (updates.autoExpandDepth !== undefined) {
           metadata.set('autoExpandDepth', updates.autoExpandDepth);
         }
-        if (updates.clusterCount !== undefined) {
-          metadata.set('clusterCount', updates.clusterCount);
-        }
-        if (updates.clusterIds !== undefined) {
-          metadata.set('clusterIds', updates.clusterIds);
-        }
+        if (updates.pinned !== undefined) metadata.set('pinned', updates.pinned);
       }
     }
   });

@@ -6,10 +6,14 @@ import {
   StorageEvent,
   StorageEventType,
   SpatialIndexEntry,
+  DeletedNodeEntry,
   DEFAULT_STORAGE_CONFIG,
 } from './types';
 import { ViewportDataManager } from './ViewportDataManager';
 import { debounce } from '../debounceService';
+
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
 /**
  * UnifiedStorageService is the main public API for viewport-based storage.
@@ -34,6 +38,12 @@ export class UnifiedStorageService extends EventTarget {
   private debouncedFlush: ReturnType<typeof debounce>;
 
   private initialized = false;
+
+  // Cleanup interval for deletion stack pruning
+  private cleanupIntervalId: number | null = null;
+
+  // In-memory deletion stack for unauthenticated users
+  private inMemoryDeletionStack: DeletedNodeEntry[] = [];
 
   constructor(config: Partial<StorageConfig> = {}) {
     super();
@@ -67,7 +77,59 @@ export class UnifiedStorageService extends EventTarget {
     await this.viewportManager.initialize(dirHandle, userId);
     this.initialized = true;
 
+    // Schedule periodic cleanup of old deleted entries
+    this.scheduleDeletionStackCleanup();
+
     this.emit('loading-complete', {});
+  }
+
+  /**
+   * Schedule periodic cleanup of deletion stack and node archive
+   */
+  private scheduleDeletionStackCleanup(): void {
+    // Run cleanup on init
+    this.pruneDeletionStack();
+    this.pruneNodeArchive();
+
+    // Then run every hour
+    this.cleanupIntervalId = window.setInterval(() => {
+      this.pruneDeletionStack();
+      this.pruneNodeArchive();
+    }, CLEANUP_INTERVAL_MS);
+  }
+
+  /**
+   * Prune old entries from deletion stack (older than 30 days)
+   */
+  private async pruneDeletionStack(): Promise<void> {
+    if (this.config.inMemoryOnly) {
+      // Prune in-memory stack
+      const cutoff = Date.now() - THIRTY_DAYS_MS;
+      this.inMemoryDeletionStack = this.inMemoryDeletionStack.filter(
+        (entry) => entry.deletedAt > cutoff
+      );
+      return;
+    }
+
+    const localAdapter = this.viewportManager.getLocalAdapter();
+    if (localAdapter.isEnabled()) {
+      await localAdapter.pruneDeletionStack(THIRTY_DAYS_MS);
+    }
+  }
+
+  /**
+   * Prune old entries from node archive (older than 30 days)
+   */
+  private async pruneNodeArchive(): Promise<void> {
+    if (this.config.inMemoryOnly) {
+      // No archive in memory-only mode
+      return;
+    }
+
+    const localAdapter = this.viewportManager.getLocalAdapter();
+    if (localAdapter.isEnabled()) {
+      await localAdapter.pruneNodeArchive(THIRTY_DAYS_MS);
+    }
   }
 
   /**
@@ -249,20 +311,39 @@ export class UnifiedStorageService extends EventTarget {
   }
 
   /**
-   * Delete a node
+   * Delete a node (soft delete - moves to deletion stack)
    */
   async deleteNode(nodeId: string): Promise<void> {
+    // For in-memory mode, capture node before deletion for the stack
+    if (this.config.inMemoryOnly) {
+      const node = await this.viewportManager.getNode(nodeId);
+      if (node) {
+        // Get edges connected to this node
+        const allEdges = this.viewportManager.getAllCachedEdges();
+        const connectedEdges = allEdges.filter(
+          (e) => e.source === nodeId || e.target === nodeId
+        );
+
+        // Push to in-memory deletion stack
+        this.inMemoryDeletionStack.push({
+          node,
+          edges: connectedEdges,
+          deletedAt: Date.now(),
+        });
+      }
+    }
+
     this.viewportManager.deleteNode(nodeId);
 
     // Remove from save queue
     this.saveQueue.delete(nodeId);
 
-    // In-memory only mode: deletion already handled in ViewportDataManager
+    // In-memory only mode: deletion handled above
     if (this.config.inMemoryOnly) {
       return;
     }
 
-    // Delete from storage immediately
+    // Delete from storage (LocalStorageAdapter now handles soft delete)
     const localAdapter = this.viewportManager.getLocalAdapter();
     const cloudAdapter = this.viewportManager.getCloudAdapter();
 
@@ -273,6 +354,62 @@ export class UnifiedStorageService extends EventTarget {
     if (cloudAdapter.isEnabled()) {
       await cloudAdapter.deleteNode(nodeId);
     }
+  }
+
+  /**
+   * Restore the most recently deleted node
+   * Returns the restored node entry, or null if stack is empty
+   */
+  async restoreLastDeletedNode(): Promise<DeletedNodeEntry | null> {
+    let entry: DeletedNodeEntry | null = null;
+
+    if (this.config.inMemoryOnly) {
+      // Pop from in-memory stack
+      entry = this.inMemoryDeletionStack.pop() ?? null;
+      if (entry) {
+        // Re-add to viewport manager
+        this.viewportManager.addNode(entry.node);
+        // Re-add edges
+        const currentEdges = this.viewportManager.getAllCachedEdges();
+        this.viewportManager.updateEdges([...currentEdges, ...entry.edges]);
+      }
+    } else {
+      // Restore from local storage adapter
+      const localAdapter = this.viewportManager.getLocalAdapter();
+      if (localAdapter.isEnabled()) {
+        entry = await localAdapter.restoreNode();
+        if (entry) {
+          // Re-add to viewport manager cache
+          this.viewportManager.addNode(entry.node);
+          // Re-add edges to cache
+          const currentEdges = this.viewportManager.getAllCachedEdges();
+          this.viewportManager.updateEdges([...currentEdges, ...entry.edges]);
+        }
+      }
+    }
+
+    if (entry) {
+      this.emit('nodes-updated', { nodes: [entry.node] });
+      this.emit('edges-updated', { edges: entry.edges });
+    }
+
+    return entry;
+  }
+
+  /**
+   * Get the number of deleted nodes that can be restored
+   */
+  getDeletionStackSize(): number {
+    if (this.config.inMemoryOnly) {
+      return this.inMemoryDeletionStack.length;
+    }
+
+    const localAdapter = this.viewportManager.getLocalAdapter();
+    if (localAdapter.isEnabled()) {
+      return localAdapter.getDeletionStackSize();
+    }
+
+    return 0;
   }
 
   /**
@@ -307,12 +444,35 @@ export class UnifiedStorageService extends EventTarget {
 
     // Save to local storage
     if (localAdapter.isEnabled()) {
+      // Save dirty nodes with their outgoing edges
       for (const { node } of dirtyNodes) {
-        // Get outgoing edges for this node
         const outgoingEdges = this.edgesSnapshot.filter(
           (e) => e.source === node.id
         );
         await localAdapter.saveNodeImmediate(node, outgoingEdges);
+      }
+
+      // If edges changed, also save source nodes that weren't already dirty
+      // This ensures edges get persisted to their source node's markdown file
+      if (edges) {
+        const dirtyNodeIds = new Set(dirtyNodes.map(({ node }) => node.id));
+        const sourceNodeIds = new Set(this.edgesSnapshot.map((e) => e.source));
+
+        for (const sourceId of sourceNodeIds) {
+          // Skip if already saved above
+          if (dirtyNodeIds.has(sourceId)) continue;
+
+          // Find the node in cache
+          const node = this.viewportManager.getAllCachedNodes().find(
+            (n) => n.id === sourceId
+          );
+          if (node) {
+            const outgoingEdges = this.edgesSnapshot.filter(
+              (e) => e.source === node.id
+            );
+            await localAdapter.saveNodeImmediate(node, outgoingEdges);
+          }
+        }
       }
     }
 
@@ -411,6 +571,12 @@ export class UnifiedStorageService extends EventTarget {
    * Dispose the service
    */
   dispose(): void {
+    // Stop cleanup interval
+    if (this.cleanupIntervalId !== null) {
+      window.clearInterval(this.cleanupIntervalId);
+      this.cleanupIntervalId = null;
+    }
+
     // Flush any pending saves
     this.flush();
 
@@ -418,6 +584,7 @@ export class UnifiedStorageService extends EventTarget {
     this.viewportManager.invalidateAll();
     this.saveQueue.clear();
     this.edgesDirty = false;
+    this.inMemoryDeletionStack = [];
     this.initialized = false;
   }
 

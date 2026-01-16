@@ -87,7 +87,7 @@ export const usePersistence = (
             }
           }
         },
-        2000
+        500
       ),
     [dirHandle, user, storageMode, isAuthenticated]
   );

@@ -9,6 +9,7 @@ interface OutlineNodeProps {
   hasChildren: boolean;
   isExpanded: boolean;
   isSelected?: boolean;
+  isMatch?: boolean;
   onClick: () => void;
   onToggleExpand: () => void;
 }
@@ -19,6 +20,7 @@ export const OutlineNode: React.FC<OutlineNodeProps> = ({
   hasChildren,
   isExpanded,
   isSelected = false,
+  isMatch = false,
   onClick,
   onToggleExpand,
 }) => {
@@ -38,7 +40,7 @@ export const OutlineNode: React.FC<OutlineNodeProps> = ({
       onClick={onClick}
       className={`
         w-full py-2 pr-3 rounded-lg text-left flex items-center gap-1
-        ${isSelected ? "bg-sky-600/40" : "hover:bg-slate-800/50"}
+        ${isSelected ? "bg-sky-600/40" : isMatch ? "bg-amber-600/20" : "hover:bg-slate-800/50"}
         transition-all duration-150 cursor-pointer
       `}
       style={{ paddingLeft }}

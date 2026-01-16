@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useRef, useEffect } from "react";
 import { GraphNode } from "../types";
 import { useOutlineTree, TreeNodeData } from "../hooks/useOutlineTree";
 import { OutlineNode } from "./OutlineNode";
@@ -8,6 +8,7 @@ interface OutlineTreePanelProps {
   onClose: () => void;
   nodes: GraphNode[];
   selectedNodeIds: Set<string>;
+  lastSelectedNodeId: string | null;
   currentScopeId: string | null;
   onFocusNode: (nodeId: string) => void;
 }
@@ -17,17 +18,69 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
   onClose,
   nodes,
   selectedNodeIds,
+  lastSelectedNodeId,
   currentScopeId,
   onFocusNode,
 }) => {
   const [panelWidth, setPanelWidth] = useState(280);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [searchTerm, setSearchTerm] = useState("");
+  const nodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
-  const { tree } = useOutlineTree(
+  // Helper to get all ancestor IDs for a given node
+  const getAncestorIds = useCallback((nodeId: string): string[] => {
+    const ancestors: string[] = [];
+    const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+    let current = nodeMap.get(nodeId);
+    while (current?.parentId) {
+      ancestors.push(current.parentId);
+      current = nodeMap.get(current.parentId);
+    }
+    return ancestors;
+  }, [nodes]);
+
+  const { tree, matchingNodeIds } = useOutlineTree(
     nodes,
     selectedNodeIds,
-    currentScopeId
+    currentScopeId,
+    searchTerm
   );
+
+  // Auto-expand ancestors when selection changes and scroll into view
+  useEffect(() => {
+    if (!lastSelectedNodeId || !isOpen) return;
+
+    const ancestorIds = getAncestorIds(lastSelectedNodeId);
+
+    // Expand all ancestors
+    if (ancestorIds.length > 0) {
+      setExpandedIds((prev) => {
+        const next = new Set(prev);
+        ancestorIds.forEach((id) => next.add(id));
+        return next;
+      });
+    }
+
+    // Scroll selected node into view after DOM update
+    requestAnimationFrame(() => {
+      const nodeRef = nodeRefs.current.get(lastSelectedNodeId);
+      if (nodeRef) {
+        nodeRef.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    });
+  }, [lastSelectedNodeId, getAncestorIds, isOpen]);
+
+  // Auto-expand ancestors of matching nodes when searching
+  useEffect(() => {
+    if (searchTerm.trim() && matchingNodeIds.size > 0) {
+      const toExpand = new Set<string>();
+      matchingNodeIds.forEach((matchId) => {
+        const ancestors = getAncestorIds(matchId);
+        ancestors.forEach((id) => toExpand.add(id));
+      });
+      setExpandedIds((prev) => new Set([...prev, ...toExpand]));
+    }
+  }, [searchTerm, matchingNodeIds, getAncestorIds]);
 
   const handleNodeClick = useCallback(
     (nodeId: string) => {
@@ -75,15 +128,26 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
     const { node, depth, hasChildren, children } = treeNode;
     const isExpanded = expandedIds.has(node.id);
     const isSelected = selectedNodeIds.has(node.id);
+    const isMatch = searchTerm.trim() ? matchingNodeIds.has(node.id) : false;
 
     return (
-      <div key={node.id}>
+      <div
+        key={node.id}
+        ref={(el) => {
+          if (el) {
+            nodeRefs.current.set(node.id, el);
+          } else {
+            nodeRefs.current.delete(node.id);
+          }
+        }}
+      >
         <OutlineNode
           node={node}
           depth={depth}
           hasChildren={hasChildren}
           isExpanded={isExpanded}
           isSelected={isSelected}
+          isMatch={isMatch}
           onClick={() => handleNodeClick(node.id)}
           onToggleExpand={() => handleToggleExpand(node.id)}
         />
@@ -137,6 +201,53 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
             <path d="m6 6 12 12" />
           </svg>
         </button>
+      </div>
+
+      {/* Search Input */}
+      <div className="px-4 pb-3 pt-2 border-b border-slate-800 shrink-0">
+        <div className="relative">
+          <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none">
+            <svg
+              className="h-3.5 w-3.5 text-slate-500"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+          </div>
+          <input
+            type="text"
+            placeholder="Filter nodes..."
+            className="w-full bg-slate-800 border border-slate-700 text-slate-200 text-sm rounded-lg py-1.5 pl-8 pr-8 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-all placeholder-slate-500"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+          {searchTerm && (
+            <button
+              onClick={() => setSearchTerm("")}
+              className="absolute inset-y-0 right-0 pr-2.5 flex items-center text-slate-500 hover:text-slate-300"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path d="M18 6 6 18" />
+                <path d="m6 6 12 12" />
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Content */}

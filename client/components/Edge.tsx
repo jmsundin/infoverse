@@ -138,18 +138,11 @@ export const Edge: React.FC<EdgeProps> = React.memo(({
     return null;
   }
 
-  // Determine effective width/height based on LOD and Node Role
-  // CLUSTER mode: < 0.25 zoom. Nodes are Dots or Text-only Hubs.
-  // TITLE mode: 0.25 - 0.5 zoom. Nodes are Header Boxes.
-  // DETAIL mode: > 0.5 zoom. Nodes are Full Content.
-  const isCluster = lodLevel === 'CLUSTER';
+  // Determine effective width/height based on LOD
+  // TITLE mode: low zoom. Nodes are Header Boxes.
+  // DETAIL mode: higher zoom. Nodes are Full Content.
   const isTitle = lodLevel === 'TITLE';
-  
-  // Dot Size (diameter 24px) for Leaf Nodes in Cluster Mode
-  const dotSize = 24; 
-  // Hub Nodes in Cluster Mode are text only, effectively 0 size for connection purposes (point to center)
-  // or small area. Let's treat them as point connections or small circle.
-  const hubSize = 10; 
+
   // TITLE-mode nodes render a centered title badge; use a smaller effective box so edges touch the badge,
   // not the full (invisible) node container bounds.
   const titleBadgeHeight = 64;
@@ -159,16 +152,16 @@ export const Edge: React.FC<EdgeProps> = React.memo(({
   let tH = targetNode.height || 200;
   let sW = sourceNode.width || 300;
   let tW = targetNode.width || 300;
-  
+
   // Center Positions (Default is center of logical node box)
   let sCx = sourceNode.x + sW / 2;
   let sCy = sourceNode.y + sH / 2;
   let tCx = targetNode.x + tW / 2;
   let tCy = targetNode.y + tH / 2;
 
-  // Handle center-positioned nodes (Clusters and Title-only nodes)
-  const sourceIsCentered = sourceNode.type === NodeType.CLUSTER || isTitle || isCluster;
-  const targetIsCentered = targetNode.type === NodeType.CLUSTER || isTitle || isCluster;
+  // Handle center-positioned nodes (Title-only nodes)
+  const sourceIsCentered = isTitle;
+  const targetIsCentered = isTitle;
 
   if (sourceIsCentered) {
     sCx = sourceNode.x;
@@ -179,28 +172,8 @@ export const Edge: React.FC<EdgeProps> = React.memo(({
     tCy = targetNode.y;
   }
 
-  // --- Adjust for Cluster Mode ---
-  if (isCluster) {
-      // Source
-      if (sourceIsParent) {
-          sW = hubSize;
-          sH = hubSize;
-      } else {
-          sW = dotSize;
-          sH = dotSize;
-      }
-
-      // Target
-      if (targetIsParent) {
-          tW = hubSize;
-          tH = hubSize;
-      } else {
-          tW = dotSize;
-          tH = dotSize;
-      }
-  } 
   // --- Adjust for Title Mode ---
-  else if (isTitle) {
+  if (isTitle) {
       // Non-selected nodes in TITLE mode render a centered title badge; use that size for intersection.
       // Selected nodes can still be expanded, so keep full bounds for selected.
       if (!sourceIsSelected) {

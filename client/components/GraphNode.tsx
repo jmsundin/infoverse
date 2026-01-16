@@ -13,10 +13,10 @@ import { MarkdownEditor } from "./MarkdownEditor";
 import {
   GraphNode,
   NodeType,
-  ChatMessage,
   NodeColor,
   ResizeDirection,
   LODLevel,
+  ChatMessage,
 } from "../types";
 import * as geminiService from "../services/geminiService";
 import * as hfService from "../services/huggingfaceService";
@@ -30,7 +30,7 @@ import {
   extractInternalNodeTitle,
   formatInternalNodeLinks,
 } from "../utils/wikiLinks";
-import { cleanTitleMarkdown } from "../utils/titleUtils";
+import { cleanTitleMarkdown, updateTitleInContent, deriveTitleFromContent } from "../utils/titleUtils";
 
 interface GraphNodeProps {
   node: GraphNode;
@@ -120,6 +120,9 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     const onUpdateRef = useRef(onUpdate);
     const onExpandRef = useRef(onExpand);
 
+    // Track if Wikipedia URL has been fetched for this node title to prevent duplicate API calls
+    const wikipediaFetchedRef = useRef<string | null>(null);
+
     useEffect(() => {
       onUpdateRef.current = onUpdate;
     }, [onUpdate]);
@@ -145,23 +148,11 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     // Semantic Zoom Modes
     // Use isExpanded for content expansion, falling back to isSelected for backward compatibility
     const effectiveExpanded = isExpanded ?? isSelected;
-    const isClusterMode =
-      lodLevel === "CLUSTER" &&
-      !effectiveExpanded &&
-      !isSidebar &&
-      !isClusterParent;
-    const isClusterParentMode =
-      lodLevel === "CLUSTER" &&
-      !effectiveExpanded &&
-      !isSidebar &&
-      isClusterParent;
     const isTitleOnly =
       lodLevel === "TITLE" && !effectiveExpanded && !isSidebar;
     const isCompact = !isSidebar && !effectiveExpanded;
 
-    const titleText =
-      node.title ||
-      (node.type === NodeType.CHAT ? node.title : node.summary || node.title);
+    const titleText = deriveTitleFromContent(node.content || '') || node.summary || 'Untitled';
 
     // --- Long Press & Double Click Handlers ---
 
@@ -244,7 +235,6 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     useEffect(() => {
       if (
         node.type === NodeType.CHAT &&
-        !isClusterMode &&
         !isTitleOnly &&
         !isCompact &&
         chatContainerRef.current
@@ -259,7 +249,6 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       viewMode,
       isTitleOnly,
       isCompact,
-      isClusterMode,
     ]);
 
     useEffect(() => {
@@ -285,21 +274,45 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
 
     // Check for Wikipedia article on selection
     useEffect(() => {
+      // Skip if not selected, no title, already has a non-wikidata link, or dragging
       if (
-        isSelected &&
-        node.title &&
-        (!node.link || node.link.includes("wikidata.org")) &&
-        !isDragging // <-- Add this condition
+        !isSelected ||
+        !node.title ||
+        (node.link && !node.link.includes("wikidata.org")) ||
+        isDragging
       ) {
-        const checkWiki = async () => {
-          const url = await fetchWikipediaUrl(node.title);
-          if (url && url !== node.link) {
-            onUpdate(node.id, { link: url });
-          }
-        };
-        checkWiki();
+        return;
       }
+
+      // Skip if we've already fetched for this exact title (prevents duplicate calls during panning)
+      if (wikipediaFetchedRef.current === node.title) {
+        return;
+      }
+
+      let cancelled = false;
+
+      const checkWiki = async () => {
+        const url = await fetchWikipediaUrl(node.title);
+        if (cancelled) return;
+
+        wikipediaFetchedRef.current = node.title;
+
+        if (url && url !== node.link) {
+          onUpdate(node.id, { link: url });
+        }
+      };
+
+      checkWiki();
+
+      return () => {
+        cancelled = true;
+      };
     }, [isSelected, node.title, node.link, node.id, onUpdate, isDragging]);
+
+    // Reset wikipedia fetch tracking when node title changes
+    useEffect(() => {
+      wikipediaFetchedRef.current = null;
+    }, [node.title]);
 
     const handleSendMessage = async () => {
       if (!input.trim()) return;
@@ -319,12 +332,17 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
 
       const service = aiProvider === "huggingface" ? hfService : geminiService;
 
+      // Extract topic from node content for context
+      const topic = deriveTitleFromContent(node.content || '');
+      const context = topic && topic !== 'Untitled' ? { topic } : undefined;
+
       const result = await service.sendChatMessage(
         updatedMessages,
         userMsg.text,
         (chunk) => {
           setStreamingContent((prev) => (prev || "") + chunk);
-        }
+        },
+        context
       );
 
       const modelTextToDisplay = result.text;
@@ -347,26 +365,31 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       setIsChatting(false);
       setStreamingContent(null);
 
-      // Generate title for chat nodes on first conversation exchange
-      if (node.type === NodeType.CHAT && !node.title) {
+      // Generate title for chat nodes on first conversation exchange (if no heading exists)
+      const existingTitle = deriveTitleFromContent(node.content || '');
+      if (node.type === NodeType.CHAT && existingTitle === 'Untitled') {
         const service =
           aiProvider === "huggingface" ? hfService : geminiService;
         const rawTitle = await service.generateTitle(currentInput, result.text);
         const cleanedTitle = cleanTitleMarkdown(rawTitle);
-        onUpdateRef.current(node.id, { title: cleanedTitle });
+        // Update the content with a heading
+        const newContent = updateTitleInContent(node.content || '', cleanedTitle);
+        onUpdateRef.current(node.id, { content: newContent });
       }
     };
 
     const handleTitleSubmit = () => {
       if (titleEditValue.trim() !== "") {
-        onUpdate(node.id, { title: titleEditValue });
+        // Update the # heading in the body content (bidirectional sync)
+        const newContent = updateTitleInContent(node.content || '', titleEditValue);
+        onUpdate(node.id, { content: newContent });
       }
       setIsEditingTitle(false);
     };
 
     const handleNoteEditorChange = useCallback(
       (content: string) => {
-        onUpdate(node.id, { title: content });
+        onUpdate(node.id, { content });
       },
       [node.id, onUpdate]
     );
@@ -515,273 +538,6 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       "absolute z-50 hover:bg-sky-400/20 transition-colors touch-none";
     const displayMessages = node.messages || [];
 
-    if (node.type === NodeType.CLUSTER) {
-      const CLUSTER_SIZE = 120;
-      const DOT_SIZE = 8;
-      const PADDING = 12;
-      const members = node.clusterMemberNodes || [];
-      const internalEdges = node.clusterInternalEdges || [];
-
-      // Limit for performance
-      const MAX_MINI_NODES = 20;
-      const MAX_MINI_EDGES = 30;
-      const displayMembers = members.slice(0, MAX_MINI_NODES);
-      const displayEdges = internalEdges.slice(0, MAX_MINI_EDGES);
-
-      // Create a lookup for member positions
-      const innerSize = CLUSTER_SIZE - PADDING * 2 - DOT_SIZE;
-      const memberPositions = new Map(
-        displayMembers.map((m) => [
-          m.id,
-          {
-            x: PADDING + m.relativeX * innerSize + DOT_SIZE / 2,
-            y: PADDING + m.relativeY * innerSize + DOT_SIZE / 2,
-          },
-        ])
-      );
-
-      return (
-        <div
-          data-node-id={node.id}
-          className="absolute graph-node flex items-center justify-center pointer-events-auto cursor-pointer animate-in fade-in zoom-in duration-300"
-          style={{
-            left: node.x,
-            top: node.y,
-            width: CLUSTER_SIZE,
-            height: CLUSTER_SIZE,
-            transform: "translate(-50%, -50%)",
-            zIndex: 45,
-          }}
-          onMouseDown={(e) =>
-            !isSidebar && onMouseDown && onMouseDown(e, node.id)
-          }
-          onTouchStart={(e) =>
-            !isSidebar && onMouseDown && onMouseDown(e, node.id)
-          }
-        >
-          <div className="w-full h-full rounded-xl bg-slate-800/80 backdrop-blur-sm border border-slate-600 shadow-lg hover:bg-slate-700/80 transition-all relative overflow-hidden">
-            {/* Mini-edges SVG layer */}
-            <svg className="absolute inset-0 w-full h-full pointer-events-none">
-              {displayEdges.map((edge, i) => {
-                const source = memberPositions.get(edge.sourceId);
-                const target = memberPositions.get(edge.targetId);
-                if (!source || !target) return null;
-
-                return (
-                  <line
-                    key={`${edge.sourceId}-${edge.targetId}-${i}`}
-                    x1={source.x}
-                    y1={source.y}
-                    x2={target.x}
-                    y2={target.y}
-                    stroke="#475569"
-                    strokeWidth={1}
-                    opacity={0.6}
-                  />
-                );
-              })}
-            </svg>
-
-            {/* Mini-nodes layer */}
-            {displayMembers.map((member) => {
-              const pos = memberPositions.get(member.id);
-              if (!pos) return null;
-              const colorClass = NODE_COLORS[member.color || "slate"].indicator;
-
-              return (
-                <div
-                  key={member.id}
-                  className={`absolute rounded-full ${colorClass} shadow-sm ring-1 ring-black/20`}
-                  style={{
-                    width: DOT_SIZE,
-                    height: DOT_SIZE,
-                    left: pos.x - DOT_SIZE / 2,
-                    top: pos.y - DOT_SIZE / 2,
-                  }}
-                  title={member.title}
-                />
-              );
-            })}
-
-            {/* Centered title overlay */}
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="bg-slate-900/90 px-2 py-1 rounded text-center">
-                <span className="text-white text-xs font-semibold">
-                  {node.clusterCount} Nodes
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      );
-    }
-
-    if (isClusterParentMode) {
-      const scaleFactor = Math.min(Math.max((1 / scale) * 0.2, 1), 8);
-
-      return (
-        <div
-          data-node-id={node.id}
-          data-selected={isSelected}
-          className={`absolute graph-node flex items-center justify-center transition-all duration-300 pointer-events-none`}
-          style={{
-            left: node.x,
-            top: node.y,
-            width: node.width || 300,
-            height: node.height || 200,
-            zIndex: 40,
-          }}
-        >
-          <div
-            className={`
-                font-bold text-slate-100 drop-shadow-md 
-                px-4 py-2 pointer-events-auto
-                hover:text-sky-400 cursor-pointer text-center
-            `}
-            style={{
-              transform: `scale(${scaleFactor})`,
-              fontSize: "3.5rem",
-              minWidth: "200px",
-              textShadow: "0 2px 4px rgba(0,0,0,0.8)",
-            }}
-            onMouseDown={(e) =>
-              !isSidebar && onMouseDown && onMouseDown(e, node.id)
-            }
-            onTouchStart={(e) =>
-              !isSidebar && onMouseDown && onMouseDown(e, node.id)
-            }
-          >
-            {titleText.length > 50
-              ? titleText.substring(0, 50) + "..."
-              : titleText}
-          </div>
-        </div>
-      );
-    }
-
-    if (isClusterMode) {
-      const hasChildren = childNodes && childNodes.length > 0;
-      const MAX_VISIBLE_DOTS = 12;
-      const DOT_SIZE = 12;
-      const PREVIEW_SIZE = hasChildren ? 100 : 48;
-      const RADIUS = PREVIEW_SIZE / 2 + DOT_SIZE + 4;
-
-      // Calculate dot positions in a circle
-      const dotPositions = hasChildren
-        ? childNodes.slice(0, MAX_VISIBLE_DOTS).map((child, i) => {
-            const count = Math.min(childNodes.length, MAX_VISIBLE_DOTS);
-            const angle = (2 * Math.PI * i) / count - Math.PI / 2; // Start from top
-            return {
-              x: Math.cos(angle) * RADIUS,
-              y: Math.sin(angle) * RADIUS,
-              color: NODE_COLORS[child.color || "slate"].indicator,
-              id: child.id,
-              title: child.content,
-            };
-          })
-        : [];
-
-      const overflow = hasChildren ? childNodes.length - MAX_VISIBLE_DOTS : 0;
-      const containerSize = hasChildren
-        ? PREVIEW_SIZE + RADIUS * 2 + DOT_SIZE
-        : 48;
-
-      return (
-        <div
-          data-node-id={node.id}
-          data-selected={isSelected}
-          className={`absolute graph-node flex items-center justify-center transition-all duration-200`}
-          style={{
-            left: node.x,
-            top: node.y,
-            width: containerSize,
-            height: containerSize,
-            pointerEvents: "none",
-            transform: "translate(-50%, -50%)",
-          }}
-        >
-          {/* Parent Node Preview */}
-          {hasChildren ? (
-            <div
-              className={`absolute flex items-center justify-center rounded-lg shadow-lg border ${
-                colorTheme.border
-              } ${
-                colorTheme.bg
-              } pointer-events-auto cursor-pointer hover:scale-105 transition-transform ${
-                isSelected ? "ring-2 ring-sky-400" : ""
-              }`}
-              style={{
-                width: PREVIEW_SIZE,
-                height: PREVIEW_SIZE * 0.6,
-              }}
-              onMouseDown={(e) =>
-                !isSidebar && onMouseDown && onMouseDown(e, node.id)
-              }
-              onTouchStart={(e) =>
-                !isSidebar && onMouseDown && onMouseDown(e, node.id)
-              }
-              title={node.title}
-            >
-              <span
-                className={`font-bold text-xs ${colorTheme.text} truncate px-2 text-center`}
-              >
-                {titleText.length > 20
-                  ? titleText.substring(0, 20) + "..."
-                  : titleText}
-              </span>
-            </div>
-          ) : (
-            <div
-              className={`w-6 h-6 rounded-full ${
-                colorTheme.indicator
-              } shadow-[0_0_8px_rgba(0,0,0,0.8)] ring-2 ring-slate-900 pointer-events-auto cursor-pointer hover:scale-150 transition-transform ${
-                isSelected ? "ring-sky-400" : ""
-              }`}
-              onMouseDown={(e) =>
-                !isSidebar && onMouseDown && onMouseDown(e, node.id)
-              }
-              onTouchStart={(e) =>
-                !isSidebar && onMouseDown && onMouseDown(e, node.id)
-              }
-              title={node.title}
-            />
-          )}
-
-          {/* Child Dots */}
-          {dotPositions.map((dot, i) => (
-            <div
-              key={dot.id}
-              className={`absolute rounded-full ${dot.color} shadow-md ring-1 ring-black/30 transition-all duration-200 hover:scale-125 pointer-events-auto animate-in fade-in zoom-in`}
-              style={{
-                width: DOT_SIZE,
-                height: DOT_SIZE,
-                left: "50%",
-                top: "50%",
-                transform: `translate(calc(-50% + ${dot.x}px), calc(-50% + ${dot.y}px))`,
-                animationDelay: `${i * 30}ms`,
-              }}
-              title={dot.title}
-            />
-          ))}
-
-          {/* Overflow Badge */}
-          {overflow > 0 && (
-            <div
-              className="absolute bg-slate-700 text-white text-[10px] font-bold rounded-full flex items-center justify-center shadow-md ring-1 ring-black/30 animate-in fade-in"
-              style={{
-                width: 20,
-                height: 20,
-                right: 0,
-                bottom: 0,
-              }}
-            >
-              +{overflow}
-            </div>
-          )}
-        </div>
-      );
-    }
-
     if (isTitleOnly) {
       return (
         <div
@@ -845,7 +601,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      onExpandFromWikidata(node.id, node.content);
+                      onExpandFromWikidata(node.id, deriveTitleFromContent(node.content));
                     }}
                     className="min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 text-slate-400 hover:text-amber-300 hover:bg-slate-700/50 rounded transition-colors flex items-center justify-center"
                     title="Expand from Wikidata (subtopics)"
@@ -924,7 +680,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      onExpand(node.id, node.content);
+                      onExpand(node.id, deriveTitleFromContent(node.content));
                     }}
                     className="min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 text-slate-400 hover:text-purple-400 hover:bg-slate-700/50 transition-colors rounded flex items-center justify-center"
                     title="Expand Subgraph (AI)"
@@ -1199,7 +955,9 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                             lastModelMsg
                           );
                           const cleanedTitle = cleanTitleMarkdown(rawTitle);
-                          onUpdate(node.id, { title: cleanedTitle });
+                          // Update the content with a heading
+                          const newContent = updateTitleInContent(node.content || '', cleanedTitle);
+                          onUpdate(node.id, { content: newContent });
                         }
                       }
                       setShowSettings(false);
@@ -1457,14 +1215,15 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                       }`}
                       onDoubleClick={(e) => {
                         e.stopPropagation();
-                        setTitleEditValue(node.title);
+                        // Derive title from content for editing
+                        setTitleEditValue(deriveTitleFromContent(node.content || ''));
                         setIsEditingTitle(true);
                       }}
                       title={"Double click to rename"}
                     >
                       {node.type === NodeType.NOTE
                         ? noteTitleLine.trim() || "Empty Note"
-                        : node.title}
+                        : deriveTitleFromContent(node.content || '') || "Untitled"}
                     </span>
                   </>
                 )}

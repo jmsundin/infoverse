@@ -12,12 +12,14 @@ export interface OutlineTreeResult {
   ancestors: GraphNode[];
   tree: TreeNodeData[];
   selectedNode: GraphNode | null;
+  matchingNodeIds: Set<string>;
 }
 
 export const useOutlineTree = (
   nodes: GraphNode[],
   selectedNodeIds: Set<string>,
-  currentScopeId: string | null
+  currentScopeId: string | null,
+  searchTerm: string = ""
 ): OutlineTreeResult => {
   return useMemo(() => {
     const nodeMap = new Map(nodes.map((n) => [n.id, n]));
@@ -32,6 +34,37 @@ export const useOutlineTree = (
       childrenByParent.set(parentKey, children);
     });
 
+    // Filter nodes based on search term
+    const matchingNodeIds = new Set<string>();
+    const ancestorIdsToInclude = new Set<string>();
+    const isFiltering = searchTerm.trim().length > 0;
+
+    if (isFiltering) {
+      const lowerTerm = searchTerm.toLowerCase();
+      const terms = lowerTerm.split(/\s+/).filter((t) => t.length > 0);
+
+      // Find all matching nodes
+      nodes.forEach((node) => {
+        const content = (node.content || "").toLowerCase();
+        const summary = (node.summary || "").toLowerCase();
+        const title = (node.title || "").toLowerCase();
+        const aliases = (node.aliases || []).join(" ").toLowerCase();
+        const searchableText = `${content} ${summary} ${title} ${aliases}`;
+
+        const matches = terms.every((term) => searchableText.includes(term));
+        if (matches) {
+          matchingNodeIds.add(node.id);
+
+          // Add all ancestors to keep hierarchy visible
+          let current: GraphNode | undefined = node;
+          while (current?.parentId) {
+            ancestorIdsToInclude.add(current.parentId);
+            current = nodeMap.get(current.parentId);
+          }
+        }
+      });
+    }
+
     // Recursive function to build subtree
     const buildSubtree = (
       nodeId: string,
@@ -45,7 +78,24 @@ export const useOutlineTree = (
       const node = nodeMap.get(nodeId);
       if (!node) return null;
 
-      const childNodes = childrenByParent.get(nodeId) || [];
+      // When filtering, skip nodes that don't match and aren't ancestors of matches
+      if (
+        isFiltering &&
+        !matchingNodeIds.has(nodeId) &&
+        !ancestorIdsToInclude.has(nodeId)
+      ) {
+        return null;
+      }
+
+      let childNodes = childrenByParent.get(nodeId) || [];
+
+      // When filtering, only include children that are matches or ancestors of matches
+      if (isFiltering) {
+        childNodes = childNodes.filter(
+          (c) => matchingNodeIds.has(c.id) || ancestorIdsToInclude.has(c.id)
+        );
+      }
+
       return {
         node,
         depth,
@@ -84,10 +134,18 @@ export const useOutlineTree = (
 
     // Always build full tree from root nodes in current scope
     const rootNodes = childrenByParent.get(currentScopeId ?? null) || [];
-    const tree: TreeNodeData[] = rootNodes
+
+    // When filtering, also filter root nodes
+    const filteredRootNodes = isFiltering
+      ? rootNodes.filter(
+          (n) => matchingNodeIds.has(n.id) || ancestorIdsToInclude.has(n.id)
+        )
+      : rootNodes;
+
+    const tree: TreeNodeData[] = filteredRootNodes
       .map((n) => buildSubtree(n.id, 0))
       .filter(Boolean) as TreeNodeData[];
 
-    return { ancestors, tree, selectedNode };
-  }, [nodes, selectedNodeIds, currentScopeId]);
+    return { ancestors, tree, selectedNode, matchingNodeIds };
+  }, [nodes, selectedNodeIds, currentScopeId, searchTerm]);
 };

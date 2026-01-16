@@ -51,8 +51,8 @@ function spatialIndexToSkeletonNode(entry: SpatialIndexEntry): GraphNode {
     y: entry.y,
     width: entry.width,
     height: entry.height,
-    content: entry.title || '',
-    title: entry.title,
+    // Title is derived from content's first # heading
+    content: entry.title ? `# ${entry.title}` : '',
     color: entry.color,
     scopeId: entry.scopeId,
     _loadState: 'position-only' as NodeLoadState,
@@ -122,7 +122,7 @@ export function useViewportStorage(
 
     const service = new UnifiedStorageService({
       viewportBufferMultiplier: bufferMultiplier,
-      syncDebounceMs: 2000,
+      syncDebounceMs: 500,
     });
     serviceRef.current = service;
 

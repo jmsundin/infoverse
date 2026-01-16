@@ -12,8 +12,8 @@ router.use(rateLimiter);
 
 // Chat Endpoint
 router.post('/chat', async (req, res) => {
-    const { history, newMessage } = req.body;
-    
+    const { history, newMessage, context } = req.body;
+
     if (!newMessage) {
         return res.status(400).json({ message: 'Message is required' });
     }
@@ -25,16 +25,21 @@ router.post('/chat', async (req, res) => {
                 messages.push({ role: h.role === 'model' ? 'assistant' : 'user', content: h.text });
             });
         }
-        
+
         // Append newMessage only if it's not already the last message
         const lastMsg = messages[messages.length - 1];
         if (!lastMsg || lastMsg.role !== 'user' || lastMsg.content !== newMessage) {
             messages.push({ role: 'user', content: newMessage });
         }
-        
+
+        // Build system message with topic context if provided
+        const topicInstruction = context?.topic
+            ? ` The user is currently exploring the topic "${context.topic}". Use this as context for their questions.`
+            : '';
+
         const systemMessage = {
              role: 'system',
-             content: "You are a helpful assistant in a knowledge graph application. Users use you to explore Wikidata and Wikipedia information. Keep answers concise and relevant."
+             content: `You are a helpful assistant in a knowledge graph application. Users use you to explore Wikidata and Wikipedia information.${topicInstruction} Keep answers concise and relevant.`
         };
         
         const stream = await hf.chatCompletionStream({

@@ -13,6 +13,7 @@ import {
   ViewportBounds,
   ViewportLoadResult,
   StorageConfig,
+  DeletedNodeEntry,
 } from '../services/storage';
 import { useAuth } from './AuthContext';
 import { pickDirectory, saveNodeToFile, getOutgoingEdges } from '../services/storageService';
@@ -52,6 +53,10 @@ interface StorageContextValue {
   flush: () => Promise<void>;
   hasInMemoryData: () => boolean;
   getInMemoryData: () => { nodes: GraphNode[]; edges: GraphEdge[] };
+
+  // Deletion stack operations
+  restoreLastDeletedNode: () => Promise<DeletedNodeEntry | null>;
+  getDeletionStackSize: () => number;
 }
 
 const StorageContext = createContext<StorageContextValue | null>(null);
@@ -302,6 +307,16 @@ export function StorageProvider({ children, config }: StorageProviderProps) {
     return serviceRef.current.getInMemoryData();
   }, []);
 
+  const restoreLastDeletedNode = useCallback(async () => {
+    if (!serviceRef.current) return null;
+    return serviceRef.current.restoreLastDeletedNode();
+  }, []);
+
+  const getDeletionStackSize = useCallback(() => {
+    if (!serviceRef.current) return 0;
+    return serviceRef.current.getDeletionStackSize();
+  }, []);
+
   const value: StorageContextValue = {
     service: serviceRef.current!,
     isInitialized,
@@ -324,6 +339,8 @@ export function StorageProvider({ children, config }: StorageProviderProps) {
     flush,
     hasInMemoryData,
     getInMemoryData,
+    restoreLastDeletedNode,
+    getDeletionStackSize,
   };
 
   return (

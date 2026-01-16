@@ -1,5 +1,7 @@
 import { GraphNode, GraphEdge, EmbeddedEdge, NodeType, NodeColor } from '../../../types';
-import { ViewportBounds, NodePositionIndex, SpatialIndexEntry, StorageAdapter } from '../types';
+import { ViewportBounds, NodePositionIndex, SpatialIndexEntry, StorageAdapter, DeletedNodeEntry } from '../types';
+import { DeletionStackService } from '../DeletionStackService';
+import { NodeArchiveService } from '../NodeArchiveService';
 import yaml from 'js-yaml';
 import * as d3 from 'd3';
 
@@ -22,9 +24,15 @@ export class LocalStorageAdapter implements StorageAdapter {
 
   // Debounce tracking
   private saveTimers: Map<string, number> = new Map();
-  private saveDebounceMs: number = 2000;
+  private saveDebounceMs: number = 500;
 
-  constructor(saveDebounceMs: number = 2000) {
+  // Deletion stack for soft delete
+  private deletionStackService: DeletionStackService = new DeletionStackService();
+
+  // Archive service for preserving deleted content
+  private nodeArchiveService: NodeArchiveService = new NodeArchiveService();
+
+  constructor(saveDebounceMs: number = 500) {
     this.saveDebounceMs = saveDebounceMs;
   }
 
@@ -39,6 +47,8 @@ export class LocalStorageAdapter implements StorageAdapter {
 
     this.dirHandle = dirHandle;
     await this.buildSpatialIndex();
+    await this.deletionStackService.initialize(dirHandle);
+    await this.nodeArchiveService.initialize(dirHandle);
     this.initialized = true;
   }
 
@@ -121,6 +131,21 @@ export class LocalStorageAdapter implements StorageAdapter {
       const scopeId = metadata.scopeId ?? metadata.parentId;
       const parentId = metadata.outlineParentId;
 
+      // Extract title from body's first heading if not in metadata
+      let title = metadata.title;
+      if (!title) {
+        const file = await fileHandle.getFile();
+        const text = await file.text();
+        const bodyStart = text.indexOf('---', 4);
+        if (bodyStart !== -1) {
+          const body = text.slice(bodyStart + 3).trim();
+          const headingMatch = body.match(/^#\s+(.+)$/m);
+          if (headingMatch) {
+            title = headingMatch[1].trim();
+          }
+        }
+      }
+
       return {
         id: metadata.id,
         x: metadata.x,
@@ -131,7 +156,7 @@ export class LocalStorageAdapter implements StorageAdapter {
         // Extended fields for skeleton rendering
         type: metadata.type || NodeType.NOTE,
         color: metadata.color as NodeColor | undefined,
-        title: metadata.title || metadata.content?.substring(0, 100),
+        title,
         scopeId,
       };
     } catch {
@@ -287,29 +312,49 @@ export class LocalStorageAdapter implements StorageAdapter {
       if (parts.length < 3) return null;
 
       const metadata = yaml.load(parts[1]) as any;
-      const content = parts.slice(2).join('---').trim();
+      const body = parts.slice(2).join('---').trim();
 
       // Extract edges from metadata
       const embeddedEdges: EmbeddedEdge[] = metadata.edges || [];
 
-      // Remove edges from node object
-      const nodeData = { ...metadata };
-      delete nodeData.edges;
+      // Build frontmatter-only node data (no content/title/summary/aliases/link/messages)
+      const nodeData: any = {
+        id: metadata.id,
+        type: metadata.type || NodeType.NOTE,
+        x: metadata.x,
+        y: metadata.y,
+        width: metadata.width,
+        height: metadata.height,
+        color: metadata.color,
+        pinned: metadata.pinned,
+        autoExpandDepth: metadata.autoExpandDepth,
+      };
 
       // Migration: rename old field names
       // Old parentId (scope) -> scopeId, old outlineParentId -> parentId
-      if (nodeData.parentId !== undefined && nodeData.scopeId === undefined) {
-        nodeData.scopeId = nodeData.parentId;
-        delete nodeData.parentId;
+      if (metadata.scopeId !== undefined) {
+        nodeData.scopeId = metadata.scopeId;
+      } else if (metadata.parentId !== undefined) {
+        nodeData.scopeId = metadata.parentId;
       }
-      if (nodeData.outlineParentId !== undefined) {
-        nodeData.parentId = nodeData.outlineParentId;
-        delete nodeData.outlineParentId;
+      if (metadata.outlineParentId !== undefined) {
+        nodeData.parentId = metadata.outlineParentId;
+      } else if (metadata.parentId !== undefined && metadata.scopeId !== undefined) {
+        // New schema: parentId is outline parent
+        nodeData.parentId = metadata.parentId;
+      }
+
+      // Derive title from first # heading in body
+      let title: string | undefined;
+      const headingMatch = body.match(/^#\s+(.+)$/m);
+      if (headingMatch) {
+        title = headingMatch[1].trim();
       }
 
       const node: GraphNode = {
         ...nodeData,
-        content: metadata.content || content || 'Untitled',
+        content: body || '',
+        title,
       };
 
       return { node, edges: embeddedEdges };
@@ -371,8 +416,22 @@ export class LocalStorageAdapter implements StorageAdapter {
         const fileHandle = await this.dirHandle!.getFileHandle(newFileName, { create: true });
         writable = await fileHandle.createWritable();
 
-        const metadata: any = { ...node };
-        delete metadata.content;
+        // Build frontmatter with only persisted fields
+        const metadata: any = {
+          id: node.id,
+          type: node.type,
+          x: node.x,
+          y: node.y,
+        };
+
+        // Optional frontmatter fields
+        if (node.width !== undefined) metadata.width = node.width;
+        if (node.height !== undefined) metadata.height = node.height;
+        if (node.color !== undefined) metadata.color = node.color;
+        if (node.pinned !== undefined) metadata.pinned = node.pinned;
+        if (node.scopeId !== undefined) metadata.scopeId = node.scopeId;
+        if (node.parentId !== undefined) metadata.parentId = node.parentId;
+        if (node.autoExpandDepth !== undefined) metadata.autoExpandDepth = node.autoExpandDepth;
 
         // Convert outgoing edges to embedded format
         if (outgoingEdges.length > 0) {
@@ -381,20 +440,14 @@ export class LocalStorageAdapter implements StorageAdapter {
             target: edge.target,
             label: edge.label,
           }));
-        } else {
-          delete metadata.edges;
         }
 
         const frontmatter = yaml.dump(metadata);
 
-        let body = '';
-        if (node.messages) {
-          body = node.messages.map((m) => `**${m.role}**: ${m.text}`).join('\n\n');
-        } else {
-          body = node.summary || '';
-        }
+        // Body is just the content (markdown with title as first heading)
+        const body = node.content || '';
 
-        const fileContent = `---\n${frontmatter}---\n\n# ${node.content}\n\n${body}`;
+        const fileContent = `---\n${frontmatter}---\n\n${body}`;
 
         await writable.write(fileContent);
         await writable.close();
@@ -432,20 +485,61 @@ export class LocalStorageAdapter implements StorageAdapter {
   }
 
   /**
-   * Delete a node's file
+   * Soft delete a node - moves it to the deletion stack instead of permanently removing
    */
   async deleteNode(nodeId: string): Promise<void> {
     if (!this.dirHandle) return;
 
     const hasPerm = await this.verifyPermission(this.dirHandle, true);
-    if (!hasPerm) return;
+    if (!hasPerm) {
+      console.warn('[LocalStorageAdapter] No write permission to delete node:', nodeId);
+      return;
+    }
 
     const filename = this.fileIndex.get(nodeId);
     if (filename) {
+      let rawMarkdownContent = '';
+      let title = 'Untitled';
+
+      // Step 1: Try to read file content for archiving (best effort)
+      try {
+        const fileHandle = await this.dirHandle.getFileHandle(filename);
+        const file = await fileHandle.getFile();
+        rawMarkdownContent = await file.text();
+
+        const result = await this.parseMarkdownNode(fileHandle);
+        if (result) {
+          title = result.node.title || result.node.content?.substring(0, 50) || 'Untitled';
+
+          // Convert embedded edges to GraphEdge format
+          const edges: GraphEdge[] = result.edges.map((e) => ({
+            id: e.id,
+            source: nodeId,
+            target: e.target,
+            label: e.label,
+          }));
+
+          // Push to deletion stack for Ctrl+Z restore
+          await this.deletionStackService.pushDeletion(result.node, edges);
+        }
+      } catch (e) {
+        console.warn('[LocalStorageAdapter] Failed to read node for archiving:', nodeId, e);
+      }
+
+      // Step 2: Try to archive (best effort - don't block deletion)
+      if (rawMarkdownContent) {
+        try {
+          await this.nodeArchiveService.archiveNode(filename, title, rawMarkdownContent);
+        } catch (e) {
+          console.warn('[LocalStorageAdapter] Failed to archive node:', nodeId, e);
+        }
+      }
+
+      // Step 3: ALWAYS attempt to delete the file
       try {
         await this.dirHandle.removeEntry(filename);
-      } catch {
-        // Ignore if file doesn't exist
+      } catch (e) {
+        console.error('[LocalStorageAdapter] Failed to delete file:', filename, e);
       }
     }
 
@@ -454,6 +548,53 @@ export class LocalStorageAdapter implements StorageAdapter {
     this.nodeIndex.delete(nodeId);
     this.extendedIndex.delete(nodeId);
     this.rebuildQuadtree();
+  }
+
+  /**
+   * Restore the most recently deleted node from the deletion stack
+   * Returns the restored node and its edges, or null if stack is empty
+   */
+  async restoreNode(): Promise<DeletedNodeEntry | null> {
+    if (!this.dirHandle) return null;
+
+    const hasPerm = await this.verifyPermission(this.dirHandle, true);
+    if (!hasPerm) return null;
+
+    const entry = await this.deletionStackService.popDeletion();
+    if (!entry) return null;
+
+    // Convert edges back to embedded format for saving
+    const outgoingEdges: GraphEdge[] = entry.edges;
+
+    // Save the node back to a file
+    await this.saveNodeImmediate(entry.node, outgoingEdges);
+
+    return entry;
+  }
+
+  /**
+   * Get the number of deleted nodes that can be restored
+   */
+  getDeletionStackSize(): number {
+    return this.deletionStackService.getStackSize();
+  }
+
+  /**
+   * Prune old entries from the deletion stack
+   * @param maxAgeMs Maximum age in milliseconds (default 30 days)
+   * @returns Number of entries pruned
+   */
+  async pruneDeletionStack(maxAgeMs?: number): Promise<number> {
+    return this.deletionStackService.pruneOldEntries(maxAgeMs);
+  }
+
+  /**
+   * Prune old entries from the node archive
+   * @param maxAgeMs Maximum age in milliseconds (default 30 days)
+   * @returns Number of entries pruned
+   */
+  async pruneNodeArchive(maxAgeMs?: number): Promise<number> {
+    return this.nodeArchiveService.pruneOldEntries(maxAgeMs);
   }
 
   /**
@@ -604,13 +745,27 @@ export class LocalStorageAdapter implements StorageAdapter {
     return sanitized || null;
   }
 
+  private extractTitleFromContent(content: string): string {
+    if (!content) return '';
+    // Look for first # heading
+    const headingMatch = content.match(/^#\s+(.+)$/m);
+    if (headingMatch) {
+      return headingMatch[1].trim();
+    }
+    // Fallback to first line
+    const firstLine = content.split('\n')[0]?.trim() || '';
+    return firstLine.slice(0, 100);
+  }
+
   private async getAvailableFilename(
     node: GraphNode,
     currentFilename: string | null
   ): Promise<string> {
     if (!this.dirHandle) throw new Error('No directory handle');
 
-    const sanitized = this.sanitizeFilename(node.content);
+    // Use title (derived from first heading) or extract from content
+    const titleForFilename = node.title || this.extractTitleFromContent(node.content);
+    const sanitized = this.sanitizeFilename(titleForFilename);
     const baseName = sanitized || 'Untitled';
     const desiredFilename = `${baseName}.md`;
 

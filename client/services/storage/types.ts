@@ -1,4 +1,4 @@
-import { GraphNode, GraphEdge, EmbeddedEdge, ChatMessage, NodeType, NodeColor } from '../../types';
+import { GraphNode, GraphEdge, EmbeddedEdge, NodeType, NodeColor } from '../../types';
 
 // Viewport bounds for spatial queries
 export interface ViewportBounds {
@@ -107,7 +107,7 @@ export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
   inMemoryOnly: true, // Default to in-memory until authenticated
   viewportBufferMultiplier: 1.5,
   regionGridSize: 1000,
-  syncDebounceMs: 2000,
+  syncDebounceMs: 500,
   maxCacheSize: 500,
 };
 
@@ -133,24 +133,18 @@ export interface YjsNodeFields {
   // LWW Registers (last-writer-wins)
   position: { x: number; y: number };
   dimensions: { width: number; height: number };
-  visual: { color?: NodeColor; type: NodeType };
+  visual: { color?: NodeColor; type: NodeType; pinned?: boolean };
   metadata: {
-    scopeId?: string;
-    parentId?: string;
-    link?: string;
-    summary?: string;
+    scopeId?: string | null;
+    parentId?: string | null;
     autoExpandDepth?: number;
-    clusterCount?: number;
-    clusterIds?: string[];
   };
 
   // Text CRDT
   content: string;
 
   // Set CRDTs (arrays with deduplication)
-  aliases: string[];
   edges: EmbeddedEdge[];
-  messages: ChatMessage[];
 }
 
 // Adapter interface for storage backends
@@ -163,6 +157,21 @@ export interface StorageAdapter {
   isEnabled(): boolean;
 }
 
+// Deletion stack types for soft delete feature
+export interface DeletedNodeEntry {
+  /** Original node data with all metadata */
+  node: GraphNode;
+  /** Edges that were connected to this node */
+  edges: GraphEdge[];
+  /** Timestamp when the node was deleted (milliseconds since epoch) */
+  deletedAt: number;
+}
+
+export interface DeletionStack {
+  version: 1;
+  entries: DeletedNodeEntry[];
+}
+
 // Re-export types from main types file for convenience
-export type { GraphNode, GraphEdge, EmbeddedEdge, ChatMessage, NodeColor };
+export type { GraphNode, GraphEdge, EmbeddedEdge, NodeColor };
 export { NodeType };
