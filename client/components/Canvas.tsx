@@ -814,6 +814,10 @@ export const Canvas: React.FC<CanvasProps> = ({
 
         // Allow wheel events for zoom ONLY if Ctrl is pressed
         if (event.type === "wheel") return event.ctrlKey;
+        // Block two-finger touches so our custom gesture handler can process them
+        if (event.type === "touchstart" && (event as TouchEvent).touches?.length >= 2) {
+          return false;
+        }
         return !event.button; // Only allow panning with no button pressed (i.e. mouse wheel, or touch pan)
       });
     zoomBehaviorRef.current = zoom;
