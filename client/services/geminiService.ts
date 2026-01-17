@@ -1,4 +1,4 @@
-import { ExpandResponse } from "../types";
+import { ExpandResponse, DuplicateCheckResult } from "../types";
 
 // Helper to make authenticated requests
 const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
@@ -188,6 +188,30 @@ export const findRelationships = async (
   } catch (error: any) {
     if (error.message === "LIMIT_REACHED") throw error;
     console.error("Relationship discovery failed", error);
+    return [];
+  }
+};
+
+/**
+ * Checks proposed nodes against existing nodes for semantic duplicates.
+ * Returns only nodes that have matches above the similarity threshold.
+ */
+export const checkForDuplicates = async (
+  nodes: Array<{ name: string; description?: string }>,
+  threshold: number = 0.9
+): Promise<DuplicateCheckResult[]> => {
+  if (nodes.length === 0) return [];
+
+  try {
+    const res = await fetchWithAuth("/api/search/duplicates", {
+      method: "POST",
+      body: JSON.stringify({ nodes, threshold }),
+    });
+    const data = await res.json();
+    return data.duplicates || [];
+  } catch (error: any) {
+    // Fail open - if duplicate check fails, allow creation to proceed
+    console.error("Duplicate check failed:", error);
     return [];
   }
 };

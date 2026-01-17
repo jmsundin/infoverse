@@ -1031,6 +1031,62 @@ app.get('/api/search/semantic', async (req, res) => {
     }
 });
 
+// Duplicate Check Endpoint - Check for semantically similar existing nodes
+app.post('/api/search/duplicates', async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
+
+    const { nodes, threshold = 0.9 } = req.body;
+
+    if (!nodes || !Array.isArray(nodes) || nodes.length === 0) {
+        return res.json({ duplicates: [] });
+    }
+
+    try {
+        const duplicates = [];
+
+        for (let i = 0; i < nodes.length; i++) {
+            const proposedNode = nodes[i];
+            const textToEmbed = [proposedNode.name, proposedNode.description].filter(Boolean).join(' ');
+
+            if (!textToEmbed.trim()) continue;
+
+            const embedding = await generateEmbedding(textToEmbed);
+            if (!embedding) continue;
+
+            // Query for similar nodes above threshold
+            const query = `
+                SELECT id, content, summary, 1 - (embedding <=> $1) as similarity
+                FROM nodes
+                WHERE user_id = $2
+                  AND embedding IS NOT NULL
+                  AND 1 - (embedding <=> $1) >= $3
+                ORDER BY embedding <=> $1 ASC
+                LIMIT 5;
+            `;
+
+            const result = await db.query(query, [JSON.stringify(embedding), req.user.id, threshold]);
+
+            if (result.rows.length > 0) {
+                duplicates.push({
+                    proposedIndex: i,
+                    proposedName: proposedNode.name,
+                    matches: result.rows.map(row => ({
+                        id: row.id,
+                        content: row.content,
+                        summary: row.summary,
+                        similarity: parseFloat(row.similarity)
+                    }))
+                });
+            }
+        }
+
+        res.json({ duplicates });
+    } catch (e) {
+        console.error('Duplicate check failed:', e);
+        res.status(500).json({ message: 'Duplicate check failed' });
+    }
+});
+
 // --- Yjs CRDT Sync Endpoints ---
 
 // Push Yjs update for a node

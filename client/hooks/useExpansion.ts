@@ -1,12 +1,12 @@
 import { useState, useRef, useCallback } from "react";
-import { GraphNode, GraphEdge, NodeType, ViewportTransform, SimulationTrigger } from "../types";
+import { GraphNode, GraphEdge, NodeType, ViewportTransform, SimulationTrigger, PendingExpansion, DuplicateCheckResult, ExpandResponse } from "../types";
 import {
   DEFAULT_NODE_WIDTH,
   DEFAULT_NODE_HEIGHT,
   WIKIDATA_SUBTOPIC_LIMIT,
   WIKIDATA_MAX_RECURSIVE_NODES_PER_LEVEL
 } from "../constants";
-import { fetchWikidataSubtopics } from "../services/wikidataService";
+import { fetchWikidataSubtopics, WikidataSubtopic } from "../services/wikidataService";
 import * as geminiService from "../services/geminiService";
 import * as hfService from "../services/huggingfaceService";
 import { parseTextToNodes } from "../utils/graphUtils";
@@ -24,7 +24,285 @@ export const useExpansion = (
   startSimulation?: (trigger: SimulationTrigger, subtreeRootId?: string) => void
 ) => {
   const [expandingNodeIds, setExpandingNodeIds] = useState<string[]>([]);
+  const [pendingExpansion, setPendingExpansion] = useState<PendingExpansion | null>(null);
   const wikidataExpansionInFlightRef = useRef<Set<string>>(new Set());
+
+  // Helper to create nodes and edges from AI expansion result
+  const createNodesFromAIResult = useCallback(
+    (
+      result: ExpandResponse,
+      sourceNode: GraphNode,
+      parentNodeId: string,
+      excludeIndices: Set<number> = new Set()
+    ): { nodesToAdd: GraphNode[]; edgesToAdd: GraphEdge[] } => {
+      const nodesToAdd: GraphNode[] = [];
+      const edgesToAdd: GraphEdge[] = [];
+      const parentNodeX = sourceNode.x;
+      const parentNodeY = sourceNode.y;
+
+      const fixedRadius = 500;
+      const startAngle = Math.random() * Math.PI;
+
+      // Filter out excluded indices (nodes that will link to existing instead)
+      const nodesToCreate = result.nodes.filter((_, i) => !excludeIndices.has(i));
+
+      const subNodes: GraphNode[] = nodesToCreate.map((n, i) => {
+        const angle = startAngle + (i / Math.max(nodesToCreate.length, 1)) * 2 * Math.PI;
+        return {
+          id: crypto.randomUUID(),
+          type: NodeType.CHAT,
+          x: parentNodeX + fixedRadius * Math.cos(angle),
+          y: parentNodeY + fixedRadius * Math.sin(angle),
+          content: `# ${n.name}\n\n**assistant**: ${n.description}`,
+          width: DEFAULT_NODE_WIDTH,
+          height: DEFAULT_NODE_HEIGHT,
+          link: n.wikiLink,
+          scopeId: currentScopeId || undefined,
+          parentId: parentNodeId,
+          summary: n.description,
+          autoExpandDepth: sourceNode.autoExpandDepth,
+        };
+      });
+
+      nodesToAdd.push(...subNodes);
+
+      // Create map for edge matching
+      const nameToNode = new Map<string, GraphNode>();
+      let subNodeIndex = 0;
+      result.nodes.forEach((n, i) => {
+        if (!excludeIndices.has(i)) {
+          nameToNode.set(n.name, subNodes[subNodeIndex]);
+          subNodeIndex++;
+        }
+      });
+
+      // Connect edges
+      result.edges.forEach((e) => {
+        const targetSubNode = nameToNode.get(e.targetName);
+        const targetExistingNode = nodes.find((n) => {
+          const nodeTitle = deriveTitleFromContent(n.content);
+          return (
+            (nodeTitle === e.targetName || nodeTitle.toLowerCase() === e.targetName.toLowerCase()) &&
+            (n.scopeId ?? null) === (currentScopeId ?? null)
+          );
+        });
+
+        if (targetSubNode) {
+          edgesToAdd.push({
+            id: crypto.randomUUID(),
+            source: parentNodeId,
+            target: targetSubNode.id,
+            label: e.relationship,
+            scopeId: currentScopeId || undefined,
+          });
+        } else if (targetExistingNode) {
+          edgesToAdd.push({
+            id: crypto.randomUUID(),
+            source: parentNodeId,
+            target: targetExistingNode.id,
+            label: e.relationship,
+            scopeId: currentScopeId || undefined,
+          });
+        }
+      });
+
+      // Fallback connectivity
+      subNodes.forEach((sn) => {
+        const isConnected = edgesToAdd.some((e) => e.target === sn.id);
+        if (!isConnected) {
+          edgesToAdd.push({
+            id: crypto.randomUUID(),
+            source: parentNodeId,
+            target: sn.id,
+            label: "related",
+            scopeId: currentScopeId || undefined,
+          });
+        }
+      });
+
+      return { nodesToAdd, edgesToAdd };
+    },
+    [nodes, currentScopeId]
+  );
+
+  // Helper to create nodes from Wikidata subtopics
+  const createNodesFromWikidata = useCallback(
+    (
+      subtopics: WikidataSubtopic[],
+      sourceNode: GraphNode,
+      parentNodeId: string,
+      excludeIndices: Set<number> = new Set()
+    ): { nodesToAdd: GraphNode[]; edgesToAdd: GraphEdge[] } => {
+      const nodesToAdd: GraphNode[] = [];
+      const edgesToAdd: GraphEdge[] = [];
+      const parentNodeX = sourceNode.x;
+      const parentNodeY = sourceNode.y;
+
+      const fixedRadius = 500;
+      const startAngle = Math.random() * Math.PI;
+
+      const subtopicsToCreate = subtopics.filter((_, i) => !excludeIndices.has(i));
+
+      const createdNodes: GraphNode[] = subtopicsToCreate.map((st, i) => {
+        const angle = startAngle + (i / Math.max(subtopicsToCreate.length, 1)) * 2 * Math.PI;
+        return {
+          id: crypto.randomUUID(),
+          type: NodeType.CHAT,
+          x: parentNodeX + fixedRadius * Math.cos(angle),
+          y: parentNodeY + fixedRadius * Math.sin(angle),
+          content: `# ${st.label}${st.description ? `\n\n**assistant**: ${st.description}` : ""}`,
+          width: DEFAULT_NODE_WIDTH,
+          height: DEFAULT_NODE_HEIGHT,
+          link: st.wikidataUrl,
+          scopeId: currentScopeId || undefined,
+          parentId: parentNodeId,
+          summary: st.description,
+          autoExpandDepth: sourceNode.autoExpandDepth,
+        };
+      });
+
+      nodesToAdd.push(...createdNodes);
+
+      for (const newNode of createdNodes) {
+        edgesToAdd.push({
+          id: crypto.randomUUID(),
+          source: parentNodeId,
+          target: newNode.id,
+          label: "subtopic",
+          scopeId: currentScopeId || undefined,
+        });
+      }
+
+      return { nodesToAdd, edgesToAdd };
+    },
+    [currentScopeId]
+  );
+
+  // Helper to pan/zoom to fit new nodes
+  const panToFitNodes = useCallback(
+    (sourceNode: GraphNode, newNodes: GraphNode[]) => {
+      if (newNodes.length === 0) return;
+
+      let minX = sourceNode.x;
+      let maxX = sourceNode.x + (sourceNode.width || DEFAULT_NODE_WIDTH);
+      let minY = sourceNode.y;
+      let maxY = sourceNode.y + (sourceNode.height || DEFAULT_NODE_HEIGHT);
+
+      newNodes.forEach((n) => {
+        minX = Math.min(minX, n.x);
+        maxX = Math.max(maxX, n.x + (n.width || DEFAULT_NODE_WIDTH));
+        minY = Math.min(minY, n.y);
+        maxY = Math.max(maxY, n.y + (n.height || DEFAULT_NODE_HEIGHT));
+      });
+
+      const padding = 200;
+      const width = maxX - minX + padding * 2;
+      const height = maxY - minY + padding * 2;
+      const centerX = (minX + maxX) / 2;
+      const centerY = (minY + maxY) / 2;
+
+      const scaleX = window.innerWidth / width;
+      const scaleY = window.innerHeight / height;
+      let newK = Math.min(scaleX, scaleY, 1);
+      newK = Math.max(newK, 0.1);
+
+      setViewTransform({
+        x: window.innerWidth / 2 - centerX * newK,
+        y: window.innerHeight / 2 - centerY * newK,
+        k: newK,
+      });
+    },
+    [setViewTransform]
+  );
+
+  // Handler for "Create All Anyway" in duplicate modal
+  const handleCreateAllAnyway = useCallback(() => {
+    if (!pendingExpansion) return;
+
+    const { sourceNode, sourceNodeId, result, isWikidata, wikidataSubtopics } = pendingExpansion;
+
+    if (isWikidata && wikidataSubtopics) {
+      const { nodesToAdd, edgesToAdd } = createNodesFromWikidata(
+        wikidataSubtopics,
+        sourceNode,
+        sourceNodeId
+      );
+      setNodesCallback((prev) => [...prev, ...nodesToAdd]);
+      setEdgesCallback((prev) => [...prev, ...edgesToAdd]);
+      panToFitNodes(sourceNode, nodesToAdd);
+    } else {
+      const { nodesToAdd, edgesToAdd } = createNodesFromAIResult(
+        result,
+        sourceNode,
+        sourceNodeId
+      );
+      setNodesCallback((prev) => [...prev, ...nodesToAdd]);
+      setEdgesCallback((prev) => [...prev, ...edgesToAdd]);
+      panToFitNodes(sourceNode, nodesToAdd);
+    }
+
+    setExpandingNodeIds((prev) => prev.filter((nId) => nId !== sourceNodeId));
+    setPendingExpansion(null);
+  }, [pendingExpansion, createNodesFromAIResult, createNodesFromWikidata, setNodesCallback, setEdgesCallback, panToFitNodes]);
+
+  // Handler for "Link to Existing" in duplicate modal
+  const handleLinkToExisting = useCallback(
+    (linkMapping: Map<number, string>) => {
+      if (!pendingExpansion) return;
+
+      const { sourceNode, sourceNodeId, result, duplicates, isWikidata, wikidataSubtopics } = pendingExpansion;
+
+      // Build set of indices to exclude from creation (they'll link instead)
+      const excludeIndices = new Set<number>();
+      const edgesToExisting: GraphEdge[] = [];
+
+      linkMapping.forEach((existingNodeId, proposedIndex) => {
+        excludeIndices.add(proposedIndex);
+        // Create edge to existing node
+        edgesToExisting.push({
+          id: crypto.randomUUID(),
+          source: sourceNodeId,
+          target: existingNodeId,
+          label: "related",
+          scopeId: currentScopeId || undefined,
+        });
+      });
+
+      if (isWikidata && wikidataSubtopics) {
+        const { nodesToAdd, edgesToAdd } = createNodesFromWikidata(
+          wikidataSubtopics,
+          sourceNode,
+          sourceNodeId,
+          excludeIndices
+        );
+        setNodesCallback((prev) => [...prev, ...nodesToAdd]);
+        setEdgesCallback((prev) => [...prev, ...edgesToAdd, ...edgesToExisting]);
+        panToFitNodes(sourceNode, nodesToAdd);
+      } else {
+        const { nodesToAdd, edgesToAdd } = createNodesFromAIResult(
+          result,
+          sourceNode,
+          sourceNodeId,
+          excludeIndices
+        );
+        setNodesCallback((prev) => [...prev, ...nodesToAdd]);
+        setEdgesCallback((prev) => [...prev, ...edgesToAdd, ...edgesToExisting]);
+        panToFitNodes(sourceNode, nodesToAdd);
+      }
+
+      setExpandingNodeIds((prev) => prev.filter((nId) => nId !== sourceNodeId));
+      setPendingExpansion(null);
+    },
+    [pendingExpansion, currentScopeId, createNodesFromAIResult, createNodesFromWikidata, setNodesCallback, setEdgesCallback, panToFitNodes]
+  );
+
+  // Handler for "Cancel" in duplicate modal
+  const handleCancelExpansion = useCallback(() => {
+    if (pendingExpansion) {
+      setExpandingNodeIds((prev) => prev.filter((nId) => nId !== pendingExpansion.sourceNodeId));
+    }
+    setPendingExpansion(null);
+  }, [pendingExpansion]);
 
   const handleExpandNodeFromWikidata = useCallback(
     async (
@@ -32,7 +310,7 @@ export const useExpansion = (
       topic: string,
       nodeOverride?: GraphNode,
       depth?: number,
-      options: { suppressToast?: boolean } = {}
+      options: { suppressToast?: boolean; skipDuplicateCheck?: boolean } = {}
     ): Promise<boolean> => {
       if (wikidataExpansionInFlightRef.current.has(id)) return false;
       wikidataExpansionInFlightRef.current.add(id);
@@ -62,22 +340,14 @@ export const useExpansion = (
               message: `No Wikidata subtopics found for "${topic}".`,
             });
           }
+          setExpandingNodeIds((prev) => prev.filter((nId) => nId !== id));
+          wikidataExpansionInFlightRef.current.delete(id);
           return false;
         }
 
-        const parentNodeId = id;
-        const parentNodeX = sourceNode.x;
-        const parentNodeY = sourceNode.y;
-
-        const nodesToAdd: GraphNode[] = [];
-        const edgesToAdd: GraphEdge[] = [];
-
-        const existingNodesInScope = nodes.filter(
-          (n) => (n.scopeId ?? null) === (currentScopeId ?? null)
-        );
-
+        // Filter out exact label matches first (existing behavior)
         const existingByLowerLabel = new Map<string, GraphNode>();
-        for (const existingNode of existingNodesInScope) {
+        for (const existingNode of nodes) {
           existingByLowerLabel.set(
             existingNode.content.trim().toLowerCase(),
             existingNode
@@ -89,102 +359,56 @@ export const useExpansion = (
           return !existingByLowerLabel.has(lower);
         });
 
-        const fixedRadius = 500; // Standardized Edge Length
-        const startAngle = Math.random() * Math.PI;
+        // Check for semantic duplicates if not skipped
+        if (!options.skipDuplicateCheck && subtopicsToCreate.length > 0) {
+          const duplicates = await geminiService.checkForDuplicates(
+            subtopicsToCreate.map((st) => ({ name: st.label, description: st.description }))
+          );
 
-        const createdNodes: GraphNode[] = subtopicsToCreate.map((st, i) => {
-          const angle =
-            startAngle +
-            (i / Math.max(subtopicsToCreate.length, 1)) * 2 * Math.PI;
-
-          return {
-            id: crypto.randomUUID(),
-            type: NodeType.CHAT,
-            x: parentNodeX + fixedRadius * Math.cos(angle),
-            y: parentNodeY + fixedRadius * Math.sin(angle),
-            // Title is now derived from content's first # heading
-            content: `# ${st.label}${st.description ? `\n\n**assistant**: ${st.description}` : ''}`,
-            width: DEFAULT_NODE_WIDTH,
-            height: DEFAULT_NODE_HEIGHT,
-            link: st.wikidataUrl,
-            scopeId: currentScopeId || undefined,
-            parentId: id, // Set outline hierarchy parent
-            summary: st.description,
-            autoExpandDepth: sourceNode.autoExpandDepth,
-          };
-        });
-
-        nodesToAdd.push(...createdNodes);
-
-        for (const newNode of createdNodes) {
-          edgesToAdd.push({
-            id: crypto.randomUUID(),
-            source: parentNodeId,
-            target: newNode.id,
-            label: "subtopic",
-            scopeId: currentScopeId || undefined,
-          });
+          if (duplicates.length > 0) {
+            // Store pending expansion and show modal
+            setPendingExpansion({
+              sourceNodeId: id,
+              sourceNode,
+              result: { nodes: [], edges: [] }, // Not used for Wikidata
+              duplicates,
+              isWikidata: true,
+              wikidataSubtopics: subtopicsToCreate,
+            });
+            wikidataExpansionInFlightRef.current.delete(id);
+            // Don't clear expandingNodeIds - modal handlers will do that
+            return false;
+          }
         }
 
+        // No duplicates found, proceed with creation
+        const { nodesToAdd, edgesToAdd } = createNodesFromWikidata(
+          subtopicsToCreate,
+          sourceNode,
+          id
+        );
+
+        // Also create edges to existing nodes that match by label
         for (const st of subtopics) {
           const lower = st.label.trim().toLowerCase();
           const existingNode = existingByLowerLabel.get(lower);
-          if (!existingNode) continue;
-
-          edgesToAdd.push({
-            id: crypto.randomUUID(),
-            source: parentNodeId,
-            target: existingNode.id,
-            label: "subtopic",
-            scopeId: currentScopeId || undefined,
-          });
+          if (existingNode) {
+            edgesToAdd.push({
+              id: crypto.randomUUID(),
+              source: id,
+              target: existingNode.id,
+              label: "subtopic",
+              scopeId: currentScopeId || undefined,
+            });
+          }
         }
 
         setNodesCallback((prev) => [...prev, ...nodesToAdd]);
         setEdgesCallback((prev) => [...prev, ...edgesToAdd]);
+        panToFitNodes(sourceNode, nodesToAdd);
 
-        // Physics simulation disabled - user can trigger manually via node menu
-        // if (nodesToAdd.length > 0 && startSimulation) {
-        //   setTimeout(() => {
-        //     startSimulation('node-expansion', id);
-        //   }, 0);
-        // }
-
-        if (nodesToAdd.length > 0) {
-          let minX = sourceNode.x;
-          let maxX = sourceNode.x + (sourceNode.width || DEFAULT_NODE_WIDTH);
-          let minY = sourceNode.y;
-          let maxY = sourceNode.y + (sourceNode.height || DEFAULT_NODE_HEIGHT);
-
-          nodesToAdd.forEach((n) => {
-            minX = Math.min(minX, n.x);
-            maxX = Math.max(maxX, n.x + (n.width || DEFAULT_NODE_WIDTH));
-            minY = Math.min(minY, n.y);
-            maxY = Math.max(maxY, n.y + (n.height || DEFAULT_NODE_HEIGHT));
-          });
-
-          const padding = 200;
-          const width = maxX - minX + padding * 2;
-          const height = maxY - minY + padding * 2;
-
-          const centerX = (minX + maxX) / 2;
-          const centerY = (minY + maxY) / 2;
-
-          // Calculate zoom to fit
-          const scaleX = window.innerWidth / width;
-          const scaleY = window.innerHeight / height;
-          let newK = Math.min(scaleX, scaleY, 1);
-          newK = Math.max(newK, 0.1);
-
-          setViewTransform({
-            x: window.innerWidth / 2 - centerX * newK,
-            y: window.innerHeight / 2 - centerY * newK,
-            k: newK,
-          });
-        }
-
-        if (depthToUse > 1 && createdNodes.length > 0) {
-          const nodesForRecursion = createdNodes.slice(
+        if (depthToUse > 1 && nodesToAdd.length > 0) {
+          const nodesForRecursion = nodesToAdd.slice(
             0,
             WIKIDATA_MAX_RECURSIVE_NODES_PER_LEVEL
           );
@@ -194,7 +418,8 @@ export const useExpansion = (
                 node.id,
                 deriveTitleFromContent(node.content),
                 node,
-                depthToUse - 1
+                depthToUse - 1,
+                { skipDuplicateCheck: true } // Skip duplicate check for recursive expansions
               )
             )
           );
@@ -214,7 +439,7 @@ export const useExpansion = (
         wikidataExpansionInFlightRef.current.delete(id);
       }
     },
-    [nodes, currentScopeId, setNodesCallback, setEdgesCallback, setViewTransform, setToast, startSimulation]
+    [nodes, currentScopeId, setNodesCallback, setEdgesCallback, setToast, createNodesFromWikidata, panToFitNodes]
   );
 
   const handleExpandNode = useCallback(
@@ -222,7 +447,8 @@ export const useExpansion = (
       id: string,
       topic: string,
       nodeOverride?: GraphNode,
-      depth?: number
+      depth?: number,
+      options: { skipDuplicateCheck?: boolean } = {}
     ) => {
       setExpandingNodeIds((prev) => [...prev, id]);
 
@@ -236,71 +462,32 @@ export const useExpansion = (
         depth !== undefined ? depth : sourceNode.autoExpandDepth || 1;
 
       try {
-        const isSelfExpansion =
-          sourceNode.content.trim().toLowerCase() ===
-          topic.trim().toLowerCase();
         // Improved heuristic for local breakdown vs knowledge expansion
         const isList = /^\s*[-*•]|\d+\./m.test(topic);
         const isContentBreakdown =
           topic.length > 100 || topic.includes("\n") || isList;
 
-        let parentNodeId = id;
-        let parentNodeX = sourceNode.x;
-        let parentNodeY = sourceNode.y;
-
-        const nodesToAdd: GraphNode[] = [];
-        const edgesToAdd: GraphEdge[] = [];
-        let topicNode: GraphNode | null = null;
-        let nextNodesToExpand: GraphNode[] = [];
-
-        if (!isSelfExpansion && !isContentBreakdown) {
-          const topicNodeId = crypto.randomUUID();
-          const angle = Math.random() * 2 * Math.PI;
-          const offset = 500; // Standardized Edge Length
-
-          parentNodeX = sourceNode.x + offset * Math.cos(angle);
-          parentNodeY = sourceNode.y + offset * Math.sin(angle);
-
-          // Title is derived from content's first # heading
-          const topicTitle = isShortContent(topic) ? topic : extractFirstNounPhrase(topic);
-          topicNode = {
-            id: topicNodeId,
-            type: NodeType.CHAT,
-            x: parentNodeX,
-            y: parentNodeY,
-            content: `# ${topicTitle}\n\n**assistant**: Expanded topic from "${sourceNode.content}".`,
-            width: DEFAULT_NODE_WIDTH,
-            height: DEFAULT_NODE_HEIGHT,
-            scopeId: currentScopeId || undefined,
-            parentId: id, // Set outline hierarchy parent
-            autoExpandDepth: sourceNode.autoExpandDepth, // Inherit expansion settings
-          };
-
-          nodesToAdd.push(topicNode);
-          edgesToAdd.push({
-            id: crypto.randomUUID(),
-            source: id,
-            target: topicNodeId,
-            label: "includes",
-            scopeId: currentScopeId || undefined,
-          });
-
-          parentNodeId = topicNodeId;
-        }
+        console.log('[AI Expansion] handleExpandNode called');
+        console.log('[AI Expansion] topic:', topic);
+        console.log('[AI Expansion] topic.length:', topic.length, 'isList:', isList, 'isContentBreakdown:', isContentBreakdown);
 
         if (isContentBreakdown) {
           // --- Local Parsing Mode with Hierarchical Logic ---
+          // Skip duplicate checking for local content breakdown (user's own content)
           const subItems = parseTextToNodes(topic);
+          const parentNodeId = id;
+          const parentNodeX = sourceNode.x;
+          const parentNodeY = sourceNode.y;
+
+          const nodesToAdd: GraphNode[] = [];
+          const edgesToAdd: GraphEdge[] = [];
 
           // Generate titles for items that have long descriptions
-          // Use AI for long content, fallback to noun phrase extraction
           const titleService = aiProvider === "huggingface" ? hfService : geminiService;
           const titlePromises = subItems.map(async (item) => {
-            // If description is short enough, use item.name directly
             if (isShortContent(item.description)) {
               return item.name;
             }
-            // Try AI generation, fall back to noun phrase extraction
             try {
               const aiTitle = await titleService.generateTitleFromContent(item.description);
               return cleanTitleMarkdown(aiTitle || extractFirstNounPhrase(item.description));
@@ -309,19 +496,13 @@ export const useExpansion = (
             }
           });
 
-          // Wait for all titles to be generated
           const generatedTitles = await Promise.all(titlePromises);
 
-          // Stack to manage parent context based on indentation
-          // Initial context is the source node (or topic node)
           const stack = [
             { indent: -1, id: parentNodeId, x: parentNodeX, y: parentNodeY },
           ];
 
           subItems.forEach((item, i) => {
-            // Algorithm:
-            // 1. Find the correct parent. The parent is the node on the stack with indentation strictly less than current item.
-            //    If stack top indent >= item indent, pop stack (we are ending that child's scope).
             while (
               stack.length > 1 &&
               stack[stack.length - 1].indent >= item.indent
@@ -330,18 +511,12 @@ export const useExpansion = (
             }
 
             const parent = stack[stack.length - 1];
-
             const newNodeId = crypto.randomUUID();
-
-            // Place node relative to its specific parent
-            // Random angle and distance for organic tree feel
             const angle = Math.random() * 2 * Math.PI;
-            const dist = 500; // Standardized Edge Length
-
+            const dist = 500;
             const newNodeX = parent.x + dist * Math.cos(angle);
             const newNodeY = parent.y + dist * Math.sin(angle);
 
-            // Title is derived from content's first # heading
             const newNode: GraphNode = {
               id: newNodeId,
               type: NodeType.CHAT,
@@ -351,7 +526,7 @@ export const useExpansion = (
               width: DEFAULT_NODE_WIDTH,
               height: DEFAULT_NODE_HEIGHT,
               scopeId: currentScopeId || undefined,
-              parentId: parent.id, // Set outline hierarchy parent
+              parentId: parent.id,
               summary: item.description,
               autoExpandDepth: sourceNode.autoExpandDepth,
             };
@@ -366,7 +541,6 @@ export const useExpansion = (
               scopeId: currentScopeId || undefined,
             });
 
-            // Push current node to stack as a potential parent for subsequent items
             stack.push({
               indent: item.indent,
               id: newNodeId,
@@ -374,8 +548,14 @@ export const useExpansion = (
               y: newNodeY,
             });
           });
+
+          setNodesCallback((prev) => [...prev, ...nodesToAdd]);
+          setEdgesCallback((prev) => [...prev, ...edgesToAdd]);
+          panToFitNodes(sourceNode, nodesToAdd);
         } else {
           // --- Gemini API Mode (AI Expansion) ---
+          console.log('[AI Expansion] Starting expansion for topic:', topic);
+
           const existingNodeNames = nodes
             .filter((n) => (n.scopeId ?? null) === (currentScopeId ?? null))
             .map((n) => n.content);
@@ -384,148 +564,50 @@ export const useExpansion = (
             : geminiService
           ).expandNodeTopic(topic, existingNodeNames);
 
-          if (topicNode && result.mainTopic) {
-            topicNode.content = result.mainTopic;
-          }
+          console.log('[AI Expansion] AI result:', result);
+          console.log('[AI Expansion] result.nodes.length:', result.nodes.length);
 
           if (result.nodes.length > 0) {
-            // Standardized Circular Placement
-            const fixedRadius = 500; // Standardized Edge Length
-            const startAngle = Math.random() * Math.PI;
-
-            const subNodes: GraphNode[] = result.nodes.map((n, i) => {
-              // Distribute evenly in a circle to maintain roughly equal edge length
-              const angle =
-                startAngle + (i / result.nodes.length) * 2 * Math.PI;
-
-              // Title is derived from content's first # heading
-              return {
-                id: crypto.randomUUID(),
-                type: NodeType.CHAT,
-                x: parentNodeX + fixedRadius * Math.cos(angle),
-                y: parentNodeY + fixedRadius * Math.sin(angle),
-                content: `# ${n.name}\n\n**assistant**: ${n.description}`,
-                width: DEFAULT_NODE_WIDTH,
-                height: DEFAULT_NODE_HEIGHT,
-                link: n.wikiLink,
-                scopeId: currentScopeId || undefined,
-                parentId: parentNodeId, // Set outline hierarchy parent
-                summary: n.description, // Store description for semantic zoom
-                autoExpandDepth: sourceNode.autoExpandDepth,
-              };
-            });
-
-            nodesToAdd.push(...subNodes);
-            nextNodesToExpand = subNodes; // Mark these for potential recursion
-
-            // Create map for edge matching using original AI names
-            const nameToNode = new Map<string, GraphNode>();
-            result.nodes.forEach((n, i) => {
-              nameToNode.set(n.name, subNodes[i]);
-            });
-
-            // Connect edges
-            result.edges.forEach((e) => {
-              // Match against original AI-returned name (exact match)
-              const targetSubNode = nameToNode.get(e.targetName);
-
-              // For existing nodes, also try case-insensitive match
-              const targetExistingNode = nodes.find(
-                (n) => {
-                  const nodeTitle = deriveTitleFromContent(n.content);
-                  return (nodeTitle === e.targetName ||
-                          nodeTitle.toLowerCase() === e.targetName.toLowerCase()) &&
-                         (n.scopeId ?? null) === (currentScopeId ?? null);
-                }
+            // Check for semantic duplicates if not skipped
+            if (!options.skipDuplicateCheck) {
+              const duplicates = await geminiService.checkForDuplicates(
+                result.nodes.map((n) => ({ name: n.name, description: n.description }))
               );
 
-              if (targetSubNode) {
-                edgesToAdd.push({
-                  id: crypto.randomUUID(),
-                  source: parentNodeId,
-                  target: targetSubNode.id,
-                  label: e.relationship,
-                  scopeId: currentScopeId || undefined,
+              if (duplicates.length > 0) {
+                // Store pending expansion and show modal
+                setPendingExpansion({
+                  sourceNodeId: id,
+                  sourceNode,
+                  result,
+                  duplicates,
+                  isWikidata: false,
                 });
-              } else if (targetExistingNode) {
-                edgesToAdd.push({
-                  id: crypto.randomUUID(),
-                  source: parentNodeId,
-                  target: targetExistingNode.id,
-                  label: e.relationship,
-                  scopeId: currentScopeId || undefined,
-                });
+                // Don't clear expandingNodeIds - modal handlers will do that
+                return;
               }
-            });
+            }
 
-            // Fallback connectivity
-            subNodes.forEach((sn) => {
-              const isConnected = edgesToAdd.some((e) => e.target === sn.id);
-              if (!isConnected) {
-                edgesToAdd.push({
-                  id: crypto.randomUUID(),
-                  source: parentNodeId,
-                  target: sn.id,
-                  label: "related",
-                  scopeId: currentScopeId || undefined,
-                });
-              }
-            });
+            // No duplicates found, proceed with creation using helper
+            const { nodesToAdd, edgesToAdd } = createNodesFromAIResult(
+              result,
+              sourceNode,
+              id
+            );
+
+            setNodesCallback((prev) => [...prev, ...nodesToAdd]);
+            setEdgesCallback((prev) => [...prev, ...edgesToAdd]);
+            panToFitNodes(sourceNode, nodesToAdd);
+
+            // Recursive Expansion
+            if (depthToUse > 1 && nodesToAdd.length > 0) {
+              Promise.all(
+                nodesToAdd.map((node) =>
+                  handleExpandNode(node.id, deriveTitleFromContent(node.content), node, depthToUse - 1, { skipDuplicateCheck: true })
+                )
+              );
+            }
           }
-        }
-
-        setNodesCallback((prev) => [...prev, ...nodesToAdd]);
-        setEdgesCallback((prev) => [...prev, ...edgesToAdd]);
-
-        // Physics simulation disabled - user can trigger manually via node menu
-        // if (nodesToAdd.length > 0 && startSimulation) {
-        //   setTimeout(() => {
-        //     startSimulation('node-expansion', id);
-        //   }, 0);
-        // }
-
-        if (nodesToAdd.length > 0) {
-          // Calculate bounds of the new cluster + parent
-          let minX = sourceNode.x;
-          let maxX = sourceNode.x + (sourceNode.width || DEFAULT_NODE_WIDTH);
-          let minY = sourceNode.y;
-          let maxY = sourceNode.y + (sourceNode.height || DEFAULT_NODE_HEIGHT);
-
-          nodesToAdd.forEach((n) => {
-            minX = Math.min(minX, n.x);
-            maxX = Math.max(maxX, n.x + (n.width || DEFAULT_NODE_WIDTH));
-            minY = Math.min(minY, n.y);
-            maxY = Math.max(maxY, n.y + (n.height || DEFAULT_NODE_HEIGHT));
-          });
-
-          const padding = 200; // Increased padding for larger graph
-          const width = maxX - minX + padding * 2;
-          const height = maxY - minY + padding * 2;
-
-          const centerX = (minX + maxX) / 2;
-          const centerY = (minY + maxY) / 2;
-
-          // Calculate zoom to fit
-          const scaleX = window.innerWidth / width;
-          const scaleY = window.innerHeight / height;
-          let newK = Math.min(scaleX, scaleY, 1); // Cap at 1.0 zoom (don't zoom in too close)
-          newK = Math.max(newK, 0.1);
-
-          setViewTransform({
-            x: window.innerWidth / 2 - centerX * newK,
-            y: window.innerHeight / 2 - centerY * newK,
-            k: newK,
-          });
-        }
-
-        // Recursive Expansion
-        if (depthToUse > 1 && nextNodesToExpand.length > 0) {
-          // We process these asynchronously without blocking UI
-          Promise.all(
-            nextNodesToExpand.map((node) =>
-              handleExpandNode(node.id, node.content, node, depthToUse - 1)
-            )
-          );
         }
       } catch (e: any) {
         if (e.message === "LIMIT_REACHED") {
@@ -537,13 +619,17 @@ export const useExpansion = (
         setExpandingNodeIds((prev) => prev.filter((nId) => nId !== id));
       }
     },
-    [nodes, currentScopeId, setNodesCallback, setEdgesCallback, aiProvider, handleExpandNodeFromWikidata, setViewTransform, setShowLimitModal, startSimulation]
+    [nodes, currentScopeId, setNodesCallback, setEdgesCallback, aiProvider, setShowLimitModal, createNodesFromAIResult, panToFitNodes]
   );
 
   return {
     expandingNodeIds,
     handleExpandNode,
     handleExpandNodeFromWikidata,
+    pendingExpansion,
+    handleCreateAllAnyway,
+    handleLinkToExisting,
+    handleCancelExpansion,
   };
 };
 

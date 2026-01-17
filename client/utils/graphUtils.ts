@@ -48,12 +48,12 @@ export const getNodeTitleForBreadcrumb = (node: GraphNode) => {
 
   // Use explicit title if available
   if (node.title) {
-    return node.title;
+    return node.title.replace(/^#+\s*/, "");
   }
 
   // Fallback logic for backward compatibility
   if (node.type === NodeType.CHAT) {
-    return (node.content || "").trim() || "Chat";
+    return (node.content || "").trim().replace(/^#+\s*/, "") || "Chat";
   }
 
   let title = getFirstNonEmptyLine(node.content);
@@ -113,4 +113,3 @@ export const parseTextToNodes = (text: string) => {
   }
   return subNodes;
 };
-

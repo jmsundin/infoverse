@@ -100,6 +100,35 @@ export interface ExpandResponse {
   }[];
 }
 
+// Duplicate detection types
+export interface DuplicateMatch {
+  id: string;
+  content: string;
+  summary: string;
+  similarity: number;
+}
+
+export interface DuplicateCheckResult {
+  proposedIndex: number;
+  proposedName: string;
+  matches: DuplicateMatch[];
+}
+
+export interface PendingExpansion {
+  sourceNodeId: string;
+  sourceNode: GraphNode;
+  result: ExpandResponse;
+  duplicates: DuplicateCheckResult[];
+  isWikidata?: boolean;
+  // For Wikidata expansions
+  wikidataSubtopics?: Array<{
+    id: string;
+    label: string;
+    description?: string;
+    wikidataUrl: string;
+  }>;
+}
+
 // Physics simulation configuration
 export interface PhysicsConfig {
   physicsEnabled: boolean;          // Master toggle for physics simulation

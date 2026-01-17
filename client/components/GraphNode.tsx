@@ -31,6 +31,7 @@ import {
   formatInternalNodeLinks,
 } from "../utils/wikiLinks";
 import { cleanTitleMarkdown, updateTitleInContent, deriveTitleFromContent } from "../utils/titleUtils";
+import { extractPrefixContent } from "../utils/chatFormatUtils";
 
 interface GraphNodeProps {
   node: GraphNode;
@@ -66,6 +67,7 @@ interface GraphNodeProps {
   aiProvider?: "gemini" | "huggingface";
   onTogglePin?: (id: string) => void;
   onArrangeChildren?: (id: string) => void;
+  onCircularLayout?: (id: string) => void;
 }
 
 const DELETE_CONFIRM_PREF_KEY = "infoverse_skip_delete_confirm";
@@ -101,6 +103,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     aiProvider = "gemini",
     onTogglePin,
     onArrangeChildren,
+    onCircularLayout,
   }) => {
     const [input, setInput] = useState("");
     const [isChatting, setIsChatting] = useState(false);
@@ -332,9 +335,17 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
 
       const service = aiProvider === "huggingface" ? hfService : geminiService;
 
-      // Extract topic from node content for context
+      // Extract topic and prefix content for context
       const topic = deriveTitleFromContent(node.content || '');
-      const context = topic && topic !== 'Untitled' ? { topic } : undefined;
+      const prefixContent = extractPrefixContent(node.content || '');
+
+      // Build context object with available data
+      const context = (topic && topic !== 'Untitled') || prefixContent
+        ? {
+            ...(topic && topic !== 'Untitled' ? { topic } : {}),
+            ...(prefixContent ? { prefixContent } : {})
+          }
+        : undefined;
 
       const result = await service.sendChatMessage(
         updatedMessages,
@@ -825,6 +836,39 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                       <path d="M13.5 10.5L17.5 6.5" />
                       <path d="M10.5 13.5L6.5 17.5" />
                       <path d="M13.5 13.5L17.5 17.5" />
+                    </svg>
+                  </button>
+                )}
+
+                {onCircularLayout && childNodes && childNodes.length > 0 && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onCircularLayout(node.id);
+                    }}
+                    className="min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 rounded hover:bg-slate-700/50 transition-colors text-slate-400 hover:text-cyan-400 flex items-center justify-center"
+                    title="Arrange Children (Circular)"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onTouchStart={(e) => e.stopPropagation()}
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      {/* Circular/orbital icon - parent in center, children in ring */}
+                      <circle cx="12" cy="12" r="2.5" />
+                      <circle cx="12" cy="4" r="1.5" />
+                      <circle cx="18.9" cy="8" r="1.5" />
+                      <circle cx="18.9" cy="16" r="1.5" />
+                      <circle cx="12" cy="20" r="1.5" />
+                      <circle cx="5.1" cy="16" r="1.5" />
+                      <circle cx="5.1" cy="8" r="1.5" />
                     </svg>
                   </button>
                 )}

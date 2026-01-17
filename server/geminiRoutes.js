@@ -25,13 +25,18 @@ router.post('/chat', async (req, res) => {
             ? `The user is asking about: "${context.topic}". Use this as context for their questions.`
             : '';
 
+        // Build prefix context if provided (markdown content before messages)
+        const prefixContext = context?.prefixContent
+            ? `\n\nBackground context for this conversation:\n---\n${context.prefixContent}\n---\nUse this context to inform your responses.`
+            : '';
+
         const fullPrompt = `
           ${historyContext}
           User: ${newMessage}
 
           System: You are a helpful assistant in a knowledge graph application.
           Users use you to explore Wikidata and Wikipedia information.
-          ${topicContext}
+          ${topicContext}${prefixContext}
           Keep answers concise and relevant. If referring to specific articles, verify with search.
         `;
 

@@ -403,6 +403,11 @@ export const Canvas: React.FC<CanvasProps> = ({
     y: number;
   } | null>(null);
   const longPressContextMenuOpenedRef = useRef(false);
+  const twoFingerLongPressTimerRef = useRef<number | null>(null);
+  const twoFingerLongPressStartPointRef = useRef<{
+    x: number;
+    y: number;
+  } | null>(null);
   const layoutMenuContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Derived state
@@ -1436,6 +1441,11 @@ export const Canvas: React.FC<CanvasProps> = ({
       longPressContextMenuTimerRef.current = null;
     }
     longPressContextMenuStartPointRef.current = null;
+    if (twoFingerLongPressTimerRef.current) {
+      clearTimeout(twoFingerLongPressTimerRef.current);
+      twoFingerLongPressTimerRef.current = null;
+    }
+    twoFingerLongPressStartPointRef.current = null;
   }, []);
 
   const handleContextMenu = useCallback(
@@ -1462,15 +1472,26 @@ export const Canvas: React.FC<CanvasProps> = ({
       const target = e.target as HTMLElement;
       if (target.closest(".graph-node")) return;
 
-      // Two-finger tap: open context menu at midpoint
+      // Two-finger long-press: open context menu at midpoint after 500ms
       if (e.touches.length === 2) {
         const t1 = e.touches[0];
         const t2 = e.touches[1];
         const clientX = (t1.clientX + t2.clientX) / 2;
         const clientY = (t1.clientY + t2.clientY) / 2;
-        longPressContextMenuOpenedRef.current = true;
+
+        // Cancel any existing one-finger long-press timer
         cancelLongPressContextMenu();
-        openContextMenuAtClientPoint(clientX, clientY);
+
+        // Store midpoint for two-finger long-press
+        twoFingerLongPressStartPointRef.current = { x: clientX, y: clientY };
+
+        // Start two-finger long-press timer (500ms)
+        twoFingerLongPressTimerRef.current = window.setTimeout(() => {
+          const start = twoFingerLongPressStartPointRef.current;
+          if (!start) return;
+          longPressContextMenuOpenedRef.current = true;
+          openContextMenuAtClientPoint(start.x, start.y);
+        }, 500);
         return;
       }
 
@@ -1501,6 +1522,21 @@ export const Canvas: React.FC<CanvasProps> = ({
 
   const handleBackgroundTouchMove = useCallback(
     (e: React.TouchEvent) => {
+      // Handle two-finger long-press movement cancellation
+      if (e.touches.length === 2 && twoFingerLongPressStartPointRef.current) {
+        const t1 = e.touches[0];
+        const t2 = e.touches[1];
+        const currentMidX = (t1.clientX + t2.clientX) / 2;
+        const currentMidY = (t1.clientY + t2.clientY) / 2;
+        const start = twoFingerLongPressStartPointRef.current;
+        const dist = Math.hypot(currentMidX - start.x, currentMidY - start.y);
+        if (dist > 10) {
+          cancelLongPressContextMenu();
+        }
+        return;
+      }
+
+      // Handle one-finger long-press movement cancellation
       const start = longPressContextMenuStartPointRef.current;
       if (!start) return;
       if (e.touches.length !== 1) {
@@ -1650,6 +1686,37 @@ export const Canvas: React.FC<CanvasProps> = ({
     // Start the physics simulation for this node's children
     startSimulation('manual-subtree', nodeId);
   }, [nodes, startSimulation, viewTransform.k, onViewTransformChange]);
+
+  // Handler for arranging children of a node in a circular layout (immediate, no physics)
+  const handleCircularLayout = useCallback((nodeId: string) => {
+    const parentNode = nodes.find((n) => n.id === nodeId);
+    if (!parentNode) return;
+
+    const childNodes = childrenByScope.get(nodeId) || [];
+    if (childNodes.length === 0) return;
+
+    // Compute circular positions for children
+    const positions = computeSurroundChildPositions(parentNode, childNodes);
+
+    // Update all child positions
+    setNodes((currentNodes) =>
+      currentNodes.map((node) => {
+        const newPos = positions.get(node.id);
+        if (newPos) {
+          return { ...node, x: newPos.x, y: newPos.y };
+        }
+        return node;
+      })
+    );
+
+    // Center viewport on the parent node
+    const nodeCenterX = parentNode.x + (parentNode.width || DEFAULT_NODE_WIDTH) / 2;
+    const nodeCenterY = parentNode.y + (parentNode.height || DEFAULT_NODE_HEIGHT) / 2;
+    const k = viewTransform.k;
+    const newX = window.innerWidth / 2 - nodeCenterX * k;
+    const newY = window.innerHeight / 2 - nodeCenterY * k;
+    onViewTransformChange({ x: newX, y: newY, k });
+  }, [nodes, childrenByScope, setNodes, viewTransform.k, onViewTransformChange]);
 
   const applyLayout = (type: LayoutType) => {
     if (nodes.length === 0) return;
@@ -2215,6 +2282,7 @@ export const Canvas: React.FC<CanvasProps> = ({
                     aiProvider={aiProvider}
                     onTogglePin={togglePinNode}
                     onArrangeChildren={startSimulation ? handleArrangeChildren : undefined}
+                    onCircularLayout={handleCircularLayout}
                   />
                 </div>
               ))}

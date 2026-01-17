@@ -37,9 +37,14 @@ router.post('/chat', async (req, res) => {
             ? ` The user is currently exploring the topic "${context.topic}". Use this as context for their questions.`
             : '';
 
+        // Build prefix context instruction if provided (markdown content before messages)
+        const prefixInstruction = context?.prefixContent
+            ? `\n\nBackground context for this conversation:\n---\n${context.prefixContent}\n---\nUse this context to inform your responses.`
+            : '';
+
         const systemMessage = {
              role: 'system',
-             content: `You are a helpful assistant in a knowledge graph application. Users use you to explore Wikidata and Wikipedia information.${topicInstruction} Keep answers concise and relevant.`
+             content: `You are a helpful assistant in a knowledge graph application. Users use you to explore Wikidata and Wikipedia information.${topicInstruction}${prefixInstruction} Keep answers concise and relevant.`
         };
         
         const stream = await hf.chatCompletionStream({

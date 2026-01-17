@@ -15,6 +15,7 @@ import { NodeListDrawer } from "./components/NodeListDrawer";
 import { AuthPage } from "./components/AuthPage";
 import { LimitModal } from "./components/LimitModal";
 import { UpgradeModal } from "./components/UpgradeModal";
+import { DuplicateWarningModal } from "./components/DuplicateWarningModal";
 import { ProfilePage } from "./components/ProfilePage";
 import { Toast } from "./components/Toast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -187,13 +188,11 @@ const App: React.FC = () => {
     debounceMs: 150,
   });
 
-  // When viewport storage is enabled and initialized, do initial sync of nodes/edges
-  // This should only run once on initialization, not on every viewportStorage state change
-  const viewportStorageSyncedRef = useRef(false);
+  // Sync viewportStorage state to main state continuously
+  // - Nodes need this for Phase 2 lazy loading (skeleton → loaded)
+  // - Edges need this when edges change
   useEffect(() => {
-    if (USE_VIEWPORT_STORAGE && viewportStorage.isInitialized && dirHandle && !viewportStorageSyncedRef.current) {
-      viewportStorageSyncedRef.current = true;
-      // Viewport storage takes over node/edge state management (initial load only)
+    if (USE_VIEWPORT_STORAGE && viewportStorage.isInitialized && dirHandle) {
       if (viewportStorage.nodes.length > 0) {
         setNodes(viewportStorage.nodes);
       }
@@ -309,8 +308,15 @@ const App: React.FC = () => {
   } = usePhysicsSimulation(nodes, edges, setNodesCallback, { config: physicsConfig });
 
   // --- Expansion ---
-  const { expandingNodeIds, handleExpandNode, handleExpandNodeFromWikidata } =
-    useExpansion(
+  const {
+    expandingNodeIds,
+    handleExpandNode,
+    handleExpandNodeFromWikidata,
+    pendingExpansion,
+    handleCreateAllAnyway,
+    handleLinkToExisting,
+    handleCancelExpansion,
+  } = useExpansion(
       nodes,
       currentScopeId,
       setNodesCallback,
@@ -1143,6 +1149,13 @@ const App: React.FC = () => {
           setAuthMode("signup");
           setShowAuth(true);
         }}
+      />
+      <DuplicateWarningModal
+        isOpen={!!pendingExpansion}
+        duplicates={pendingExpansion?.duplicates || []}
+        onCreateAll={handleCreateAllAnyway}
+        onLinkToExisting={handleLinkToExisting}
+        onCancel={handleCancelExpansion}
       />
       <Toast
         message={toast.message}

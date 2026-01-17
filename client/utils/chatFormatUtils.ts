@@ -81,3 +81,22 @@ export function extractChatTitle(content: string): string | undefined {
   const match = content.match(/^#\s+(.+)$/m);
   return match ? match[1].trim() : undefined;
 }
+
+/**
+ * Extract markdown content that appears before the first **role**: message.
+ * This prefix can include titles, notes, context, or any other markdown.
+ * Returns null if no prefix exists or content starts with a role message.
+ */
+export function extractPrefixContent(content: string): string | null {
+  if (!content?.trim()) return null;
+
+  // Find the first **role**: pattern
+  const firstRoleMatch = content.match(/\*\*(user|assistant|system|model)\*\*:/i);
+
+  if (!firstRoleMatch || firstRoleMatch.index === undefined || firstRoleMatch.index === 0) {
+    return null;  // No prefix exists
+  }
+
+  const prefix = content.substring(0, firstRoleMatch.index).trim();
+  return prefix || null;
+}
