@@ -27,6 +27,7 @@ export default defineConfig(({ mode }) => {
           enabled: true,
         },
         workbox: {
+          maximumFileSizeToCacheInBytes: 4 * 1024 * 1024, // 4 MB
           runtimeCaching: [
             {
               urlPattern: ({ url }) => url.pathname === "/manifest.webmanifest",
