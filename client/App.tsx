@@ -11,7 +11,6 @@ import { Canvas } from "./components/Canvas";
 import { SidePanel, WebContent } from "./components/SidePanel";
 import { GraphNodeComponent } from "./components/GraphNode";
 import { SearchBar } from "./components/SearchBar";
-import { NodeListDrawer } from "./components/NodeListDrawer";
 import { AuthPage } from "./components/AuthPage";
 import { LimitModal } from "./components/LimitModal";
 import { UpgradeModal } from "./components/UpgradeModal";
@@ -128,7 +127,6 @@ const App: React.FC = () => {
   }>({ message: "", visible: false });
   const [showLimitModal, setShowLimitModal] = useState(false);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isOutlinePanelOpen, setIsOutlinePanelOpen] = useState(false);
   const [lastSelectedNodeId, setLastSelectedNodeId] = useState<string | null>(null);
   const [cutNodeId, setCutNodeId] = useState<string | null>(null);
@@ -949,16 +947,6 @@ const App: React.FC = () => {
           />
         )}
 
-        <ErrorBoundary>
-          <NodeListDrawer
-            nodes={nodes}
-            isOpen={isMenuOpen}
-            onClose={() => setIsMenuOpen(false)}
-            onSelectNode={handleFocusNode}
-            onUpdateNode={handleUpdateNode}
-          />
-        </ErrorBoundary>
-
         {usageNotification.visible && (
           <div className="absolute bottom-4 right-4 z-50 bg-slate-800 border border-sky-500 text-sky-400 px-4 py-3 rounded shadow-lg animate-bounce">
             <p className="text-sm font-bold">{usageNotification.message}</p>
@@ -991,7 +979,7 @@ const App: React.FC = () => {
             onUpdateNode={handleUpdateNode}
             onDeleteNode={handleDeleteNode}
             expandingNodeIds={expandingNodeIds}
-            onToggleMenu={() => setIsMenuOpen(true)}
+            onToggleMenu={() => setIsOutlinePanelOpen(prev => !prev)}
             connectingNodeId={connectingNodeId}
             onConnectStart={(id) => setConnectingNodeId(id)}
             onConnectEnd={(s, t) => {
@@ -1024,10 +1012,6 @@ const App: React.FC = () => {
                 setSelectedNodeIds(new Set([id]));
                 setLastSelectedNodeId(id);
               }
-              // Auto-open outline panel when a node is selected
-              if (id !== null) {
-                setIsOutlinePanelOpen(true);
-              }
             }}
             canvasShiftX={canvasShiftX}
             canvasShiftY={canvasShiftY}
@@ -1046,8 +1030,6 @@ const App: React.FC = () => {
             pinNode={pinNode}
             unpinNode={unpinNode}
             togglePinNode={togglePinNode}
-            onToggleOutlinePanel={() => setIsOutlinePanelOpen((prev) => !prev)}
-            isOutlinePanelOpen={isOutlinePanelOpen}
           />
         </ErrorBoundary>
       </div>

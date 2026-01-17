@@ -89,9 +89,6 @@ interface CanvasProps {
   pinNode?: (nodeId: string) => void;
   unpinNode?: (nodeId: string) => void;
   togglePinNode?: (nodeId: string) => void;
-  // Outline panel props
-  onToggleOutlinePanel?: () => void;
-  isOutlinePanelOpen?: boolean;
 }
 
 // Semantic zoom shift threshold - triggers scope navigation when zoomed very far out
@@ -391,9 +388,6 @@ export const Canvas: React.FC<CanvasProps> = ({
   pinNode,
   unpinNode,
   togglePinNode,
-  // Outline panel props
-  onToggleOutlinePanel,
-  isOutlinePanelOpen,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -410,6 +404,7 @@ export const Canvas: React.FC<CanvasProps> = ({
   } | null>(null);
   const twoFingerTapStartTimeRef = useRef<number | null>(null);
   const layoutMenuContainerRef = useRef<HTMLDivElement | null>(null);
+  const createMenuContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Derived state
   const selectedNodeId = useMemo(
@@ -447,6 +442,7 @@ export const Canvas: React.FC<CanvasProps> = ({
   } | null>(null);
   const lastTapRef = useRef<number>(0);
   const [isLayoutMenuOpen, setIsLayoutMenuOpen] = useState(false);
+  const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
   const [activeLayout, setActiveLayout] = useState<LayoutType | null>(null);
 
   const dragStartRef = useRef<{
@@ -508,6 +504,34 @@ export const Canvas: React.FC<CanvasProps> = ({
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [isLayoutMenuOpen]);
+
+  // Close create menu on click outside or Escape
+  useEffect(() => {
+    if (!isCreateMenuOpen) return;
+
+    const handleClickOutside = (event: MouseEvent | TouchEvent) => {
+      if (
+        createMenuContainerRef.current &&
+        createMenuContainerRef.current.contains(event.target as Node)
+      ) {
+        return;
+      }
+      setIsCreateMenuOpen(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsCreateMenuOpen(false);
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("touchstart", handleClickOutside);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("touchstart", handleClickOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isCreateMenuOpen]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -1914,6 +1938,7 @@ export const Canvas: React.FC<CanvasProps> = ({
               onToggleMenu && onToggleMenu();
             }}
             className="hidden md:flex w-10 h-10 rounded-full bg-gradient-to-br from-sky-500 to-blue-600 items-center justify-center shadow-lg mb-4 hover:brightness-110 transition-all group"
+            title="Toggle Outline View"
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -1925,77 +1950,7 @@ export const Canvas: React.FC<CanvasProps> = ({
               strokeLinecap="round"
               strokeLinejoin="round"
             >
-              <line x1="4" y1="12" x2="20" y2="12" />
-              <line x1="4" y1="6" x2="20" y2="6" />
-              <line x1="4" y1="18" x2="20" y2="18" />
-            </svg>
-          </button>
-          <button
-            onClick={() => addNewNode(NodeType.NOTE)}
-            className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-all"
-            title="Add Note"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="24"
-              height="24"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-            </svg>
-          </button>
-          <button
-            onClick={() => addNewNode(NodeType.CHAT)}
-            className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-all"
-            title="Add Chat"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="24"
-              height="24"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-            </svg>
-          </button>
-                  </div>
-        <div className="flex flex-row md:flex-col gap-4 md:gap-4 border-l md:border-l-0 md:border-t border-slate-800 pl-4 md:pl-0 md:pt-4 items-center">
-          {/* Outline panel toggle button */}
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleOutlinePanel?.();
-            }}
-            className={`p-2 rounded-lg transition-all md:mb-2 mr-2 md:mr-0 ${
-              isOutlinePanelOpen
-                ? "text-sky-400 bg-slate-800 ring-1 ring-sky-500/40"
-                : "text-slate-500 hover:text-sky-400 hover:bg-slate-800"
-            }`}
-            title="Toggle Outline View"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              {/* Outline/list tree icon */}
+              {/* Outline/tree icon */}
               <circle cx="5" cy="6" r="1.5" />
               <line x1="10" y1="6" x2="20" y2="6" />
               <circle cx="8" cy="12" r="1.5" />
@@ -2004,6 +1959,8 @@ export const Canvas: React.FC<CanvasProps> = ({
               <line x1="13" y1="18" x2="20" y2="18" />
             </svg>
           </button>
+        </div>
+        <div className="flex flex-row md:flex-col gap-4 md:gap-4 border-l md:border-l-0 md:border-t border-slate-800 pl-4 md:pl-0 md:pt-4 items-center">
           <button
             onClick={handleFocusCanvas}
             className="p-2 text-slate-500 hover:text-sky-400 hover:bg-slate-800 rounded-lg md:mb-2 mr-2 md:mr-0"
@@ -2140,13 +2097,14 @@ export const Canvas: React.FC<CanvasProps> = ({
               transition: isResizing ? "none" : "margin 0.3s ease-out",
             }}
           >
-            {/* Mobile Hamburger - Fixed Top Left (stays in layout) */}
+            {/* Mobile Outline Toggle - Fixed Top Left */}
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 onToggleMenu && onToggleMenu();
               }}
               className="md:hidden absolute top-4 left-4 z-50 w-10 h-10 rounded-full bg-slate-900/80 backdrop-blur border border-slate-700 text-white flex items-center justify-center shadow-lg pointer-events-auto"
+              title="Toggle Outline View"
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -2158,11 +2116,103 @@ export const Canvas: React.FC<CanvasProps> = ({
                 strokeLinecap="round"
                 strokeLinejoin="round"
               >
-                <line x1="4" y1="12" x2="20" y2="12" />
-                <line x1="4" y1="6" x2="20" y2="6" />
-                <line x1="4" y1="18" x2="20" y2="18" />
+                {/* Outline/tree icon */}
+                <circle cx="5" cy="6" r="1.5" />
+                <line x1="10" y1="6" x2="20" y2="6" />
+                <circle cx="8" cy="12" r="1.5" />
+                <line x1="13" y1="12" x2="20" y2="12" />
+                <circle cx="8" cy="18" r="1.5" />
+                <line x1="13" y1="18" x2="20" y2="18" />
               </svg>
             </button>
+
+            {/* Floating Create Button - Bottom Center */}
+            <div
+              ref={createMenuContainerRef}
+              className="absolute bottom-20 md:bottom-4 left-1/2 -translate-x-1/2 z-50 pointer-events-auto"
+            >
+              <button
+                onClick={() => setIsCreateMenuOpen((prev) => !prev)}
+                className={`w-12 h-12 rounded-full shadow-lg flex items-center justify-center transition-all ${
+                  isCreateMenuOpen
+                    ? "bg-sky-500 text-white ring-2 ring-sky-400/50"
+                    : "bg-gradient-to-br from-sky-500 to-blue-600 text-white hover:brightness-110"
+                }`}
+                title="Create Node"
+                aria-haspopup="menu"
+                aria-expanded={isCreateMenuOpen}
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className={`transition-transform ${isCreateMenuOpen ? "rotate-45" : ""}`}
+                >
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              </button>
+              {isCreateMenuOpen && (
+                <div
+                  className="absolute z-50 w-48 bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl p-2 animate-in fade-in slide-in-from-bottom-2
+                  bottom-full mb-3 left-1/2 -translate-x-1/2 origin-bottom"
+                >
+                  <button
+                    onClick={() => {
+                      addNewNode(NodeType.NOTE);
+                      setIsCreateMenuOpen(false);
+                    }}
+                    className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-left transition-colors hover:bg-slate-900/80"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="20"
+                      height="20"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="text-slate-400"
+                    >
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                    </svg>
+                    <span className="text-sm font-medium text-white">Create Note</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      addNewNode(NodeType.CHAT);
+                      setIsCreateMenuOpen(false);
+                    }}
+                    className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-left transition-colors hover:bg-slate-900/80"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="20"
+                      height="20"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="text-slate-400"
+                    >
+                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                    </svg>
+                    <span className="text-sm font-medium text-white">Create AI Chat</span>
+                  </button>
+                </div>
+              )}
+            </div>
 
             {/* Selection Box */}
             {selectionBox && (

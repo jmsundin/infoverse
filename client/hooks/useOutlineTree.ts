@@ -49,7 +49,8 @@ export const useOutlineTree = (
         const summary = (node.summary || "").toLowerCase();
         const title = (node.title || "").toLowerCase();
         const aliases = (node.aliases || []).join(" ").toLowerCase();
-        const searchableText = `${content} ${summary} ${title} ${aliases}`;
+        const messages = (node.messages || []).map(m => m.text).join(" ").toLowerCase();
+        const searchableText = `${content} ${summary} ${title} ${aliases} ${messages}`;
 
         const matches = terms.every((term) => searchableText.includes(term));
         if (matches) {
