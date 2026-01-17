@@ -370,7 +370,9 @@ const App: React.FC = () => {
     deletedNodeRef,
     setActiveSidePanes,
     startSimulation,
-    USE_VIEWPORT_STORAGE && dirHandle ? viewportStorage.deleteNode : undefined
+    USE_VIEWPORT_STORAGE && dirHandle ? viewportStorage.deleteNode : undefined,
+    USE_VIEWPORT_STORAGE && dirHandle ? viewportStorage.removeNodesFromState : undefined,
+    USE_VIEWPORT_STORAGE && dirHandle ? viewportStorage.restoreNodesToState : undefined
   );
 
   // --- Navigation ---

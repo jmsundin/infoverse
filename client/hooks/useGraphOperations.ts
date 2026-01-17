@@ -29,7 +29,9 @@ export const useGraphOperations = (
   deletedNodeRef: React.MutableRefObject<{ nodes: GraphNode[]; edges: GraphEdge[]; timer: number | null; } | null>,
   setActiveSidePanes: React.Dispatch<React.SetStateAction<any[]>>,
   startSimulation?: (trigger: SimulationTrigger, subtreeRootId?: string) => void,
-  viewportStorageDeleteNode?: (nodeId: string) => Promise<void>
+  viewportStorageDeleteNode?: (nodeId: string) => Promise<void>,
+  viewportRemoveNodesFromState?: (nodeIds: string[]) => void,
+  viewportRestoreNodesToState?: (nodes: GraphNode[], edges: GraphEdge[]) => void
 ) => {
   // Get storage context for proper delete handling (fallback if viewportStorageDeleteNode not provided)
   const { deleteNode: contextDeleteNode } = useStorage();
@@ -120,12 +122,18 @@ export const useGraphOperations = (
 
       const idsSet = new Set(ids);
 
+      // Update main state immediately
       setNodesCallback((prev) => prev.filter((node) => !ids.includes(node.id)));
       setEdgesCallback((prev) =>
         prev.filter(
           (edge) => !ids.includes(edge.source) && !ids.includes(edge.target)
         )
       );
+
+      // Also update viewport storage state immediately (prevents sync effect from restoring deleted nodes)
+      if (viewportRemoveNodesFromState) {
+        viewportRemoveNodesFromState(ids);
+      }
 
       // Physics simulation disabled - user can trigger manually via node menu
       // if (startSimulation) {
@@ -173,8 +181,14 @@ export const useGraphOperations = (
               clearTimeout(timer);
             }
 
+            // Restore to main state
             setNodesCallback((prev) => [...prev, ...restoredNodes]);
             setEdgesCallback((prev) => [...prev, ...restoredEdges]);
+
+            // Also restore to viewport storage state
+            if (viewportRestoreNodesToState) {
+              viewportRestoreNodesToState(restoredNodes, restoredEdges);
+            }
 
             deletedNodeRef.current = null;
             setToast({ visible: false, message: "" });
@@ -182,7 +196,7 @@ export const useGraphOperations = (
         },
       });
     },
-    [nodes, edges, setNodesCallback, setEdgesCallback, cutNodeId, setCutNodeId, setActiveSidePanes, setSelectedNodeIds, deletedNodeRef, setToast, storageDeleteNode]
+    [nodes, edges, setNodesCallback, setEdgesCallback, cutNodeId, setCutNodeId, setActiveSidePanes, setSelectedNodeIds, deletedNodeRef, setToast, storageDeleteNode, viewportRemoveNodesFromState, viewportRestoreNodesToState]
   );
 
   const handleDeleteNode = useCallback(

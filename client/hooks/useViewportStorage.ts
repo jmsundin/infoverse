@@ -35,6 +35,10 @@ interface UseViewportStorageReturn {
   flush: () => Promise<void>;
   refresh: () => Promise<void>;
 
+  // Immediate state updates (without storage persistence)
+  removeNodesFromState: (nodeIds: string[]) => void;
+  restoreNodesToState: (nodes: GraphNode[], edges: GraphEdge[]) => void;
+
   // For compatibility with existing code
   markNodeDirty: (node: GraphNode, skipEmbedding: boolean) => void;
   markEdgesDirty: () => void;
@@ -254,6 +258,20 @@ export function useViewportStorage(
     setEdges(prev => prev.filter(e => e.source !== nodeId && e.target !== nodeId));
   }, []);
 
+  // Remove nodes from in-memory state immediately (used for UI responsiveness)
+  // This does NOT persist to storage - use deleteNode for full deletion
+  const removeNodesFromState = useCallback((nodeIds: string[]) => {
+    const idsSet = new Set(nodeIds);
+    setNodes(prev => prev.filter(n => !idsSet.has(n.id)));
+    setEdges(prev => prev.filter(e => !idsSet.has(e.source) && !idsSet.has(e.target)));
+  }, []);
+
+  // Restore nodes to in-memory state (used for undo functionality)
+  const restoreNodesToState = useCallback((nodesToRestore: GraphNode[], edgesToRestore: GraphEdge[]) => {
+    setNodes(prev => [...prev, ...nodesToRestore]);
+    setEdges(prev => [...prev, ...edgesToRestore]);
+  }, []);
+
   const updateEdges = useCallback((newEdges: GraphEdge[]) => {
     if (!serviceRef.current) return;
     serviceRef.current.updateEdges(newEdges);
@@ -292,6 +310,8 @@ export function useViewportStorage(
     setEdges,
     flush,
     refresh,
+    removeNodesFromState,
+    restoreNodesToState,
     markNodeDirty,
     markEdgesDirty,
   };

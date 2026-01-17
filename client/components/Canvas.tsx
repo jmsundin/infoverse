@@ -408,6 +408,7 @@ export const Canvas: React.FC<CanvasProps> = ({
     x: number;
     y: number;
   } | null>(null);
+  const twoFingerTapStartTimeRef = useRef<number | null>(null);
   const layoutMenuContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Derived state
@@ -1472,7 +1473,7 @@ export const Canvas: React.FC<CanvasProps> = ({
       const target = e.target as HTMLElement;
       if (target.closest(".graph-node")) return;
 
-      // Two-finger long-press: open context menu at midpoint after 500ms
+      // Two-finger gestures: tap (quick) or long-press
       if (e.touches.length === 2) {
         const t1 = e.touches[0];
         const t2 = e.touches[1];
@@ -1484,6 +1485,9 @@ export const Canvas: React.FC<CanvasProps> = ({
 
         // Store midpoint for two-finger long-press
         twoFingerLongPressStartPointRef.current = { x: clientX, y: clientY };
+
+        // Track start time for two-finger tap detection
+        twoFingerTapStartTimeRef.current = Date.now();
 
         // Start two-finger long-press timer (500ms)
         twoFingerLongPressTimerRef.current = window.setTimeout(() => {
@@ -1522,7 +1526,7 @@ export const Canvas: React.FC<CanvasProps> = ({
 
   const handleBackgroundTouchMove = useCallback(
     (e: React.TouchEvent) => {
-      // Handle two-finger long-press movement cancellation
+      // Handle two-finger gesture movement cancellation (both tap and long-press)
       if (e.touches.length === 2 && twoFingerLongPressStartPointRef.current) {
         const t1 = e.touches[0];
         const t2 = e.touches[1];
@@ -1532,6 +1536,7 @@ export const Canvas: React.FC<CanvasProps> = ({
         const dist = Math.hypot(currentMidX - start.x, currentMidY - start.y);
         if (dist > 10) {
           cancelLongPressContextMenu();
+          twoFingerTapStartTimeRef.current = null; // Also cancel tap tracking
         }
         return;
       }
@@ -1558,8 +1563,29 @@ export const Canvas: React.FC<CanvasProps> = ({
       cancelLongPressContextMenu();
       if (longPressContextMenuOpenedRef.current) {
         longPressContextMenuOpenedRef.current = false;
+        twoFingerTapStartTimeRef.current = null;
         return;
       }
+
+      // Two-finger tap: if we had two fingers and both lifted quickly (< 300ms)
+      if (
+        twoFingerTapStartTimeRef.current &&
+        e.touches.length === 0 &&
+        e.changedTouches.length >= 2
+      ) {
+        const elapsed = Date.now() - twoFingerTapStartTimeRef.current;
+        if (elapsed < 300) {
+          // Quick two-finger tap - open context menu at midpoint
+          const t1 = e.changedTouches[0];
+          const t2 = e.changedTouches[1];
+          const midX = (t1.clientX + t2.clientX) / 2;
+          const midY = (t1.clientY + t2.clientY) / 2;
+          openContextMenuAtClientPoint(midX, midY);
+          twoFingerTapStartTimeRef.current = null;
+          return;
+        }
+      }
+      twoFingerTapStartTimeRef.current = null;
 
       const now = Date.now();
       if (now - lastTapRef.current < 300) {
