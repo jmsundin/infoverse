@@ -1351,11 +1351,15 @@ export const Canvas: React.FC<CanvasProps> = ({
 
       const isShift = (e as React.MouseEvent).shiftKey;
       const isSelected = selectedNodeIds.has(id);
+      const isMobileTouch = 'touches' in e;
 
       // Set this node as the active (highlighted) node
       setActiveNodeId(id);
 
-      if (isShift) {
+      if (isMobileTouch) {
+        // Mobile: only set active (highlight/tooltip), don't auto-expand
+        // User can expand via explicit expand button
+      } else if (isShift) {
         // Toggle selection
         onNodeSelect(id, true);
         // If we are deselecting (was selected, now toggled off), do not start drag
@@ -1959,6 +1963,87 @@ export const Canvas: React.FC<CanvasProps> = ({
               <line x1="13" y1="18" x2="20" y2="18" />
             </svg>
           </button>
+          <div ref={createMenuContainerRef} className="relative">
+            <button
+              onClick={() => setIsCreateMenuOpen((prev) => !prev)}
+              className={`w-10 h-10 rounded-full shadow-lg flex items-center justify-center transition-all group ${
+                isCreateMenuOpen
+                  ? "bg-sky-500 ring-2 ring-sky-400/50"
+                  : "bg-gradient-to-br from-sky-500 to-blue-600 hover:brightness-110"
+              }`}
+              title="Create Node"
+              aria-haspopup="menu"
+              aria-expanded={isCreateMenuOpen}
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className={`w-5 h-5 group-hover:scale-110 transition-transform ${isCreateMenuOpen ? "rotate-45" : ""}`}
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="white"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+            </button>
+            {isCreateMenuOpen && (
+              <div
+                className="absolute z-50 w-48 bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl p-2 animate-in fade-in slide-in-from-left-2
+                left-full ml-3 top-0 origin-left"
+              >
+                <button
+                  onClick={() => {
+                    addNewNode(NodeType.NOTE);
+                    setIsCreateMenuOpen(false);
+                  }}
+                  className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-left transition-colors hover:bg-slate-900/80"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="text-slate-400"
+                  >
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                  </svg>
+                  <span className="text-sm font-medium text-white">Create Note</span>
+                </button>
+                <button
+                  onClick={() => {
+                    addNewNode(NodeType.CHAT);
+                    setIsCreateMenuOpen(false);
+                  }}
+                  className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-left transition-colors hover:bg-slate-900/80"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="text-slate-400"
+                  >
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                  </svg>
+                  <span className="text-sm font-medium text-white">Create AI Chat</span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
         <div className="flex flex-row md:flex-col gap-4 md:gap-4 border-l md:border-l-0 md:border-t border-slate-800 pl-4 md:pl-0 md:pt-4 items-center">
           <button
@@ -2126,94 +2211,6 @@ export const Canvas: React.FC<CanvasProps> = ({
               </svg>
             </button>
 
-            {/* Floating Create Button - Bottom Center */}
-            <div
-              ref={createMenuContainerRef}
-              className="absolute bottom-20 md:bottom-4 left-1/2 -translate-x-1/2 z-50 pointer-events-auto"
-            >
-              <button
-                onClick={() => setIsCreateMenuOpen((prev) => !prev)}
-                className={`w-12 h-12 rounded-full shadow-lg flex items-center justify-center transition-all ${
-                  isCreateMenuOpen
-                    ? "bg-sky-500 text-white ring-2 ring-sky-400/50"
-                    : "bg-gradient-to-br from-sky-500 to-blue-600 text-white hover:brightness-110"
-                }`}
-                title="Create Node"
-                aria-haspopup="menu"
-                aria-expanded={isCreateMenuOpen}
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="24"
-                  height="24"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className={`transition-transform ${isCreateMenuOpen ? "rotate-45" : ""}`}
-                >
-                  <line x1="12" y1="5" x2="12" y2="19" />
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
-              </button>
-              {isCreateMenuOpen && (
-                <div
-                  className="absolute z-50 w-48 bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl p-2 animate-in fade-in slide-in-from-bottom-2
-                  bottom-full mb-3 left-1/2 -translate-x-1/2 origin-bottom"
-                >
-                  <button
-                    onClick={() => {
-                      addNewNode(NodeType.NOTE);
-                      setIsCreateMenuOpen(false);
-                    }}
-                    className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-left transition-colors hover:bg-slate-900/80"
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      width="20"
-                      height="20"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      className="text-slate-400"
-                    >
-                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                    </svg>
-                    <span className="text-sm font-medium text-white">Create Note</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      addNewNode(NodeType.CHAT);
-                      setIsCreateMenuOpen(false);
-                    }}
-                    className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-left transition-colors hover:bg-slate-900/80"
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      width="20"
-                      height="20"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      className="text-slate-400"
-                    >
-                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                    </svg>
-                    <span className="text-sm font-medium text-white">Create AI Chat</span>
-                  </button>
-                </div>
-              )}
-            </div>
-
             {/* Selection Box */}
             {selectionBox && (
               <div
@@ -2366,6 +2363,7 @@ export const Canvas: React.FC<CanvasProps> = ({
                     onTogglePin={togglePinNode}
                     onArrangeChildren={startSimulation ? handleArrangeChildren : undefined}
                     onCircularLayout={handleCircularLayout}
+                    isMobile={isMobile}
                   />
                 </div>
               ))}

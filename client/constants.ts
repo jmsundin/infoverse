@@ -7,6 +7,7 @@ export const PARENT_NODE_HEIGHT = 300;
 export const MIN_NODE_WIDTH = 250;
 export const MIN_NODE_HEIGHT = 180;
 export const NODE_HEADER_HEIGHT = 40;
+export const MOBILE_NODE_WIDTH = 280;
 
 export const GEMINI_MODEL_FAST = "gemini-2.5-flash";
 

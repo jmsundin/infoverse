@@ -20,7 +20,7 @@ import {
 } from "../types";
 import * as geminiService from "../services/geminiService";
 import * as hfService from "../services/huggingfaceService";
-import { NODE_HEADER_HEIGHT, NODE_COLORS } from "../constants";
+import { NODE_HEADER_HEIGHT, NODE_COLORS, MOBILE_NODE_WIDTH } from "../constants";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { SidePanelContext } from "./SidePanel";
@@ -68,6 +68,7 @@ interface GraphNodeProps {
   onTogglePin?: (id: string) => void;
   onArrangeChildren?: (id: string) => void;
   onCircularLayout?: (id: string) => void;
+  isMobile?: boolean;
 }
 
 const DELETE_CONFIRM_PREF_KEY = "infoverse_skip_delete_confirm";
@@ -104,6 +105,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     onTogglePin,
     onArrangeChildren,
     onCircularLayout,
+    isMobile = false,
   }) => {
     const [input, setInput] = useState("");
     const [isChatting, setIsChatting] = useState(false);
@@ -524,6 +526,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       ? "none"
       : "box-shadow 0.2s, transform 0.2s"; // Removed position transition to ensure edges stay attached
 
+    const defaultWidth = isMobile ? MOBILE_NODE_WIDTH : 300;
     const computedStyle: React.CSSProperties = isSidebar
       ? {
           width: "100%",
@@ -533,7 +536,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       : styleOverride || {
           left: node.x,
           top: node.y,
-          width: node.width || 300,
+          width: node.width || defaultWidth,
           height: isCompact ? NODE_HEADER_HEIGHT : node.height || 200,
           transition: transitionStyle,
           overflow: "visible",
@@ -558,7 +561,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
           style={{
             left: node.x,
             top: node.y,
-            width: node.width || 300,
+            width: node.width || defaultWidth,
             height: node.height || 200,
             transform: "translate(-50%, -50%)", // Use center positioning
           }}
