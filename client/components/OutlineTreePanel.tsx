@@ -34,6 +34,17 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
   const [searchTerm, setSearchTerm] = useState("");
   const nodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
+  // Refs for smooth resize (direct DOM manipulation to avoid re-renders)
+  const panelRef = useRef<HTMLDivElement>(null);
+  const isResizingRef = useRef(false);
+  const startDataRef = useRef<{
+    startX: number;
+    startY: number;
+    startWidth: number;
+    startHeight: number;
+    edge: "top" | "bottom" | "left" | "right";
+  } | null>(null);
+
   // Device and orientation detection
   const [isMobile, setIsMobile] = useState(false);
   const [isLandscape, setIsLandscape] = useState(false);
@@ -188,53 +199,81 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
     return mobilePosition === "right" ? "left" : "right";
   }, [isMobile, isLandscape, mobilePosition]);
 
-  // Multi-direction resize handler with touch support
+  // Persistent event listeners for resize (direct DOM manipulation for performance)
+  useEffect(() => {
+    const handleMove = (e: MouseEvent | TouchEvent) => {
+      if (!isResizingRef.current || !panelRef.current || !startDataRef.current) return;
+      e.preventDefault();
+
+      const clientX = "touches" in e ? e.touches[0].clientX : e.clientX;
+      const clientY = "touches" in e ? e.touches[0].clientY : e.clientY;
+      const { startX, startY, startWidth, startHeight, edge } = startDataRef.current;
+
+      // Direct DOM manipulation - no React re-render during drag
+      if (edge === "right") {
+        const delta = clientX - startX;
+        const newWidth = Math.max(200, Math.min(window.innerWidth * 0.8, startWidth + delta));
+        panelRef.current.style.width = `${newWidth}px`;
+      } else if (edge === "left") {
+        const delta = startX - clientX;
+        const newWidth = Math.max(200, Math.min(window.innerWidth * 0.8, startWidth + delta));
+        panelRef.current.style.width = `${newWidth}px`;
+      } else if (edge === "top") {
+        const delta = startY - clientY;
+        const newHeight = Math.max(150, Math.min(window.innerHeight * 0.8, startHeight + delta));
+        panelRef.current.style.height = `${newHeight}px`;
+      } else if (edge === "bottom") {
+        const delta = clientY - startY;
+        const newHeight = Math.max(150, Math.min(window.innerHeight * 0.8, startHeight + delta));
+        panelRef.current.style.height = `${newHeight}px`;
+      }
+    };
+
+    const handleEnd = () => {
+      if (!isResizingRef.current || !panelRef.current) return;
+      isResizingRef.current = false;
+
+      // Sync React state with final DOM value (single state update at end)
+      const { edge } = startDataRef.current || {};
+      if (edge === "left" || edge === "right") {
+        setPanelWidth(panelRef.current.offsetWidth);
+      } else {
+        setPanelHeight(panelRef.current.offsetHeight);
+      }
+      startDataRef.current = null;
+    };
+
+    document.addEventListener("mousemove", handleMove);
+    document.addEventListener("touchmove", handleMove, { passive: false });
+    document.addEventListener("mouseup", handleEnd);
+    document.addEventListener("touchend", handleEnd);
+
+    return () => {
+      document.removeEventListener("mousemove", handleMove);
+      document.removeEventListener("touchmove", handleMove);
+      document.removeEventListener("mouseup", handleEnd);
+      document.removeEventListener("touchend", handleEnd);
+    };
+  }, []); // Empty deps - handlers use refs
+
+  // Start resize - just sets up refs, no event listener attachment
   const handleResizeStart = useCallback(
     (e: React.MouseEvent | React.TouchEvent) => {
-      // Only call preventDefault for mouse events (React touch events are passive)
       if (!("touches" in e)) {
         e.preventDefault();
       }
       const isTouch = "touches" in e;
       const startX = isTouch ? e.touches[0].clientX : e.clientX;
       const startY = isTouch ? e.touches[0].clientY : e.clientY;
-      const startWidth = panelWidth;
-      const startHeight = panelHeight;
-      const edge = getResizeEdge();
 
-      const handleMove = (moveEvent: MouseEvent | TouchEvent) => {
-        // Prevent scrolling during resize
-        moveEvent.preventDefault();
-
-        const clientX = "touches" in moveEvent ? moveEvent.touches[0].clientX : moveEvent.clientX;
-        const clientY = "touches" in moveEvent ? moveEvent.touches[0].clientY : moveEvent.clientY;
-
-        if (edge === "right") {
-          const delta = clientX - startX;
-          setPanelWidth(Math.max(200, Math.min(window.innerWidth * 0.8, startWidth + delta)));
-        } else if (edge === "left") {
-          const delta = startX - clientX;
-          setPanelWidth(Math.max(200, Math.min(window.innerWidth * 0.8, startWidth + delta)));
-        } else if (edge === "top") {
-          const delta = startY - clientY;
-          setPanelHeight(Math.max(150, Math.min(window.innerHeight * 0.8, startHeight + delta)));
-        } else if (edge === "bottom") {
-          const delta = clientY - startY;
-          setPanelHeight(Math.max(150, Math.min(window.innerHeight * 0.8, startHeight + delta)));
-        }
+      isResizingRef.current = true;
+      startDataRef.current = {
+        startX,
+        startY,
+        startWidth: panelWidth,
+        startHeight: panelHeight,
+        edge: getResizeEdge(),
       };
-
-      const handleEnd = () => {
-        document.removeEventListener("mousemove", handleMove);
-        document.removeEventListener("mouseup", handleEnd);
-        document.removeEventListener("touchmove", handleMove);
-        document.removeEventListener("touchend", handleEnd);
-      };
-
-      document.addEventListener("mousemove", handleMove);
-      document.addEventListener("mouseup", handleEnd);
-      document.addEventListener("touchmove", handleMove, { passive: false });
-      document.addEventListener("touchend", handleEnd);
     },
     [panelWidth, panelHeight, getResizeEdge]
   );
@@ -318,10 +357,10 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
           height: panelHeight,
         };
       } else {
-        // top
+        // top - offset to leave space for the toolbar toggle button
         return {
           position: "fixed",
-          top: 0,
+          top: 64, // Below toolbar toggle button area
           left: 0,
           right: 0,
           height: panelHeight,
@@ -383,14 +422,14 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
   // Render resize handle based on edge
   const renderResizeHandle = () => {
     const edge = getResizeEdge();
-    // Larger touch target on mobile (16px vs 6px on desktop)
+    // Larger touch target on mobile (32px vs 6px on desktop)
     const baseClass = "absolute transition-colors z-10 touch-none";
     const hoverClass = "hover:bg-sky-500/50 active:bg-sky-500/70";
 
     // Use larger size on mobile for better touch targets
     const sizeClass = isMobile ? {
-      horizontal: "h-4", // 16px height for top/bottom edges
-      vertical: "w-4",   // 16px width for left/right edges
+      horizontal: "h-8", // 32px height for top/bottom edges
+      vertical: "w-8",   // 32px width for left/right edges
     } : {
       horizontal: "h-1.5",
       vertical: "w-1.5",
@@ -413,45 +452,10 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
         {isMobile && (
           <div className={`absolute bg-slate-500/60 rounded-full ${
             edge === "top" || edge === "bottom"
-              ? "left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-12 h-1"
-              : "left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-1 h-12"
+              ? "left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-16 h-1.5"
+              : "left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-1.5 h-16"
           }`} />
         )}
-      </div>
-    );
-  };
-
-  // Render drag handle for position toggle (mobile only)
-  const renderDragHandle = () => {
-    if (!isMobile) return null;
-
-    const isVertical = isLandscape;
-
-    // Position the handle on the edge opposite to the screen edge
-    let positionClass = "";
-    if (!isLandscape) {
-      // Portrait: handle at top edge when panel is at bottom, at bottom edge when panel is at top
-      positionClass = mobilePosition === "bottom"
-        ? "top-0 left-1/2 -translate-x-1/2 pt-1"
-        : "bottom-0 left-1/2 -translate-x-1/2 pb-1";
-    } else {
-      // Landscape: handle at right edge when panel is at left, at left edge when panel is at right
-      positionClass = mobilePosition === "left" || mobilePosition === "bottom"
-        ? "right-0 top-1/2 -translate-y-1/2 pr-1"
-        : "left-0 top-1/2 -translate-y-1/2 pl-1";
-    }
-
-    return (
-      <div
-        className={`absolute ${positionClass} flex items-center justify-center cursor-pointer z-20 p-2`}
-        onClick={handleTogglePosition}
-        title="Move panel to other side"
-      >
-        <div
-          className={`bg-slate-600 rounded-full hover:bg-sky-500 transition-colors ${
-            isVertical ? "w-1.5 h-12" : "w-12 h-1.5"
-          }`}
-        />
       </div>
     );
   };
@@ -460,14 +464,27 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
 
   const totalCount = countNodes(tree);
 
+  // Get the position toggle button title and icon direction
+  const getPositionToggleInfo = () => {
+    if (!isLandscape) {
+      // Portrait mode
+      return mobilePosition === "bottom"
+        ? { title: "Move to top", direction: "up" as const }
+        : { title: "Move to bottom", direction: "down" as const };
+    } else {
+      // Landscape mode
+      return mobilePosition === "left" || mobilePosition === "bottom"
+        ? { title: "Move to right", direction: "right" as const }
+        : { title: "Move to left", direction: "left" as const };
+    }
+  };
+
   return (
     <div
+      ref={panelRef}
       className={`bg-slate-900 ${getBorderClass()} z-50 flex flex-col shadow-2xl ${getAnimationClass()}`}
       style={panelStyles}
     >
-      {/* Drag handle for mobile position toggle */}
-      {renderDragHandle()}
-
       {/* Header */}
       <div className="p-4 border-b border-slate-800 flex items-center justify-between shrink-0">
         <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
@@ -476,25 +493,62 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
             {totalCount}
           </span>
         </h2>
-        <button
-          onClick={onClose}
-          className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+        <div className="flex items-center gap-1">
+          {/* Position toggle button - mobile only */}
+          {isMobile && (
+            <button
+              onClick={handleTogglePosition}
+              className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+              title={getPositionToggleInfo().title}
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                {(() => {
+                  const { direction } = getPositionToggleInfo();
+                  switch (direction) {
+                    case "up":
+                      return <><line x1="12" y1="19" x2="12" y2="5" /><polyline points="5 12 12 5 19 12" /></>;
+                    case "down":
+                      return <><line x1="12" y1="5" x2="12" y2="19" /><polyline points="19 12 12 19 5 12" /></>;
+                    case "left":
+                      return <><line x1="19" y1="12" x2="5" y2="12" /><polyline points="12 19 5 12 12 5" /></>;
+                    case "right":
+                      return <><line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" /></>;
+                  }
+                })()}
+              </svg>
+            </button>
+          )}
+          {/* Close button */}
+          <button
+            onClick={onClose}
+            className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
           >
-            <path d="M18 6 6 18" />
-            <path d="m6 6 12 12" />
-          </svg>
-        </button>
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M18 6 6 18" />
+              <path d="m6 6 12 12" />
+            </svg>
+          </button>
+        </div>
       </div>
 
       {/* Search Input and Type Filters */}
