@@ -605,7 +605,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
             !isSidebar && onMouseDown && onMouseDown(e, node.id)
           }
         >
-          {!isSidebar && !isCompact && (
+          {!isSidebar && (!isCompact || isSelected) && (
             <div
               className="absolute top-[-60px] md:top-[-52px] left-0 right-0 h-10 md:h-8 flex items-center justify-end gap-2 md:gap-1 px-2 md:px-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none z-[60]"
               style={{ opacity: isSelected || showSettings ? 1 : undefined }}

@@ -460,6 +460,7 @@ export const Canvas: React.FC<CanvasProps> = ({
   } | null>(null);
 
   const isDraggingRef = useRef(false);
+  const recentTouchRef = useRef(false); // Track recent touch to prevent ghost click expansion
   const draggingIdRef = useRef(draggingId);
   const resizingIdRef = useRef(resizingId);
   const connectingNodeIdRef = useRef(connectingNodeId);
@@ -1357,8 +1358,12 @@ export const Canvas: React.FC<CanvasProps> = ({
       setActiveNodeId(id);
 
       if (isMobileTouch) {
-        // Mobile: only set active (highlight/tooltip), don't auto-expand
-        // User can expand via explicit expand button
+        // Mobile touch: only set active (highlight/tooltip), don't auto-expand
+        // Mark that we just handled a touch to skip subsequent synthetic mousedown
+        recentTouchRef.current = true;
+        setTimeout(() => { recentTouchRef.current = false; }, 500);
+      } else if (recentTouchRef.current) {
+        // Skip synthetic mousedown after touch (ghost click prevention)
       } else if (isShift) {
         // Toggle selection
         onNodeSelect(id, true);
@@ -1963,7 +1968,9 @@ export const Canvas: React.FC<CanvasProps> = ({
               <line x1="13" y1="18" x2="20" y2="18" />
             </svg>
           </button>
-          <div ref={createMenuContainerRef} className="relative">
+        </div>
+        <div className="flex flex-row md:flex-col gap-4 md:gap-4 border-l md:border-l-0 md:border-t border-slate-800 pl-4 md:pl-0 md:pt-4 items-center">
+          <div ref={createMenuContainerRef} className="relative md:mb-2 mr-2 md:mr-0">
             <button
               onClick={() => setIsCreateMenuOpen((prev) => !prev)}
               className={`w-10 h-10 rounded-full shadow-lg flex items-center justify-center transition-all group ${
@@ -1991,8 +1998,9 @@ export const Canvas: React.FC<CanvasProps> = ({
             </button>
             {isCreateMenuOpen && (
               <div
-                className="absolute z-50 w-48 bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl p-2 animate-in fade-in slide-in-from-left-2
-                left-full ml-3 top-0 origin-left"
+                className="absolute z-50 w-48 bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl p-2 animate-in fade-in
+                bottom-full mb-3 left-1/2 -translate-x-1/2 origin-bottom slide-in-from-bottom-2
+                md:bottom-auto md:mb-0 md:left-full md:ml-3 md:top-0 md:translate-x-0 md:origin-left md:slide-in-from-left-2"
               >
                 <button
                   onClick={() => {
@@ -2044,8 +2052,6 @@ export const Canvas: React.FC<CanvasProps> = ({
               </div>
             )}
           </div>
-        </div>
-        <div className="flex flex-row md:flex-col gap-4 md:gap-4 border-l md:border-l-0 md:border-t border-slate-800 pl-4 md:pl-0 md:pt-4 items-center">
           <button
             onClick={handleFocusCanvas}
             className="p-2 text-slate-500 hover:text-sky-400 hover:bg-slate-800 rounded-lg md:mb-2 mr-2 md:mr-0"
