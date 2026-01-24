@@ -108,7 +108,6 @@ const App: React.FC = () => {
     y: 0,
     k: 1,
   });
-  const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [connectingNodeId, setConnectingNodeId] = useState<string | null>(null);
   const [selectionTooltip, setSelectionTooltip] =
     useState<SelectionTooltipState | null>(null);
@@ -423,7 +422,6 @@ const App: React.FC = () => {
   useKeyboardShortcuts(
     selectedNodeIds,
     confirmDeleteNode,
-    setIsSearchOpen,
     handleCut,
     handlePaste,
     viewTransform,
@@ -952,7 +950,6 @@ const App: React.FC = () => {
             setShowAuth(true);
           }}
           onShowProfile={() => setShowProfile(true)}
-          onToggleSearch={() => setIsSearchOpen((p) => !p)}
           onOpenStorage={handleOpenStorage}
           dirName={dirName}
           activeSidePanesCount={activeSidePanes.length}
@@ -983,16 +980,13 @@ const App: React.FC = () => {
 
         <ScopeIndicator currentScopeId={currentScopeId} nodes={nodes} />
 
-        {isSearchOpen && (
-          <SearchBar
-            nodes={nodes}
-            onSelect={handleSearchSelect}
-            onNavigate={handleFocusNode}
-            onClose={() => setIsSearchOpen(false)}
-            onPreview={handleOpenLink}
-            isCloud={!!user}
-          />
-        )}
+        <SearchBar
+          nodes={nodes}
+          onSelect={handleSearchSelect}
+          onNavigate={handleFocusNode}
+          onPreview={handleOpenLink}
+          isCloud={!!user}
+        />
 
         {usageNotification.visible && (
           <div className="absolute bottom-4 right-4 z-50 bg-slate-800 border border-sky-500 text-sky-400 px-4 py-3 rounded shadow-lg animate-bounce">

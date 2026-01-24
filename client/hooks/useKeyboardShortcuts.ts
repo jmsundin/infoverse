@@ -4,7 +4,6 @@ import { ViewportTransform } from "../types";
 export const useKeyboardShortcuts = (
   selectedNodeIds: Set<string>,
   confirmDeleteNode: (ids: string[]) => void,
-  setIsSearchOpen: (open: boolean) => void,
   handleCut: (id: string) => void,
   handlePaste: (pos: { x: number; y: number }) => void,
   viewTransform: ViewportTransform,
@@ -43,10 +42,13 @@ export const useKeyboardShortcuts = (
         }
       }
 
-      // Search (Ctrl+F / Cmd+F)
+      // Search (Ctrl+F / Cmd+F) - focus the search input
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
         e.preventDefault();
-        setIsSearchOpen(true);
+        const searchInput = document.querySelector('input[placeholder*="Search"], input[placeholder*="Ask"]') as HTMLInputElement;
+        if (searchInput) {
+          searchInput.focus();
+        }
       }
 
       // Cut (Ctrl+X / Cmd+X)
@@ -71,7 +73,6 @@ export const useKeyboardShortcuts = (
   }, [
     selectedNodeIds,
     confirmDeleteNode,
-    setIsSearchOpen,
     handleCut,
     handlePaste,
     viewTransform,

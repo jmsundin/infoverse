@@ -17,7 +17,6 @@ interface SearchBarProps {
   nodes: GraphNode[];
   onSelect: (topic: string, expand: boolean, isWiki?: boolean) => void;
   onNavigate: (id: string) => void;
-  onClose: () => void;
   onPreview?: (url: string) => void;
   isCloud?: boolean;
 }
@@ -26,7 +25,6 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   nodes,
   onSelect,
   onNavigate,
-  onClose,
   onPreview,
   isCloud = false,
 }) => {
@@ -54,30 +52,20 @@ export const SearchBar: React.FC<SearchBarProps> = ({
     return () => window.removeEventListener("resize", checkMobile);
   }, []);
 
-  useEffect(() => {
-    if (inputRef.current) {
-      inputRef.current.focus();
-    }
-  }, []);
 
+  // Close dropdown when clicking outside (but keep search bar visible)
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node;
-      const trigger = document.getElementById("search-trigger-icon");
 
-      if (
-        wrapperRef.current &&
-        !wrapperRef.current.contains(target) &&
-        (!trigger || !trigger.contains(target))
-      ) {
-        onClose();
+      if (wrapperRef.current && !wrapperRef.current.contains(target)) {
+        setIsOpen(false);
       }
     };
-    // Use capture phase to detect clicks even if stopPropagation is used (e.g. on Nodes)
     document.addEventListener("mousedown", handleClickOutside, true);
     return () =>
       document.removeEventListener("mousedown", handleClickOutside, true);
-  }, [onClose]);
+  }, []);
 
   useEffect(() => {
     const fetchResults = async () => {
@@ -326,12 +314,12 @@ export const SearchBar: React.FC<SearchBarProps> = ({
           </div>
         )}
 
-        {/* Close Button */}
+        {/* Clear Button */}
         <button
           className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-500 hover:text-slate-300"
           onClick={() => {
             setQuery("");
-            onClose();
+            setIsOpen(false);
           }}
         >
           <svg
@@ -369,7 +357,6 @@ export const SearchBar: React.FC<SearchBarProps> = ({
                         onNavigate(node.id);
                         setQuery("");
                         setIsOpen(false);
-                        onClose();
                       }}
                     >
                       <div className="w-10 h-10 rounded-md bg-emerald-900/30 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
@@ -432,7 +419,6 @@ export const SearchBar: React.FC<SearchBarProps> = ({
                     }
                     setQuery("");
                     setIsOpen(false);
-                    onClose();
                   }}
                   title="Open in Side Panel"
                 >
@@ -468,7 +454,6 @@ export const SearchBar: React.FC<SearchBarProps> = ({
                       onSelect(result.title, true, true);
                       setQuery("");
                       setIsOpen(false);
-                      onClose();
                     }}
                     title="Add node and generate subgraph"
                   >
@@ -513,7 +498,6 @@ export const SearchBar: React.FC<SearchBarProps> = ({
                         }
                         setQuery("");
                         setIsOpen(false);
-                        onClose();
                       }}
                       title="Open in Side Panel"
                     >
@@ -559,7 +543,6 @@ export const SearchBar: React.FC<SearchBarProps> = ({
                     onSelect(query, false, false);
                     setQuery("");
                     setIsOpen(false);
-                    onClose();
                   }}
                 >
                   <div className="w-10 h-10 rounded-md bg-emerald-900/30 flex items-center justify-center text-emerald-400 shrink-0 border border-emerald-700/30 group-hover:bg-emerald-900/50 group-hover:border-emerald-500/50 transition-colors">

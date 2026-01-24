@@ -5,7 +5,6 @@ interface HeaderActionsProps {
   onLogin: () => void;
   onSignup: () => void;
   onShowProfile: () => void;
-  onToggleSearch: () => void;
   onOpenStorage: () => void;
   dirName: string | null;
   activeSidePanesCount: number;
@@ -18,7 +17,6 @@ export const HeaderActions: React.FC<HeaderActionsProps> = ({
   onLogin,
   onSignup,
   onShowProfile,
-  onToggleSearch,
   onOpenStorage,
   dirName,
   activeSidePanesCount,
@@ -78,27 +76,6 @@ export const HeaderActions: React.FC<HeaderActionsProps> = ({
           )}
         </button>
       )}
-
-      <button
-        id="search-trigger-icon"
-        onClick={onToggleSearch}
-        className="p-2 text-slate-400 hover:text-white bg-slate-800/80 backdrop-blur rounded-lg border border-slate-700 pointer-events-auto transition-all shadow-lg"
-        title="Search"
-      >
-        <svg
-          className="h-5 w-5"
-          xmlns="http://www.w3.org/2000/svg"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <circle cx="11" cy="11" r="8" />
-          <line x1="21" y1="21" x2="16.65" y2="16.65" />
-        </svg>
-      </button>
 
       {!user ? (
         <>
