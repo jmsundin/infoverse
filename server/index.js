@@ -12,6 +12,15 @@ const { exec } = require('child_process');
 const db = require('./db');
 const { generateEmbedding } = require('./gemini-ai');
 
+// Global error handlers to prevent server crashes
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -959,43 +968,41 @@ app.post('/api/edges', async (req, res) => {
 
     // Cloud Save (Default)
     try {
-        // Transaction-like replacement strategy:
-        // Since we receive the FULL list of edges usually, we might want to sync carefully.
-        // But simple approach: Delete all for user (or sync efficiently) and re-insert?
-        // "Sync" is safer.
-        // Let's iterate and Upsert.
-        
-        // Note: This can be slow if many edges. Better to do bulk insert.
-        // For MVP, loop is fine.
-        
+        const results = { saved: 0, failed: 0 };
+
         for (const edge of edges) {
-            const query = `
-                INSERT INTO edges (id, user_id, source, target, label, scope_id, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, NOW())
-                ON CONFLICT (id) DO UPDATE SET
-                source = EXCLUDED.source,
-                target = EXCLUDED.target,
-                label = EXCLUDED.label,
-                scope_id = EXCLUDED.scope_id;
-            `;
-            const values = [edge.id, req.user.id, edge.source, edge.target, edge.label, edge.scopeId];
-            await db.query(query, values);
+            try {
+                const query = `
+                    INSERT INTO edges (id, user_id, source, target, label, scope_id, created_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                    ON CONFLICT (id) DO UPDATE SET
+                    source = EXCLUDED.source,
+                    target = EXCLUDED.target,
+                    label = EXCLUDED.label,
+                    scope_id = EXCLUDED.scope_id;
+                `;
+                const values = [edge.id, req.user.id, edge.source, edge.target, edge.label, edge.scopeId];
+                await db.query(query, values);
+                results.saved++;
+            } catch (err) {
+                results.failed++;
+                console.error(`Failed to save edge ${edge.id}:`, err.message);
+            }
         }
-        
-        // Also save to local if configured (Sync both? Or just fallback?)
-        // Let's sync to local if path exists as backup/legacy support
+
+        // Also save to local if configured as backup
         const { storagePath } = req.user;
         if (storagePath && typeof storagePath === 'string') {
             try {
                 ensureDir(storagePath);
                 const filePath = path.join(storagePath, '_edges.json');
-                fs.writeFileSync(filePath, JSON.stringify(edges, null, 2));
+                await fs.promises.writeFile(filePath, JSON.stringify(edges, null, 2));
             } catch (e) {
                 // Ignore local save error if cloud succeeded
             }
         }
 
-        return res.json({ success: true });
+        return res.json({ success: true, saved: results.saved, failed: results.failed });
     } catch (e) {
         console.error('Error saving cloud edges:', e);
         return res.status(500).json({ message: 'Error saving edges' });
@@ -1029,6 +1036,53 @@ app.get('/api/search/semantic', async (req, res) => {
         console.error('Semantic search failed:', e);
         res.status(500).json({ message: 'Search failed' });
     }
+});
+
+// Web Search Proxy (DuckDuckGo Instant Answers) - free, no API key required
+app.get('/api/search/web', async (req, res) => {
+    const { q } = req.query;
+    if (!q || !q.trim()) return res.json({ results: [] });
+
+    try {
+        const response = await fetch(
+            `https://api.duckduckgo.com/?q=${encodeURIComponent(q)}&format=json&no_html=1&skip_disambig=1`,
+            { signal: AbortSignal.timeout(5000) }
+        );
+
+        if (response.ok) {
+            const data = await response.json();
+            const results = [];
+
+            // Add main abstract if available
+            if (data.AbstractURL && data.Abstract) {
+                results.push({
+                    title: data.Heading || q,
+                    url: data.AbstractURL,
+                    content: data.AbstractText?.substring(0, 150) + '...'
+                });
+            }
+
+            // Add related topics
+            if (data.RelatedTopics) {
+                for (const topic of data.RelatedTopics) {
+                    if (results.length >= 4) break;
+                    if (topic.FirstURL && topic.Text) {
+                        results.push({
+                            title: topic.Text.split(' - ')[0] || topic.Text.substring(0, 50),
+                            url: topic.FirstURL,
+                            content: topic.Text.substring(0, 150)
+                        });
+                    }
+                }
+            }
+
+            return res.json({ results });
+        }
+    } catch (e) {
+        console.log('DuckDuckGo API failed:', e.message);
+    }
+
+    res.json({ results: [] });
 });
 
 // Duplicate Check Endpoint - Check for semantically similar existing nodes

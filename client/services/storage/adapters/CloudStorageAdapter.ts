@@ -218,12 +218,15 @@ export class CloudStorageAdapter implements StorageAdapter {
     if (!this.enabled) return;
 
     try {
-      await fetch(`${API_BASE}/edges`, {
+      const res = await fetch(`${API_BASE}/edges`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify(edges),
       });
+      if (!res.ok) {
+        throw new Error(`Failed to save edges: ${res.status}`);
+      }
     } catch (e) {
       console.error('Cloud edges save error:', e);
     }

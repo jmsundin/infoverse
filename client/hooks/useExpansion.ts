@@ -66,23 +66,24 @@ export const useExpansion = (
 
       nodesToAdd.push(...subNodes);
 
-      // Create map for edge matching
+      // Create map for edge matching (case-insensitive)
       const nameToNode = new Map<string, GraphNode>();
       let subNodeIndex = 0;
       result.nodes.forEach((n, i) => {
         if (!excludeIndices.has(i)) {
-          nameToNode.set(n.name, subNodes[subNodeIndex]);
+          nameToNode.set(n.name.toLowerCase(), subNodes[subNodeIndex]);
           subNodeIndex++;
         }
       });
 
-      // Connect edges
+      // Connect edges (case-insensitive matching)
       result.edges.forEach((e) => {
-        const targetSubNode = nameToNode.get(e.targetName);
+        const targetNameLower = e.targetName.toLowerCase();
+        const targetSubNode = nameToNode.get(targetNameLower);
         const targetExistingNode = nodes.find((n) => {
           const nodeTitle = deriveTitleFromContent(n.content);
           return (
-            (nodeTitle === e.targetName || nodeTitle.toLowerCase() === e.targetName.toLowerCase()) &&
+            nodeTitle.toLowerCase() === targetNameLower &&
             (n.scopeId ?? null) === (currentScopeId ?? null)
           );
         });
@@ -106,7 +107,7 @@ export const useExpansion = (
         }
       });
 
-      // Fallback connectivity
+      // Fallback connectivity - ensure all new nodes have at least one edge
       subNodes.forEach((sn) => {
         const isConnected = edgesToAdd.some((e) => e.target === sn.id);
         if (!isConnected) {
@@ -119,6 +120,8 @@ export const useExpansion = (
           });
         }
       });
+
+      console.log('[AI Expansion] Edges to add:', edgesToAdd.length, 'from', result.edges.length, 'AI edges');
 
       return { nodesToAdd, edgesToAdd };
     },

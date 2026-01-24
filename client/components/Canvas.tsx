@@ -70,6 +70,7 @@ interface CanvasProps {
   autoGraphEnabled?: boolean;
   onSetAutoGraphEnabled?: (enabled: boolean) => void;
   selectedNodeIds: Set<string>;
+  selectionHistory?: string[];
   onNodeSelect: (id: string | null, multi?: boolean | "remove") => void;
   onMultiSelect?: (ids: string[], multi?: boolean) => void;
   canvasShiftX: number;
@@ -369,6 +370,7 @@ export const Canvas: React.FC<CanvasProps> = ({
   autoGraphEnabled,
   onSetAutoGraphEnabled,
   selectedNodeIds,
+  selectionHistory,
   onNodeSelect,
   onMultiSelect,
   isResizing,
@@ -389,6 +391,7 @@ export const Canvas: React.FC<CanvasProps> = ({
   unpinNode,
   togglePinNode,
 }) => {
+  // console.log("Canvas: nodes", nodes);
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const longPressContextMenuTimerRef = useRef<number | null>(null);
@@ -1688,7 +1691,19 @@ export const Canvas: React.FC<CanvasProps> = ({
       }
     }
 
-    // 2. Focus on Center of Mass (if no selection)
+    // 2. Focus on node from selection history (if no current selection)
+    if (targetX === undefined || targetY === undefined) {
+      for (const nodeId of (selectionHistory || [])) {
+        const node = nodes.find((n) => n.id === nodeId);
+        if (node) {
+          targetX = node.x + (node.width || DEFAULT_NODE_WIDTH) / 2;
+          targetY = node.y + (node.height || DEFAULT_NODE_HEIGHT) / 2;
+          break;
+        }
+      }
+    }
+
+    // 3. Focus on Center of Mass (fallback)
     if (targetX === undefined || targetY === undefined) {
       let minX = Infinity,
         minY = Infinity,
@@ -1731,7 +1746,7 @@ export const Canvas: React.FC<CanvasProps> = ({
     const newY = window.innerHeight / 2 - targetY * k;
 
     onViewTransformChange({ x: newX, y: newY, k });
-  }, [nodes, selectedNodeId, onViewTransformChange]);
+  }, [nodes, selectedNodeId, selectionHistory, onViewTransformChange]);
 
   // Handler for arranging children of a node using physics simulation
   const handleArrangeChildren = useCallback((nodeId: string) => {
@@ -1939,7 +1954,7 @@ export const Canvas: React.FC<CanvasProps> = ({
   return (
     <div className="flex flex-col-reverse md:flex-row w-full h-full overflow-hidden bg-slate-950">
       {/* Toolbar */}
-      <div className="z-40 bg-slate-900 border-t md:border-t-0 md:border-r border-slate-800 shadow-xl w-full h-16 md:w-16 md:h-full flex flex-row md:flex-col items-center justify-between p-2 md:py-4 shrink-0">
+      <div className="z-40 bg-slate-900 md:border-r border-slate-800 shadow-xl hidden md:flex md:w-16 md:h-full md:flex-col items-center justify-between md:py-4 shrink-0">
         <div className="flex flex-row md:flex-col gap-4 md:gap-4 items-center">
           <button
             onClick={(e) => {
@@ -2217,6 +2232,196 @@ export const Canvas: React.FC<CanvasProps> = ({
               </svg>
             </button>
 
+            {/* Mobile Floating Create Button - Bottom Right (above Layout) */}
+            <div className="md:hidden absolute bottom-26 right-4 z-50 pointer-events-auto">
+              <button
+                onClick={() => setIsCreateMenuOpen((prev) => !prev)}
+                className={`w-10 h-10 rounded-full shadow-lg flex items-center justify-center transition-all ${
+                  isCreateMenuOpen
+                    ? "bg-sky-500 ring-2 ring-sky-400/50"
+                    : "bg-slate-900/80 backdrop-blur border border-slate-700 hover:bg-slate-800/80"
+                }`}
+                title="Create Node"
+                aria-haspopup="menu"
+                aria-expanded={isCreateMenuOpen}
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className={`w-5 h-5 transition-transform ${isCreateMenuOpen ? "rotate-45" : ""}`}
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="white"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              </button>
+              {isCreateMenuOpen && (
+                <div
+                  className="absolute z-50 w-48 bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl p-2 animate-in fade-in slide-in-from-bottom-2
+                  bottom-full mb-3 right-0 origin-bottom-right"
+                >
+                  <button
+                    onClick={() => {
+                      addNewNode(NodeType.NOTE);
+                      setIsCreateMenuOpen(false);
+                    }}
+                    className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-left transition-colors hover:bg-slate-900/80"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="20"
+                      height="20"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="text-slate-400"
+                    >
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                    </svg>
+                    <span className="text-sm font-medium text-white">Create Note</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      addNewNode(NodeType.CHAT);
+                      setIsCreateMenuOpen(false);
+                    }}
+                    className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-left transition-colors hover:bg-slate-900/80"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="20"
+                      height="20"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="text-slate-400"
+                    >
+                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                    </svg>
+                    <span className="text-sm font-medium text-white">Create AI Chat</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Mobile Floating Focus Button - Bottom Right (between + and Layout) */}
+            <div className="md:hidden absolute bottom-15 right-4 z-50 pointer-events-auto">
+              <button
+                onClick={handleFocusCanvas}
+                className="w-10 h-10 rounded-full bg-slate-900/80 backdrop-blur border border-slate-700 hover:bg-slate-800/80 shadow-lg flex items-center justify-center transition-all"
+                title={selectedNodeId ? "Focus Selected" : "Focus Canvas"}
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="white"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <circle cx="12" cy="12" r="10" />
+                  <circle cx="12" cy="12" r="3" />
+                  <line x1="12" y1="2" x2="12" y2="5" />
+                  <line x1="12" y1="19" x2="12" y2="22" />
+                  <line x1="2" y1="12" x2="5" y2="12" />
+                  <line x1="19" y1="12" x2="22" y2="12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Mobile Floating Layout Button - Bottom Right */}
+            <div className="md:hidden absolute bottom-4 right-4 z-50 pointer-events-auto">
+              <button
+                onClick={() => setIsLayoutMenuOpen((prev) => !prev)}
+                className={`w-10 h-10 rounded-full shadow-lg flex items-center justify-center transition-all ${
+                  isLayoutMenuOpen
+                    ? "bg-sky-500 ring-2 ring-sky-400/50"
+                    : "bg-slate-900/80 backdrop-blur border border-slate-700 hover:bg-slate-800/80"
+                }`}
+                title="Choose Layout"
+                aria-haspopup="menu"
+                aria-expanded={isLayoutMenuOpen}
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="white"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="w-5 h-5"
+                >
+                  <rect x="3" y="4" width="7" height="7" rx="1" />
+                  <rect x="14" y="4" width="7" height="7" rx="1" />
+                  <rect x="3" y="15" width="7" height="7" rx="1" />
+                  <rect x="14" y="15" width="7" height="7" rx="1" />
+                </svg>
+              </button>
+              {isLayoutMenuOpen && (
+                <div
+                  className="absolute z-50 w-64 bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl p-3 pointer-events-auto animate-in fade-in slide-in-from-bottom-2
+                  bottom-full mb-3 right-0 origin-bottom-right"
+                >
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 px-1">
+                    Choose Layout
+                  </p>
+                  <div className="flex flex-col gap-1">
+                    {SIDEBAR_LAYOUT_OPTIONS.map((option) => {
+                      const disabled =
+                        option.requiresSelection && !selectedNodeId;
+                      return (
+                        <button
+                          key={option.type}
+                          onClick={() => {
+                            if (disabled) return;
+                            applyLayout(option.type);
+                            setIsLayoutMenuOpen(false);
+                          }}
+                          className={`w-full flex items-start gap-3 px-3 py-2 rounded-xl text-left transition-colors ${
+                            disabled
+                              ? "opacity-40 cursor-not-allowed"
+                              : "hover:bg-slate-900/80 focus-visible:outline-none focus:bg-slate-900/80"
+                          }`}
+                          title={
+                            disabled && option.requiresSelection
+                              ? "Select a node to use this layout"
+                              : option.label
+                          }
+                        >
+                          <span className="text-slate-400 shrink-0">
+                            {option.icon}
+                          </span>
+                          <span className="flex-1">
+                            <span className="block text-sm font-semibold text-white">
+                              {option.label}
+                            </span>
+                            <span className="block text-xs text-slate-400">
+                              {option.description}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Selection Box */}
             {selectionBox && (
               <div
@@ -2351,6 +2556,7 @@ export const Canvas: React.FC<CanvasProps> = ({
                     onDelete={onDeleteNode}
                     onResizeStart={handleResizeStart}
                     onToggleMaximize={onMaximizeNode}
+                    onExpandInline={(id) => onNodeSelect(id, true)}
                     onMinimize={(id) => {
                       onNodeSelect(id, "remove");
                       if (activeNodeId === id) setActiveNodeId(null);

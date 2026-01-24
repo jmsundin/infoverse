@@ -10,6 +10,7 @@ interface OutlineNodeProps {
   isExpanded: boolean;
   isSelected?: boolean;
   isMatch?: boolean;
+  isInViewport?: boolean;
   onClick: () => void;
   onToggleExpand: () => void;
 }
@@ -21,6 +22,7 @@ export const OutlineNode: React.FC<OutlineNodeProps> = ({
   isExpanded,
   isSelected = false,
   isMatch = false,
+  isInViewport = false,
   onClick,
   onToggleExpand,
 }) => {
@@ -41,9 +43,10 @@ export const OutlineNode: React.FC<OutlineNodeProps> = ({
       className={`
         w-full py-2 pr-3 rounded-lg text-left flex items-center gap-1
         ${isSelected ? "bg-sky-600/40" : isMatch ? "bg-amber-600/20" : "hover:bg-slate-800/50"}
+        ${isInViewport && !isSelected ? "border-l-2 border-sky-400" : ""}
         transition-all duration-150 cursor-pointer
       `}
-      style={{ paddingLeft }}
+      style={{ paddingLeft: isInViewport && !isSelected ? paddingLeft - 2 : paddingLeft }}
     >
       {/* Chevron for expand/collapse */}
       <button

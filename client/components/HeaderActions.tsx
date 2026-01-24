@@ -9,6 +9,8 @@ interface HeaderActionsProps {
   onOpenStorage: () => void;
   dirName: string | null;
   activeSidePanesCount: number;
+  viewMode?: 'graph' | 'chat';
+  onToggleViewMode?: () => void;
 }
 
 export const HeaderActions: React.FC<HeaderActionsProps> = ({
@@ -20,6 +22,8 @@ export const HeaderActions: React.FC<HeaderActionsProps> = ({
   onOpenStorage,
   dirName,
   activeSidePanesCount,
+  viewMode = 'graph',
+  onToggleViewMode,
 }) => {
   return (
     <div
@@ -27,6 +31,54 @@ export const HeaderActions: React.FC<HeaderActionsProps> = ({
         activeSidePanesCount > 0 ? "opacity-0 invisible" : "opacity-100 visible"
       }`}
     >
+      {/* View Mode Toggle */}
+      {onToggleViewMode && (
+        <button
+          onClick={onToggleViewMode}
+          className={`p-2 rounded-lg border transition-all shadow-lg pointer-events-auto ${
+            viewMode === 'chat'
+              ? 'bg-sky-600 text-white border-sky-500 hover:bg-sky-500'
+              : 'bg-slate-800/80 backdrop-blur text-slate-400 hover:text-white border-slate-700'
+          }`}
+          title={viewMode === 'chat' ? 'Switch to Graph View' : 'Switch to Chat View'}
+        >
+          {viewMode === 'chat' ? (
+            // Graph icon - show when in chat mode
+            <svg
+              className="h-5 w-5"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="5" cy="6" r="3" />
+              <circle cx="19" cy="6" r="3" />
+              <circle cx="12" cy="18" r="3" />
+              <line x1="7.5" y1="7.5" x2="10.5" y2="15.5" />
+              <line x1="16.5" y1="7.5" x2="13.5" y2="15.5" />
+            </svg>
+          ) : (
+            // Panels/Chat icon - show when in graph mode
+            <svg
+              className="h-5 w-5"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <rect x="3" y="3" width="7" height="18" rx="1" />
+              <rect x="14" y="3" width="7" height="18" rx="1" />
+            </svg>
+          )}
+        </button>
+      )}
+
       <button
         id="search-trigger-icon"
         onClick={onToggleSearch}

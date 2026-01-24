@@ -132,6 +132,7 @@ export interface PendingExpansion {
 // Physics simulation configuration
 export interface PhysicsConfig {
   physicsEnabled: boolean;          // Master toggle for physics simulation
+  collisionOnly: boolean;           // If true: only resolve overlaps, no springs/gravity/repulsion
   springConstant: number;           // Hooke's law spring constant for edge attraction
   springLength: number;             // Ideal edge length (rest length)
   springDamping: number;            // Damping on spring forces

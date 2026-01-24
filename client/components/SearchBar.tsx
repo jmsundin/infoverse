@@ -7,6 +7,12 @@ interface SearchResult {
   thumbnail?: { url: string };
 }
 
+interface WebSearchResult {
+  title: string;
+  url: string;
+  content?: string;
+}
+
 interface SearchBarProps {
   nodes: GraphNode[];
   onSelect: (topic: string, expand: boolean, isWiki?: boolean) => void;
@@ -34,6 +40,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   );
   const [isOpen, setIsOpen] = useState(false); // Controls the dropdown results
   const [loading, setLoading] = useState(false);
+  const [webResults, setWebResults] = useState<WebSearchResult[]>([]);
 
   const [isMobile, setIsMobile] = useState(false);
 
@@ -79,6 +86,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
           // Suggestion Mode: Pick a random node
           const randomNode = nodes[Math.floor(Math.random() * nodes.length)];
           setLocalResults([randomNode]);
+          setWebResults([]); // Clear web results in suggestion mode
 
           // Fetch related from Wiki
           try {
@@ -120,6 +128,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
         } else {
           setWikiResults([]);
           setLocalResults([]);
+          setWebResults([]);
         }
         return;
       }
@@ -217,9 +226,24 @@ export const SearchBar: React.FC<SearchBarProps> = ({
         console.error("Wiki search error:", error);
         setWikiResults([]);
         setIsOpen(true);
-      } finally {
-        setLoading(false);
       }
+
+      // 3. Web Search (via backend proxy, cloud users only)
+      if (isCloud) {
+        try {
+          const apiBase = (import.meta as any).env.VITE_API_URL || "";
+          const webRes = await fetch(
+            `${apiBase}/api/search/web?q=${encodeURIComponent(query)}`
+          );
+          const webData = await webRes.json();
+          setWebResults(webData.results || []);
+        } catch (e) {
+          console.error("Web search error:", e);
+          setWebResults([]);
+        }
+      }
+
+      setLoading(false);
     };
 
     const timeoutId = setTimeout(fetchResults, 300);
@@ -470,7 +494,63 @@ export const SearchBar: React.FC<SearchBarProps> = ({
               </li>
             ))}
 
-            {/* 3. Create New Option - ONLY if no local results */}
+            {/* 3. Web Results */}
+            {webResults.length > 0 && (
+              <>
+                <li className="px-4 py-2 bg-slate-700/50 text-xs font-bold text-slate-400 uppercase tracking-wider border-t border-slate-700/50">
+                  Web Results
+                </li>
+                {webResults.map((result) => (
+                  <li
+                    key={result.url}
+                    className="flex border-b border-slate-700/50 last:border-0 hover:bg-slate-700/30 transition-colors group/item"
+                  >
+                    <button
+                      className="flex-1 text-left px-4 py-3 flex items-center gap-3 min-w-0 focus:outline-none focus:bg-slate-700/50"
+                      onClick={() => {
+                        if (onPreview) {
+                          onPreview(result.url);
+                        }
+                        setQuery("");
+                        setIsOpen(false);
+                        onClose();
+                      }}
+                      title="Open in Side Panel"
+                    >
+                      <div className="w-10 h-10 rounded-md bg-blue-900/30 border border-blue-500/30 flex items-center justify-center text-blue-400 shrink-0">
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="20"
+                          height="20"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <circle cx="12" cy="12" r="10" />
+                          <line x1="2" y1="12" x2="22" y2="12" />
+                          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+                        </svg>
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-slate-200 truncate">
+                          {result.title}
+                        </div>
+                        {result.content && (
+                          <div className="text-xs text-slate-400 truncate">
+                            {result.content}
+                          </div>
+                        )}
+                      </div>
+                    </button>
+                  </li>
+                ))}
+              </>
+            )}
+
+            {/* 4. Create New Option - ONLY if no local results */}
             {query && localResults.length === 0 && (
               <li className="p-2 border-t border-slate-700/50">
                 <button

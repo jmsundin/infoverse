@@ -9,6 +9,8 @@ interface OutlineTreePanelProps {
   isOpen: boolean;
   onClose: () => void;
   nodes: GraphNode[];
+  viewportNodeIds?: Set<string>;
+  hasViewportNodes?: boolean;
   selectedNodeIds: Set<string>;
   lastSelectedNodeId: string | null;
   currentScopeId: string | null;
@@ -19,6 +21,8 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
   isOpen,
   onClose,
   nodes,
+  viewportNodeIds,
+  hasViewportNodes = false,
   selectedNodeIds,
   lastSelectedNodeId,
   currentScopeId,
@@ -55,6 +59,9 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
   // Type filter state (from NodeListDrawer)
   const [typeFilter, setTypeFilter] = useState<"ALL" | NodeType>("ALL");
 
+  // Viewport mode: show only nodes in viewport, or all nodes
+  const [viewportMode, setViewportMode] = useState<"viewport" | "all">("viewport");
+
   const filterOptions = useMemo<{ label: string; value: "ALL" | NodeType }[]>(() => [
     { label: "All", value: "ALL" },
     { label: "Chat", value: NodeType.CHAT },
@@ -77,6 +84,14 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
       ? nodes
       : nodes.filter(node => node.type === typeFilter);
   }, [nodes, typeFilter]);
+
+  // Determine effective viewport mode (fallback to "all" if no viewport nodes)
+  const effectiveViewportMode = useMemo(() => {
+    if (viewportMode === "viewport" && !hasViewportNodes) {
+      return "all";
+    }
+    return viewportMode;
+  }, [viewportMode, hasViewportNodes]);
 
   // Device/orientation detection
   useEffect(() => {
@@ -127,7 +142,9 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
     filteredByType,
     selectedNodeIds,
     currentScopeId,
-    searchTerm
+    searchTerm,
+    viewportNodeIds,
+    effectiveViewportMode === "viewport"
   );
 
   // Auto-expand ancestors when selection changes and scroll into view
@@ -297,6 +314,7 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
     const isExpanded = expandedIds.has(node.id);
     const isSelected = selectedNodeIds.has(node.id);
     const isMatch = searchTerm.trim() ? matchingNodeIds.has(node.id) : false;
+    const isInViewport = viewportNodeIds?.has(node.id) ?? false;
 
     return (
       <div
@@ -316,6 +334,7 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
           isExpanded={isExpanded}
           isSelected={isSelected}
           isMatch={isMatch}
+          isInViewport={isInViewport}
           onClick={() => handleNodeClick(node.id)}
           onToggleExpand={() => handleToggleExpand(node.id)}
         />
@@ -487,12 +506,30 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
     >
       {/* Header */}
       <div className="p-4 border-b border-slate-800 flex items-center justify-between shrink-0">
-        <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
-          Outline
-          <span className="text-xs font-normal text-slate-500 bg-slate-800 px-2 py-0.5 rounded-full">
-            {totalCount}
-          </span>
-        </h2>
+        <div className="flex items-center gap-2">
+          <h2 className="text-lg font-bold text-slate-100">Outline</h2>
+          {/* Viewport mode toggle */}
+          <button
+            onClick={() => setViewportMode(v => v === "viewport" ? "all" : "viewport")}
+            className={`text-[10px] font-medium px-2 py-0.5 rounded-full transition-colors ${
+              effectiveViewportMode === "viewport"
+                ? "bg-sky-600 text-white"
+                : "bg-slate-700 text-slate-300 hover:bg-slate-600"
+            }`}
+            title={effectiveViewportMode === "viewport" ? "Showing viewport nodes" : "Showing all nodes"}
+          >
+            {effectiveViewportMode === "viewport" ? (
+              <span className="flex items-center gap-1">
+                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="18" height="18" rx="2"/>
+                </svg>
+                {viewportNodeIds?.size ?? 0}
+              </span>
+            ) : (
+              <span>{totalCount}</span>
+            )}
+          </button>
+        </div>
         <div className="flex items-center gap-1">
           {/* Position toggle button - mobile only */}
           {isMobile && (

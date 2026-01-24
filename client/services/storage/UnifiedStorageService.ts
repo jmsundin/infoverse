@@ -11,6 +11,10 @@ import {
 } from './types';
 import { ViewportDataManager } from './ViewportDataManager';
 import { debounce } from '../debounceService';
+import { SQLiteStorageAdapter } from './sqlite/SQLiteStorageAdapter';
+import { MarkdownBootstrap, needsBootstrap, BootstrapProgress } from './sqlite/MarkdownBootstrap';
+import { MarkdownMaterializer } from './sync/MarkdownMaterializer';
+import { LayoutMaterializer } from './sync/LayoutMaterializer';
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
@@ -45,6 +49,11 @@ export class UnifiedStorageService extends EventTarget {
   // In-memory deletion stack for unauthenticated users
   private inMemoryDeletionStack: DeletedNodeEntry[] = [];
 
+  // SQLite materialization (DB → files)
+  private markdownMaterializer: MarkdownMaterializer | null = null;
+  private layoutMaterializer: LayoutMaterializer | null = null;
+  private materializersStarted = false;
+
   constructor(config: Partial<StorageConfig> = {}) {
     super();
     this.config = { ...DEFAULT_STORAGE_CONFIG, ...config };
@@ -75,12 +84,52 @@ export class UnifiedStorageService extends EventTarget {
     this.config.inMemoryOnly = inMemoryOnly;
 
     await this.viewportManager.initialize(dirHandle, userId);
+
+    // Bootstrap SQLite from existing markdown files if needed
+    if (this.config.useSQLite && dirHandle && !inMemoryOnly) {
+      await this.bootstrapSQLiteIfNeeded(dirHandle);
+    }
+
     this.initialized = true;
 
     // Schedule periodic cleanup of old deleted entries
     this.scheduleDeletionStackCleanup();
 
     this.emit('loading-complete', {});
+  }
+
+  /**
+   * Bootstrap SQLite database from existing markdown files
+   */
+  private async bootstrapSQLiteIfNeeded(dirHandle: FileSystemDirectoryHandle): Promise<void> {
+    const localAdapter = this.viewportManager.getLocalAdapter();
+
+    // Check if adapter is SQLiteStorageAdapter
+    if (!(localAdapter instanceof SQLiteStorageAdapter)) {
+      return;
+    }
+
+    // Check if bootstrap is needed
+    const needsBoot = await needsBootstrap(dirHandle, localAdapter);
+    if (!needsBoot) {
+      console.log('[UnifiedStorageService] SQLite already populated, skipping bootstrap');
+      return;
+    }
+
+    console.log('[UnifiedStorageService] Starting SQLite bootstrap from markdown files');
+
+    const bootstrap = new MarkdownBootstrap();
+    await bootstrap.bootstrap(dirHandle, localAdapter, {
+      onProgress: (progress: BootstrapProgress) => {
+        this.emit('bootstrap-progress', { bootstrapProgress: progress } as any);
+        console.log(
+          `[Bootstrap] ${progress.phase}: ${progress.processed}/${progress.total}` +
+            (progress.currentFile ? ` (${progress.currentFile})` : '')
+        );
+      },
+    });
+
+    console.log('[UnifiedStorageService] SQLite bootstrap complete');
   }
 
   /**
@@ -213,8 +262,24 @@ export class UnifiedStorageService extends EventTarget {
       }));
     }
 
-    // For cloud-only, we'd need to add a cloud endpoint for spatial index
-    // For now, return empty (cloud support can be added later)
+    // Try cloud adapter
+    const cloudAdapter = this.viewportManager.getCloudAdapter();
+    if (cloudAdapter.isEnabled()) {
+      const result = await cloudAdapter.loadAllNodes();
+      return result.nodes.map(node => ({
+        id: node.id,
+        x: node.x,
+        y: node.y,
+        width: node.width || 300,
+        height: node.height || 200,
+        filename: `${node.id}.md`,
+        type: node.type,
+        color: node.color,
+        title: node.title || node.content?.substring(0, 100),
+        scopeId: node.scopeId,
+      }));
+    }
+
     return [];
   }
 
@@ -243,6 +308,14 @@ export class UnifiedStorageService extends EventTarget {
     if (localAdapter.isEnabled()) {
       return localAdapter.loadAllEdges();
     }
+
+    // Try cloud adapter
+    const cloudAdapter = this.viewportManager.getCloudAdapter();
+    if (cloudAdapter.isEnabled()) {
+      const result = await cloudAdapter.loadAllNodes();
+      return result.edges;
+    }
+
     return this.viewportManager.getAllCachedEdges();
   }
 
@@ -439,6 +512,11 @@ export class UnifiedStorageService extends EventTarget {
       return;
     }
 
+    // Start materializers if using SQLite (once, on first flush)
+    if (this.config.useSQLite && !this.materializersStarted && this.config.dirHandle) {
+      this.startMaterializers();
+    }
+
     const localAdapter = this.viewportManager.getLocalAdapter();
     const cloudAdapter = this.viewportManager.getCloudAdapter();
 
@@ -568,6 +646,30 @@ export class UnifiedStorageService extends EventTarget {
   }
 
   /**
+   * Start materializers for SQLite → file sync
+   */
+  private startMaterializers(): void {
+    const localAdapter = this.viewportManager.getLocalAdapter();
+    if (!(localAdapter instanceof SQLiteStorageAdapter) || !this.config.dirHandle) {
+      return;
+    }
+
+    console.log('[UnifiedStorageService] Starting materializers');
+
+    // Start markdown materializer (content changes)
+    this.markdownMaterializer = new MarkdownMaterializer();
+    this.markdownMaterializer.initialize(this.config.dirHandle, localAdapter);
+    this.markdownMaterializer.start();
+
+    // Start layout materializer (position changes)
+    this.layoutMaterializer = new LayoutMaterializer();
+    this.layoutMaterializer.initialize(this.config.dirHandle, localAdapter);
+    this.layoutMaterializer.start();
+
+    this.materializersStarted = true;
+  }
+
+  /**
    * Dispose the service
    */
   dispose(): void {
@@ -576,6 +678,17 @@ export class UnifiedStorageService extends EventTarget {
       window.clearInterval(this.cleanupIntervalId);
       this.cleanupIntervalId = null;
     }
+
+    // Stop materializers
+    if (this.markdownMaterializer) {
+      this.markdownMaterializer.stop();
+      this.markdownMaterializer = null;
+    }
+    if (this.layoutMaterializer) {
+      this.layoutMaterializer.stop();
+      this.layoutMaterializer = null;
+    }
+    this.materializersStarted = false;
 
     // Flush any pending saves
     this.flush();

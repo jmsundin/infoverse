@@ -19,7 +19,9 @@ export const useOutlineTree = (
   nodes: GraphNode[],
   selectedNodeIds: Set<string>,
   currentScopeId: string | null,
-  searchTerm: string = ""
+  searchTerm: string = "",
+  viewportNodeIds?: Set<string>,
+  filterToViewport: boolean = false
 ): OutlineTreeResult => {
   return useMemo(() => {
     const nodeMap = new Map(nodes.map((n) => [n.id, n]));
@@ -38,6 +40,20 @@ export const useOutlineTree = (
     const matchingNodeIds = new Set<string>();
     const ancestorIdsToInclude = new Set<string>();
     const isFiltering = searchTerm.trim().length > 0;
+
+    // Viewport filtering: find ancestors of viewport nodes to preserve tree structure
+    const viewportAncestorIds = new Set<string>();
+    const isViewportFiltering = filterToViewport && viewportNodeIds && viewportNodeIds.size > 0;
+
+    if (isViewportFiltering) {
+      viewportNodeIds.forEach((nodeId) => {
+        let current = nodeMap.get(nodeId);
+        while (current?.parentId) {
+          viewportAncestorIds.add(current.parentId);
+          current = nodeMap.get(current.parentId);
+        }
+      });
+    }
 
     if (isFiltering) {
       const lowerTerm = searchTerm.toLowerCase();
@@ -79,7 +95,7 @@ export const useOutlineTree = (
       const node = nodeMap.get(nodeId);
       if (!node) return null;
 
-      // When filtering, skip nodes that don't match and aren't ancestors of matches
+      // When search filtering, skip nodes that don't match and aren't ancestors of matches
       if (
         isFiltering &&
         !matchingNodeIds.has(nodeId) &&
@@ -88,12 +104,28 @@ export const useOutlineTree = (
         return null;
       }
 
+      // When viewport filtering, skip nodes not in viewport and not ancestors of viewport nodes
+      if (
+        isViewportFiltering &&
+        !viewportNodeIds!.has(nodeId) &&
+        !viewportAncestorIds.has(nodeId)
+      ) {
+        return null;
+      }
+
       let childNodes = childrenByParent.get(nodeId) || [];
 
-      // When filtering, only include children that are matches or ancestors of matches
+      // When search filtering, only include children that are matches or ancestors of matches
       if (isFiltering) {
         childNodes = childNodes.filter(
           (c) => matchingNodeIds.has(c.id) || ancestorIdsToInclude.has(c.id)
+        );
+      }
+
+      // When viewport filtering, only include children that are in viewport or ancestors
+      if (isViewportFiltering) {
+        childNodes = childNodes.filter(
+          (c) => viewportNodeIds!.has(c.id) || viewportAncestorIds.has(c.id)
         );
       }
 
@@ -136,17 +168,24 @@ export const useOutlineTree = (
     // Always build full tree from root nodes in current scope
     const rootNodes = childrenByParent.get(currentScopeId ?? null) || [];
 
-    // When filtering, also filter root nodes
-    const filteredRootNodes = isFiltering
+    // Apply search filtering to root nodes
+    let filteredRootNodes = isFiltering
       ? rootNodes.filter(
           (n) => matchingNodeIds.has(n.id) || ancestorIdsToInclude.has(n.id)
         )
       : rootNodes;
+
+    // Apply viewport filtering to root nodes
+    if (isViewportFiltering) {
+      filteredRootNodes = filteredRootNodes.filter(
+        (n) => viewportNodeIds!.has(n.id) || viewportAncestorIds.has(n.id)
+      );
+    }
 
     const tree: TreeNodeData[] = filteredRootNodes
       .map((n) => buildSubtree(n.id, 0))
       .filter(Boolean) as TreeNodeData[];
 
     return { ancestors, tree, selectedNode, matchingNodeIds };
-  }, [nodes, selectedNodeIds, currentScopeId, searchTerm]);
+  }, [nodes, selectedNodeIds, currentScopeId, searchTerm, viewportNodeIds, filterToViewport]);
 };

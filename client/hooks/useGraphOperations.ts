@@ -243,10 +243,11 @@ export const useGraphOperations = (
         newNodeX = sourceNode.x + (sourceNode.width || DEFAULT_NODE_WIDTH) + 50;
         newNodeY = sourceNode.y;
       } else {
-        const canvasX = (selectionTooltip.x - viewTransform.x) / viewTransform.k;
-        const canvasY = (selectionTooltip.y - viewTransform.y) / viewTransform.k;
-        newNodeX = canvasX + 100;
-        newNodeY = canvasY + 50;
+        // Center in viewport
+        const vpW = window.innerWidth;
+        const vpH = window.innerHeight;
+        newNodeX = -viewTransform.x / viewTransform.k + vpW / 2 / viewTransform.k - DEFAULT_NODE_WIDTH / 2;
+        newNodeY = -viewTransform.y / viewTransform.k + vpH / 2 / viewTransform.k - DEFAULT_NODE_HEIGHT / 2;
       }
 
       const promptTemplate = geminiService.getTopicSummaryPrompt(selectionTooltip.text);
@@ -273,6 +274,7 @@ export const useGraphOperations = (
         width: DEFAULT_NODE_WIDTH,
         height: DEFAULT_NODE_HEIGHT,
         parentId: currentScopeId || undefined,
+        scopeId: currentScopeId || undefined,
       };
 
       setNodesCallback((prev) => [...prev, newNode]);

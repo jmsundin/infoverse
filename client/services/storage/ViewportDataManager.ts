@@ -5,12 +5,14 @@ import {
   ViewportLoadResult,
   StorageConfig,
   DEFAULT_STORAGE_CONFIG,
+  LocalStorageAdapterInterface,
 } from './types';
 import { RegionTracker } from './RegionTracker';
 import { LocalStorageAdapter } from './adapters/LocalStorageAdapter';
 import { CloudStorageAdapter } from './adapters/CloudStorageAdapter';
 import { InMemoryStorageAdapter } from './adapters/InMemoryStorageAdapter';
 import { YjsSyncEngine } from './crdt/YjsSyncEngine';
+import { SQLiteStorageAdapter } from './sqlite/SQLiteStorageAdapter';
 
 /**
  * ViewportDataManager orchestrates viewport-based data loading.
@@ -24,7 +26,7 @@ import { YjsSyncEngine } from './crdt/YjsSyncEngine';
  */
 export class ViewportDataManager {
   private regionTracker: RegionTracker;
-  private localAdapter: LocalStorageAdapter;
+  private localAdapter: LocalStorageAdapterInterface;
   private cloudAdapter: CloudStorageAdapter;
   private inMemoryAdapter: InMemoryStorageAdapter;
   private yjsEngine: YjsSyncEngine;
@@ -40,7 +42,14 @@ export class ViewportDataManager {
   constructor(config: Partial<StorageConfig> = {}) {
     this.config = { ...DEFAULT_STORAGE_CONFIG, ...config };
     this.regionTracker = new RegionTracker(this.config.regionGridSize);
-    this.localAdapter = new LocalStorageAdapter(this.config.syncDebounceMs);
+
+    // Select adapter based on feature flag
+    if (this.config.useSQLite) {
+      this.localAdapter = new SQLiteStorageAdapter({ saveDebounceMs: this.config.syncDebounceMs });
+    } else {
+      this.localAdapter = new LocalStorageAdapter(this.config.syncDebounceMs);
+    }
+
     this.cloudAdapter = new CloudStorageAdapter();
     this.inMemoryAdapter = new InMemoryStorageAdapter();
     this.yjsEngine = new YjsSyncEngine();
@@ -488,7 +497,7 @@ export class ViewportDataManager {
   /**
    * Get the local adapter (for direct file operations)
    */
-  getLocalAdapter(): LocalStorageAdapter {
+  getLocalAdapter(): LocalStorageAdapterInterface {
     return this.localAdapter;
   }
 

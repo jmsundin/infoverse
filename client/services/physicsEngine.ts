@@ -40,6 +40,10 @@ interface SimulationState {
   draggedNodeId: string | null;
   subtreeRootId: string | null;  // For manual-subtree: root node to keep fixed
   activeNodeIds: Set<string> | null;  // For manual-subtree: only these nodes participate
+  // For rigid subtree dragging (vis-network style)
+  lastDragX: number | null;
+  lastDragY: number | null;
+  dragSubtreeIds: Set<string> | null;
 }
 
 export class PhysicsEngine {
@@ -55,6 +59,13 @@ export class PhysicsEngine {
   private childrenMap: Map<string, string[]> = new Map();
   private parentMap: Map<string, string> = new Map();
 
+  // Statistics tracking
+  private stats = {
+    startTime: 0,
+    collisionPairs: [] as Array<{ nodeA: string; nodeB: string; penX: number; penY: number }>,
+    totalCollisionsResolved: 0,
+  };
+
   constructor(config?: Partial<PhysicsConfig>) {
     this.config = { ...DEFAULT_PHYSICS_CONFIG, ...config };
     this.state = {
@@ -65,6 +76,9 @@ export class PhysicsEngine {
       draggedNodeId: null,
       subtreeRootId: null,
       activeNodeIds: null,
+      lastDragX: null,
+      lastDragY: null,
+      dragSubtreeIds: null,
     };
   }
 
@@ -146,6 +160,13 @@ export class PhysicsEngine {
     this.state.subtreeRootId = null;
     this.state.activeNodeIds = null;
 
+    // Reset statistics
+    this.stats.startTime = performance.now();
+    this.stats.collisionPairs = [];
+    this.stats.totalCollisionsResolved = 0;
+
+    console.log(`[Physics] START trigger=${trigger} nodes=${this.nodes.size} mode=${this.config.collisionOnly ? 'collision-only' : 'full'}`);
+
     if (trigger === 'drag-start' && subtreeRootId) {
       this.state.draggedNodeId = subtreeRootId;
     }
@@ -176,6 +197,10 @@ export class PhysicsEngine {
     this.state.draggedNodeId = null;
     this.state.subtreeRootId = null;
     this.state.activeNodeIds = null;
+    // Clear rigid subtree drag state
+    this.state.lastDragX = null;
+    this.state.lastDragY = null;
+    this.state.dragSubtreeIds = null;
 
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
@@ -188,7 +213,26 @@ export class PhysicsEngine {
 
     const stabilized = this.tick();
 
+    // Periodic summary every 10 ticks
+    if (this.state.tickCount % 10 === 0 && this.state.tickCount > 0) {
+      const elapsed = performance.now() - this.stats.startTime;
+      console.log(`[Physics] PROGRESS tick=${this.state.tickCount} elapsed=${elapsed.toFixed(0)}ms collisions=${this.stats.totalCollisionsResolved} maxVel=${this.state.maxVelocity.toFixed(2)}`);
+
+      // Log current collision pairs if any
+      if (this.stats.collisionPairs.length > 0) {
+        const topPairs = this.stats.collisionPairs.slice(0, 5);
+        console.log(`[Physics] TOP_COLLISIONS:`, topPairs.map(p =>
+          `${p.nodeA.slice(0,8)}↔${p.nodeB.slice(0,8)} pen=(${p.penX.toFixed(1)},${p.penY.toFixed(1)})`
+        ).join(', '));
+      }
+    }
+
     if (stabilized || this.state.tickCount >= this.config.maxIterations) {
+      // Final summary on stabilization
+      const elapsed = performance.now() - this.stats.startTime;
+      const reason = stabilized ? 'stabilized' : 'max-iterations';
+      console.log(`[Physics] END reason=${reason} ticks=${this.state.tickCount} elapsed=${elapsed.toFixed(0)}ms totalCollisions=${this.stats.totalCollisionsResolved}`);
+
       this.stop();
       this.onComplete?.();
       return;
@@ -199,6 +243,14 @@ export class PhysicsEngine {
 
   tick(): boolean {
     if (this.nodes.size === 0) return true;
+
+    // Collision-only mode: no forces, just push overlapping nodes apart
+    if (this.config.collisionOnly) {
+      const hadOverlap = this.resolveCollisionsCollisionOnly();
+      this.emitPositions();
+      this.state.tickCount++;
+      return !hadOverlap;
+    }
 
     // For manual-subtree mode, use simplified physics
     if (this.state.trigger === 'manual-subtree' && this.state.activeNodeIds) {
@@ -750,23 +802,172 @@ export class PhysicsEngine {
       const penX = minDistX - absX;
       const penY = minDistY - absY;
 
-      // Push along axis of least penetration
-      if (penX < penY) {
-        const dir = deltaX >= 0 ? 1 : -1;
-        const factor = other.pinned ? 1.0 : 0.5;
-        node.x += dir * penX * factor;
-        if (!other.pinned) {
-          other.x -= dir * penX * (1 - factor);
-        }
-      } else {
-        const dir = deltaY >= 0 ? 1 : -1;
-        const factor = other.pinned ? 1.0 : 0.5;
-        node.y += dir * penY * factor;
-        if (!other.pinned) {
-          other.y -= dir * penY * (1 - factor);
-        }
+      // Use proportional diagonal push instead of axis-switching to avoid jitter
+      const totalPen = penX + penY;
+      const ratioX = penX / totalPen;
+      const ratioY = penY / totalPen;
+
+      // Smooth separation over multiple frames
+      const separationStrength = 0.4;
+
+      const dirX = deltaX >= 0 ? 1 : -1;
+      const dirY = deltaY >= 0 ? 1 : -1;
+
+      const factor = other.pinned ? 1.0 : 0.5;
+
+      const pushX = dirX * penX * ratioX * separationStrength;
+      const pushY = dirY * penY * ratioY * separationStrength;
+
+      node.x += pushX * factor;
+      node.y += pushY * factor;
+
+      if (!other.pinned) {
+        other.x -= pushX * (1 - factor);
+        other.y -= pushY * (1 - factor);
       }
     }
+  }
+
+  /**
+   * Collision-only resolution: returns true if any overlap was resolved.
+   * Uses tighter query bounds and fewer iterations for efficiency.
+   */
+  private resolveCollisionsCollisionOnly(): boolean {
+    let moved = false;
+    const iterations = 6; // Increased from 4 for better cascade handling
+    const padding = this.config.collisionPadding;
+    const nodeArray = Array.from(this.nodes.values());
+
+    for (let iter = 0; iter < iterations; iter++) {
+      const quadtree = d3.quadtree<PhysicsNode>()
+        .x(d => d.x)
+        .y(d => d.y)
+        .addAll(nodeArray);
+
+      for (const node of nodeArray) {
+        if (node.pinned) continue;
+
+        const hw = node.width / 2;
+        const hh = node.height / 2;
+
+        // Tighter query bounds for collision-only mode (80px margin vs 500px)
+        const margin = 80;
+        const queryLeft = node.x - hw - padding - margin;
+        const queryRight = node.x + hw + padding + margin;
+        const queryTop = node.y - hh - padding - margin;
+        const queryBottom = node.y + hh + padding + margin;
+
+        quadtree.visit((quad, x1, y1, x2, y2) => {
+          if (x1 > queryRight || x2 < queryLeft || y1 > queryBottom || y2 < queryTop) {
+            return true;
+          }
+
+          if (!quad.length) {
+            let current: any = quad;
+            do {
+              const other = current.data as PhysicsNode;
+              if (other.id !== node.id) {
+                const didMove = this.resolveCollisionPairReturnMoved(node, other, padding);
+                if (didMove) moved = true;
+              }
+            } while ((current = current.next));
+          }
+          return false;
+        });
+      }
+    }
+
+    // Removed: velocity dampening was causing oscillation instead of preventing it
+    // The stronger separation strength (0.7) should handle convergence without dampening
+
+    return moved;
+  }
+
+  /**
+   * Same as resolveCollisionPair but returns true if nodes were actually moved.
+   */
+  private resolveCollisionPairReturnMoved(node: PhysicsNode, other: PhysicsNode, padding: number): boolean {
+    const ohw = other.width / 2;
+    const ohh = other.height / 2;
+    const nhw = node.width / 2;
+    const nhh = node.height / 2;
+
+    const minDistX = nhw + ohw + padding;
+    const minDistY = nhh + ohh + padding;
+
+    const deltaX = node.x - other.x;
+    const deltaY = node.y - other.y;
+
+    const absX = Math.abs(deltaX);
+    const absY = Math.abs(deltaY);
+
+    if (absX < minDistX && absY < minDistY) {
+      // Early exit if both nodes are pinned - neither can move
+      if (node.pinned && other.pinned) {
+        return false;
+      }
+
+      const penX = minDistX - absX;
+      const penY = minDistY - absY;
+
+      // Treat sub-pixel overlaps as resolved to prevent infinite oscillation
+      if (penX < 1 && penY < 1) {
+        return false;
+      }
+
+      // Track collision pair for statistics
+      this.stats.totalCollisionsResolved++;
+      // Keep only recent collision pairs, sorted by penetration depth
+      const existingIdx = this.stats.collisionPairs.findIndex(p =>
+        (p.nodeA === node.id && p.nodeB === other.id) || (p.nodeA === other.id && p.nodeB === node.id)
+      );
+      if (existingIdx >= 0) {
+        this.stats.collisionPairs[existingIdx] = { nodeA: node.id, nodeB: other.id, penX, penY };
+      } else if (this.stats.collisionPairs.length < 20) {
+        this.stats.collisionPairs.push({ nodeA: node.id, nodeB: other.id, penX, penY });
+      }
+      // Sort by total penetration (descending)
+      this.stats.collisionPairs.sort((a, b) => (b.penX + b.penY) - (a.penX + a.penY));
+
+      // Use proportional diagonal push instead of axis-switching to avoid jitter
+      const totalPen = penX + penY;
+      const ratioX = penX / totalPen;
+      const ratioY = penY / totalPen;
+
+      // Faster separation to prevent oscillation (was 0.4)
+      const separationStrength = 0.7;
+
+      const dirX = deltaX >= 0 ? 1 : -1;
+      const dirY = deltaY >= 0 ? 1 : -1;
+
+      // Calculate factor based on which nodes can move
+      // When node is pinned, other does 100% of moving (and vice versa)
+      let factor: number;
+      if (node.pinned) {
+        factor = 0;  // node can't move, other does 100%
+      } else if (other.pinned) {
+        factor = 1.0;  // other can't move, node does 100%
+      } else {
+        factor = 0.5;  // both can move, split 50/50
+      }
+
+      const pushX = dirX * penX * ratioX * separationStrength;
+      const pushY = dirY * penY * ratioY * separationStrength;
+
+      // Only move nodes that aren't pinned
+      if (!node.pinned) {
+        node.x += pushX * factor;
+        node.y += pushY * factor;
+      }
+
+      if (!other.pinned) {
+        other.x -= pushX * (1 - factor);
+        other.y -= pushY * (1 - factor);
+      }
+
+      return true;
+    }
+    return false;
   }
 
   // ==================== Stabilization ====================
@@ -813,28 +1014,74 @@ export class PhysicsEngine {
 
   startDrag(nodeId: string): void {
     this.state.draggedNodeId = nodeId;
+
     const node = this.nodes.get(nodeId);
     if (node) {
+      // Store initial position for delta calculation
+      this.state.lastDragX = node.x;
+      this.state.lastDragY = node.y;
       node.vx = 0;
       node.vy = 0;
     }
+
+    // Cache subtree for rigid movement (vis-network style)
+    this.state.dragSubtreeIds = this.getSubtreeNodeIds(nodeId);
+
+    // Zero velocities for all subtree nodes
+    this.state.dragSubtreeIds.forEach(id => {
+      const n = this.nodes.get(id);
+      if (n) {
+        n.vx = 0;
+        n.vy = 0;
+      }
+    });
+
+    console.log(`[Physics:drag] START node=${nodeId} subtreeSize=${this.state.dragSubtreeIds.size}`);
   }
 
   updateDragPosition(nodeId: string, x: number, y: number): void {
     const node = this.nodes.get(nodeId);
-    if (node) {
-      const width = node.width;
-      const height = node.height;
-      // Convert from top-left to center coordinates
-      node.x = x + width / 2;
-      node.y = y + height / 2;
-      node.vx = 0;
-      node.vy = 0;
-    }
+    if (!node) return;
+
+    const newX = x + node.width / 2;
+    const newY = y + node.height / 2;
+
+    const lastX = this.state.lastDragX ?? node.x;
+    const lastY = this.state.lastDragY ?? node.y;
+
+    const dx = newX - lastX;
+    const dy = newY - lastY;
+
+    // Move dragged node
+    node.x = newX;
+    node.y = newY;
+    node.vx = 0;
+    node.vy = 0;
+
+    // Move entire subtree rigidly (vis-network style)
+    const subtree = this.state.dragSubtreeIds ?? this.getSubtreeNodeIds(nodeId);
+    subtree.forEach(id => {
+      if (id === nodeId) return;
+      const child = this.nodes.get(id);
+      if (!child) return;
+      child.x += dx;
+      child.y += dy;
+      child.vx = 0;
+      child.vy = 0;
+    });
+
+    this.state.lastDragX = newX;
+    this.state.lastDragY = newY;
   }
 
   endDrag(): void {
+    if (this.state.draggedNodeId) {
+      console.log(`[Physics:drag] END node=${this.state.draggedNodeId}`);
+    }
     this.state.draggedNodeId = null;
+    this.state.lastDragX = null;
+    this.state.lastDragY = null;
+    this.state.dragSubtreeIds = null;
   }
 
   // ==================== Node State ====================

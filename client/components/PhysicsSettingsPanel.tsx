@@ -9,7 +9,7 @@ interface PhysicsSettingsPanelProps {
   onStopSimulation?: () => void;
 }
 
-interface SliderProps {
+export interface SliderProps {
   label: string;
   value: number;
   min: number;
@@ -19,7 +19,7 @@ interface SliderProps {
   unit?: string;
 }
 
-const Slider: React.FC<SliderProps> = ({
+export const Slider: React.FC<SliderProps> = ({
   label,
   value,
   min,

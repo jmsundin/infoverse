@@ -22,8 +22,8 @@ import { SelectionTooltip } from "./components/SelectionTooltip";
 import { Breadcrumbs } from "./components/Breadcrumbs";
 import { HeaderActions } from "./components/HeaderActions";
 import { ScopeIndicator } from "./components/ScopeIndicator";
-import { PhysicsSettingsPanel } from "./components/PhysicsSettingsPanel";
 import { OutlineTreePanel } from "./components/OutlineTreePanel";
+import { ChatModeContainer } from "./components/ChatMode";
 import { MigrationProgressBar } from "./components/MigrationProgressBar";
 import { getMigrationService } from "./services/migration/MigrationService";
 import { MigrationProgress } from "./services/migration/types";
@@ -64,6 +64,8 @@ import {
   cleanupLegacyStorage,
   getPhysicsConfig,
   setPhysicsConfig as savePhysicsConfig,
+  getSelectionHistory,
+  setSelectionHistory as saveSelectionHistory,
 } from "./services/settingsService";
 import { importFromCloud } from "./services/cloudSyncService";
 import { useGraphState } from "./hooks/useGraphState";
@@ -76,6 +78,7 @@ import { useGraphOperations } from "./hooks/useGraphOperations";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useBreadcrumbs } from "./hooks/useBreadcrumbs";
 import { usePhysicsSimulation } from "./hooks/usePhysicsSimulation";
+import { useViewportNodes } from "./hooks/useViewportNodes";
 import { createDefaultGraphNodes } from "./utils/graphUtils";
 import { performGreedyClustering } from "./utils/clustering";
 
@@ -128,7 +131,8 @@ const App: React.FC = () => {
   const [showLimitModal, setShowLimitModal] = useState(false);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [isOutlinePanelOpen, setIsOutlinePanelOpen] = useState(false);
-  const [lastSelectedNodeId, setLastSelectedNodeId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'graph' | 'chat'>('graph');
+  const [selectionHistory, setSelectionHistory] = useState<string[]>(getSelectionHistory);
   const [cutNodeId, setCutNodeId] = useState<string | null>(null);
   const [aiProvider, setAiProviderState] = useState<"gemini" | "huggingface">(getAIProvider);
   const [physicsConfig, setPhysicsConfigState] = useState<PhysicsConfig>(getPhysicsConfig);
@@ -161,6 +165,11 @@ const App: React.FC = () => {
     });
   }, []);
 
+  // Persist selection history to local storage
+  useEffect(() => {
+    saveSelectionHistory(selectionHistory);
+  }, [selectionHistory]);
+
   const deletedNodeRef = useRef<{
     nodes: GraphNode[];
     edges: GraphEdge[];
@@ -184,6 +193,15 @@ const App: React.FC = () => {
     containerHeight: windowSize.height,
     bufferMultiplier: 1.3,
     debounceMs: 150,
+  });
+
+  // --- Viewport Nodes for Outline Panel ---
+  const { viewportNodeIds, hasViewportNodes } = useViewportNodes({
+    nodes,
+    viewTransform,
+    containerWidth: windowSize.width,
+    containerHeight: windowSize.height,
+    debounceMs: 200,
   });
 
   // Sync viewportStorage state to main state continuously
@@ -745,6 +763,33 @@ const App: React.FC = () => {
     [setActiveSidePanes]
   );
 
+  // Toggle between graph and chat modes
+  const handleToggleViewMode = useCallback(() => {
+    setViewMode((prev) => (prev === 'graph' ? 'chat' : 'graph'));
+  }, []);
+
+  // Create node for chat mode - returns the created node
+  const handleCreateNodeForChatMode = useCallback(
+    (parentId: string | null, type: NodeType, content?: string): GraphNode => {
+      const id = crypto.randomUUID();
+      const newNode: GraphNode = {
+        id,
+        type,
+        x: 0,
+        y: 0,
+        content: content || '',
+        parentId: parentId,
+        scopeId: currentScopeId,
+      };
+
+      setNodesCallback((prev) => [...prev, newNode]);
+      setSelectedNodeIds(new Set([id]));
+
+      return newNode;
+    },
+    [currentScopeId, setNodesCallback, setSelectedNodeIds]
+  );
+
   const handleOpenLink = useCallback(
     (url: string) => {
       const isWikipedia = url.includes("wikipedia.org/wiki/");
@@ -911,6 +956,8 @@ const App: React.FC = () => {
           onOpenStorage={handleOpenStorage}
           dirName={dirName}
           activeSidePanesCount={activeSidePanes.length}
+          viewMode={viewMode}
+          onToggleViewMode={handleToggleViewMode}
         />
 
         <div className="absolute top-4 text-slate-500 text-xs font-mono opacity-50 pointer-events-none select-none">
@@ -961,77 +1008,102 @@ const App: React.FC = () => {
           </div>
         )}
 
-        <ErrorBoundary>
-          <Canvas
-            nodes={clusteredNodes}
-            allNodes={nodes}
-            edges={edgesToRender}
-            setNodes={setNodesCallback}
-            setEdges={setEdgesCallback}
-            viewTransform={viewTransform}
-            onViewTransformChange={setViewTransform}
-            isSaving={false}
-            onOpenLink={handleOpenLink}
-            onNavigateToNode={handleNavigateToNodeLink}
-            onMaximizeNode={handleMaximizeNode}
-            onExpandNode={handleExpandNode}
-            onExpandNodeFromWikidata={handleExpandNodeFromWikidata}
+        {viewMode === 'graph' ? (
+          <ErrorBoundary>
+            <Canvas
+              nodes={clusteredNodes}
+              allNodes={nodes}
+              edges={edgesToRender}
+              setNodes={setNodesCallback}
+              setEdges={setEdgesCallback}
+              viewTransform={viewTransform}
+              onViewTransformChange={setViewTransform}
+              isSaving={false}
+              onOpenLink={handleOpenLink}
+              onNavigateToNode={handleNavigateToNodeLink}
+              onMaximizeNode={handleMaximizeNode}
+              onExpandNode={handleExpandNode}
+              onExpandNodeFromWikidata={handleExpandNodeFromWikidata}
+              onUpdateNode={handleUpdateNode}
+              onDeleteNode={handleDeleteNode}
+              expandingNodeIds={expandingNodeIds}
+              onToggleMenu={() => setIsOutlinePanelOpen(prev => !prev)}
+              connectingNodeId={connectingNodeId}
+              onConnectStart={(id) => setConnectingNodeId(id)}
+              onConnectEnd={(s, t) => {
+                handleConnectEnd(s, t);
+                setConnectingNodeId(null);
+              }}
+              onCancelConnect={() => setConnectingNodeId(null)}
+              onNavigateDown={handleNavigateDown}
+              onNavigateUp={handleNavigateUp}
+              currentScopeId={currentScopeId}
+              autoGraphEnabled={autoGraphEnabled}
+              onSetAutoGraphEnabled={setAutoGraphEnabled}
+              selectedNodeIds={selectedNodeIds}
+              selectionHistory={selectionHistory}
+              onNodeSelect={(id, multi) => {
+                if (id === null) {
+                  setSelectedNodeIds(new Set());
+                  // Don't clear history - keep for focus fallback
+                } else if (multi === 'remove') {
+                  // Remove this specific node from selection (for minimize)
+                  setSelectedNodeIds((prev) => {
+                    const newSet = new Set(prev);
+                    newSet.delete(id);
+                    return newSet;
+                  });
+                } else if (multi) {
+                  // Add to existing selection without clearing others
+                  setSelectedNodeIds((prev) => new Set([...prev, id]));
+                  setSelectionHistory((prev) => {
+                    const filtered = prev.filter((nid) => nid !== id);
+                    return [id, ...filtered].slice(0, 5);
+                  });
+                } else {
+                  setSelectedNodeIds(new Set([id]));
+                  setSelectionHistory((prev) => {
+                    const filtered = prev.filter((nid) => nid !== id);
+                    return [id, ...filtered].slice(0, 5);
+                  });
+                }
+              }}
+              canvasShiftX={canvasShiftX}
+              canvasShiftY={canvasShiftY}
+              isResizing={isAnyPanelResizing}
+              onSelectionTooltipChange={setSelectionTooltip}
+              cutNodeId={cutNodeId}
+              setCutNodeId={setCutNodeId}
+              aiProvider={aiProvider}
+              // Physics simulation props
+              isSimulating={isSimulating}
+              startSimulation={startSimulation}
+              stopSimulation={stopSimulation}
+              physicsStartDrag={physicsStartDrag}
+              physicsUpdateDrag={physicsUpdateDrag}
+              physicsEndDrag={physicsEndDrag}
+              pinNode={pinNode}
+              unpinNode={unpinNode}
+              togglePinNode={togglePinNode}
+            />
+          </ErrorBoundary>
+        ) : (
+          <ChatModeContainer
+            nodes={nodes}
+            edges={edges}
+            initialNodeId={selectionHistory[0] ?? null}
+            selectionHistory={selectionHistory}
+            onClose={handleToggleViewMode}
             onUpdateNode={handleUpdateNode}
+            onCreateNode={handleCreateNodeForChatMode}
             onDeleteNode={handleDeleteNode}
-            expandingNodeIds={expandingNodeIds}
-            onToggleMenu={() => setIsOutlinePanelOpen(prev => !prev)}
-            connectingNodeId={connectingNodeId}
-            onConnectStart={(id) => setConnectingNodeId(id)}
-            onConnectEnd={(s, t) => {
-              handleConnectEnd(s, t);
-              setConnectingNodeId(null);
-            }}
-            onCancelConnect={() => setConnectingNodeId(null)}
-            onNavigateDown={handleNavigateDown}
-            onNavigateUp={handleNavigateUp}
-            currentScopeId={currentScopeId}
-            autoGraphEnabled={autoGraphEnabled}
-            onSetAutoGraphEnabled={setAutoGraphEnabled}
-            selectedNodeIds={selectedNodeIds}
-            onNodeSelect={(id, multi) => {
-              if (id === null) {
-                setSelectedNodeIds(new Set());
-                setLastSelectedNodeId(null);
-              } else if (multi === 'remove') {
-                // Remove this specific node from selection (for minimize)
-                setSelectedNodeIds((prev) => {
-                  const newSet = new Set(prev);
-                  newSet.delete(id);
-                  return newSet;
-                });
-              } else if (multi) {
-                // Add to existing selection without clearing others
-                setSelectedNodeIds((prev) => new Set([...prev, id]));
-                setLastSelectedNodeId(id);
-              } else {
-                setSelectedNodeIds(new Set([id]));
-                setLastSelectedNodeId(id);
-              }
-            }}
-            canvasShiftX={canvasShiftX}
-            canvasShiftY={canvasShiftY}
-            isResizing={isAnyPanelResizing}
-            onSelectionTooltipChange={setSelectionTooltip}
-            cutNodeId={cutNodeId}
-            setCutNodeId={setCutNodeId}
+            onNavigateToNode={handleNavigateToNodeLink}
+            onOpenLink={handleOpenLink}
+            onExpandNode={handleExpandNode}
             aiProvider={aiProvider}
-            // Physics simulation props
-            isSimulating={isSimulating}
-            startSimulation={startSimulation}
-            stopSimulation={stopSimulation}
-            physicsStartDrag={physicsStartDrag}
-            physicsUpdateDrag={physicsUpdateDrag}
-            physicsEndDrag={physicsEndDrag}
-            pinNode={pinNode}
-            unpinNode={unpinNode}
-            togglePinNode={togglePinNode}
+            autoGraphEnabled={autoGraphEnabled}
           />
-        </ErrorBoundary>
+        )}
       </div>
 
       {sidePanels}
@@ -1040,13 +1112,15 @@ const App: React.FC = () => {
         isOpen={isOutlinePanelOpen}
         onClose={() => setIsOutlinePanelOpen(false)}
         nodes={nodes}
+        viewportNodeIds={viewportNodeIds}
+        hasViewportNodes={hasViewportNodes}
         selectedNodeIds={selectedNodeIds}
-        lastSelectedNodeId={lastSelectedNodeId}
+        lastSelectedNodeId={selectionHistory[0] ?? null}
         currentScopeId={currentScopeId}
         onFocusNode={handleFocusNode}
       />
 
-      {selectionTooltip && !connectingNodeId && (
+      {selectionTooltip && !connectingNodeId && viewMode === 'graph' && (
         <SelectionTooltip
           tooltip={selectionTooltip}
           onClose={() => setSelectionTooltip(null)}
@@ -1112,6 +1186,10 @@ const App: React.FC = () => {
             onOpenStorage={handleOpenStorage}
             onStartMigration={handleStartMigration}
             migrationProgress={migrationProgress}
+            physicsConfig={physicsConfig}
+            onPhysicsConfigChange={setPhysicsConfig}
+            isSimulating={isSimulating}
+            onStopSimulation={stopSimulation}
           />
         </ErrorBoundary>
       )}
@@ -1148,19 +1226,30 @@ const App: React.FC = () => {
         onClose={() => setToast((p) => ({ ...p, visible: false }))}
       />
 
-      {/* Physics Settings Panel */}
-      <PhysicsSettingsPanel
-        config={physicsConfig}
-        onConfigChange={setPhysicsConfig}
-        isSimulating={isSimulating}
-        onStopSimulation={stopSimulation}
-      />
-
       {/* Migration Progress Bar */}
       {migrationProgress?.isRunning && (
         <MigrationProgressBar
           progress={migrationProgress}
           onCancel={handleCancelMigration}
+        />
+      )}
+
+      {/* Chat Mode */}
+      {viewMode === 'chat' && (
+        <ChatModeContainer
+          nodes={nodes}
+          edges={edges}
+          initialNodeId={selectedNodeIds.size > 0 ? Array.from(selectedNodeIds)[0] : null}
+          selectionHistory={selectionHistory}
+          onClose={() => setViewMode('graph')}
+          onUpdateNode={handleUpdateNode}
+          onCreateNode={handleCreateNodeForChatMode}
+          onDeleteNode={handleDeleteNode}
+          onNavigateToNode={handleNavigateToNodeLink}
+          onOpenLink={handleOpenLink}
+          onExpandNode={handleExpandNode}
+          aiProvider={aiProvider}
+          autoGraphEnabled={autoGraphEnabled}
         />
       )}
     </div>

@@ -8,6 +8,8 @@ export const MIN_NODE_WIDTH = 250;
 export const MIN_NODE_HEIGHT = 180;
 export const NODE_HEADER_HEIGHT = 40;
 export const MOBILE_NODE_WIDTH = 280;
+export const MOBILE_NODE_TITLE_PADDING = 48;  // px-4*2 + borders + buffer for dynamic width
+export const MOBILE_NODE_MAX_WIDTH = 350;     // Maximum width for mobile nodes
 
 export const GEMINI_MODEL_FAST = "gemini-2.5-flash";
 
@@ -69,13 +71,14 @@ export const WIKIDATA_MAX_RECURSIVE_NODES_PER_LEVEL = 5;
 // Physics simulation defaults
 export const DEFAULT_PHYSICS_CONFIG: PhysicsConfig = {
   physicsEnabled: true,           // Physics simulation enabled by default
-  springConstant: 0.04,           // Edge spring strength
-  springLength: 200,              // Ideal edge length in pixels
-  springDamping: 0.09,            // Spring force damping
-  gravityConstant: 0.05,          // Pull toward subtree center
-  subtreeRepulsionConstant: -2000, // Negative = repulsion between subtree centroids
+  collisionOnly: true,            // Only resolve overlaps, no springs/gravity/repulsion
+  springConstant: 0,              // Disabled in collision-only mode
+  springLength: 200,              // Ideal edge length in pixels (unused in collision-only)
+  springDamping: 0.09,            // Spring force damping (unused in collision-only)
+  gravityConstant: 0,             // Disabled in collision-only mode
+  subtreeRepulsionConstant: 0,    // Disabled in collision-only mode
   collisionPadding: 20,           // Extra padding for collision detection
-  childFollowTightness: 0.3,      // How quickly children follow dragged parent
+  childFollowTightness: 0.3,      // Unused in collision-only mode (rigid subtree instead)
   velocityThreshold: 0.5,         // Stabilization threshold (pixels/tick)
   maxIterations: 300,             // Safety limit on simulation ticks
   dampingFactor: 0.85,            // Velocity decay per tick

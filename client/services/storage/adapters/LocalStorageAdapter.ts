@@ -1,9 +1,10 @@
 import { GraphNode, GraphEdge, EmbeddedEdge, NodeType, NodeColor } from '../../../types';
-import { ViewportBounds, NodePositionIndex, SpatialIndexEntry, StorageAdapter, DeletedNodeEntry } from '../types';
+import { ViewportBounds, NodePositionIndex, SpatialIndexEntry, LocalStorageAdapterInterface, DeletedNodeEntry } from '../types';
 import { DeletionStackService } from '../DeletionStackService';
 import { NodeArchiveService } from '../NodeArchiveService';
 import yaml from 'js-yaml';
 import * as d3 from 'd3';
+import { formatChatContent, extractChatTitle, extractPrefixContent } from '../../../utils/chatFormatUtils';
 
 /**
  * LocalStorageAdapter provides viewport-based access to local file system storage.
@@ -14,7 +15,7 @@ import * as d3 from 'd3';
  * - Loads full node content only for visible viewport
  * - Debounced saves with web lock for concurrent safety
  */
-export class LocalStorageAdapter implements StorageAdapter {
+export class LocalStorageAdapter implements LocalStorageAdapterInterface {
   private dirHandle: FileSystemDirectoryHandle | null = null;
   private nodeIndex: Map<string, NodePositionIndex> = new Map();
   private extendedIndex: Map<string, SpatialIndexEntry> = new Map(); // Extended index with metadata
@@ -444,8 +445,17 @@ export class LocalStorageAdapter implements StorageAdapter {
 
         const frontmatter = yaml.dump(metadata);
 
-        // Body is just the content (markdown with title as first heading)
-        const body = node.content || '';
+        // For CHAT nodes with messages, format messages into the body
+        let body = node.content || '';
+        if (node.type === NodeType.CHAT && node.messages && node.messages.length > 0) {
+          const title = extractChatTitle(body);
+          const prefix = extractPrefixContent(body);
+          const formattedMessages = formatChatContent(
+            node.messages.map(m => ({ role: m.role, text: m.text })),
+            title
+          );
+          body = prefix ? `${prefix}\n\n${formattedMessages}` : formattedMessages;
+        }
 
         const fileContent = `---\n${frontmatter}---\n\n${body}`;
 

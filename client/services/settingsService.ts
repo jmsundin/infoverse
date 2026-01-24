@@ -10,6 +10,8 @@ const KEYS = {
   SKIP_DELETE_CONFIRM: 'infoverse_skip_delete_confirm',
   MIGRATED_V2: 'infoverse_migrated_v2',
   PHYSICS_CONFIG: 'infoverse_physics_config',
+  SELECTION_HISTORY: 'infoverse_selection_history',
+  ENABLE_SQLITE: 'infoverse_enable_sqlite',
 } as const;
 
 export type Theme = 'dark' | 'light' | 'system';
@@ -162,4 +164,46 @@ export const setPhysicsConfig = (config: Partial<PhysicsConfig>): void => {
 export const resetPhysicsConfig = (): void => {
   if (!isBrowser) return;
   localStorage.removeItem(KEYS.PHYSICS_CONFIG);
+};
+
+// Selection History (last 5 selected node IDs for focus canvas)
+export const getSelectionHistory = (): string[] => {
+  if (!isBrowser) return [];
+  const stored = localStorage.getItem(KEYS.SELECTION_HISTORY);
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed)) {
+        return parsed.slice(0, 5);
+      }
+    } catch {
+      return [];
+    }
+  }
+  return [];
+};
+
+export const setSelectionHistory = (history: string[]): void => {
+  if (!isBrowser) return;
+  localStorage.setItem(KEYS.SELECTION_HISTORY, JSON.stringify(history.slice(0, 5)));
+};
+
+// SQLite Storage Backend Feature Flag
+export const isSQLiteEnabled = (): boolean => {
+  if (!isBrowser) return false;
+  // Check environment variable first (for forcing via build config)
+  if (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_ENABLE_SQLITE === 'true') {
+    return true;
+  }
+  // Then check localStorage for user preference
+  return localStorage.getItem(KEYS.ENABLE_SQLITE) === 'true';
+};
+
+export const setSQLiteEnabled = (enabled: boolean): void => {
+  if (!isBrowser) return;
+  if (enabled) {
+    localStorage.setItem(KEYS.ENABLE_SQLITE, 'true');
+  } else {
+    localStorage.removeItem(KEYS.ENABLE_SQLITE);
+  }
 };

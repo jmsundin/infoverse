@@ -99,6 +99,7 @@ export interface StorageConfig {
   regionGridSize: number; // Grid cell size for region tracking (e.g., 1000)
   syncDebounceMs: number; // Debounce time for saves (e.g., 2000)
   maxCacheSize: number; // Max nodes to keep in LRU cache
+  useSQLite?: boolean; // Feature flag: use SQLite for local storage instead of quadtree
 }
 
 export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
@@ -109,6 +110,7 @@ export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
   regionGridSize: 1000,
   syncDebounceMs: 500,
   maxCacheSize: 500,
+  useSQLite: false, // Default to quadtree, opt-in for SQLite
 };
 
 // Events emitted by the storage service
@@ -118,7 +120,8 @@ export type StorageEventType =
   | 'sync-conflict'
   | 'save-error'
   | 'loading-start'
-  | 'loading-complete';
+  | 'loading-complete'
+  | 'bootstrap-progress'; // SQLite bootstrap progress
 
 export interface StorageEvent {
   type: StorageEventType;
@@ -155,6 +158,25 @@ export interface StorageAdapter {
   saveNode(node: GraphNode, edges?: GraphEdge[]): Promise<void>;
   deleteNode(nodeId: string): Promise<void>;
   isEnabled(): boolean;
+}
+
+// Extended interface for local storage adapters (both quadtree and SQLite)
+export interface LocalStorageAdapterInterface extends StorageAdapter {
+  initialize(dirHandle?: FileSystemDirectoryHandle): Promise<void>;
+  loadEdgesForNodes(nodeIds: Set<string>): Promise<GraphEdge[]>;
+  loadAllEdges(): Promise<GraphEdge[]>;
+  getNodePosition(nodeId: string): NodePositionIndex | undefined;
+  getNodePositionsInBounds(bounds: ViewportBounds): NodePositionIndex[];
+  updateNodePositionInIndex(nodeId: string, x: number, y: number, width?: number, height?: number): void;
+  getAllSpatialIndex(): SpatialIndexEntry[];
+  getExtendedMetadata(nodeId: string): SpatialIndexEntry | undefined;
+  getAllNodeIds(): string[];
+  restoreNode(): Promise<DeletedNodeEntry | null>;
+  getDeletionStackSize(): number;
+  pruneDeletionStack(maxAgeMs?: number): Promise<number>;
+  pruneNodeArchive?(maxAgeMs?: number): Promise<number>; // Optional: only LocalStorageAdapter has archive
+  saveNodeImmediate(node: GraphNode, edges?: GraphEdge[]): Promise<void>;
+  flush(): Promise<void>;
 }
 
 // Deletion stack types for soft delete feature

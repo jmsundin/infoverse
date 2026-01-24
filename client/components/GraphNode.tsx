@@ -20,7 +20,8 @@ import {
 } from "../types";
 import * as geminiService from "../services/geminiService";
 import * as hfService from "../services/huggingfaceService";
-import { NODE_HEADER_HEIGHT, NODE_COLORS, MOBILE_NODE_WIDTH } from "../constants";
+import { NODE_HEADER_HEIGHT, NODE_COLORS, MOBILE_NODE_WIDTH, MIN_NODE_WIDTH, MOBILE_NODE_MAX_WIDTH, MOBILE_NODE_TITLE_PADDING } from "../constants";
+import { calculateMobileNodeWidth } from "../utils/textMeasurement";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { SidePanelContext } from "./SidePanel";
@@ -55,6 +56,7 @@ interface GraphNodeProps {
     direction: ResizeDirection
   ) => void;
   onToggleMaximize?: (id: string) => void;
+  onExpandInline?: (id: string) => void;
   onMinimize?: (id: string) => void;
   onOpenLink?: (url: string) => void;
   onNavigateToNode?: (title: string) => void;
@@ -92,6 +94,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     onDelete,
     onResizeStart,
     onToggleMaximize,
+    onExpandInline,
     onMinimize,
     onOpenLink,
     onNavigateToNode,
@@ -158,6 +161,17 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     const isCompact = !isSidebar && !effectiveExpanded;
 
     const titleText = deriveTitleFromContent(node.content || '') || node.summary || 'Untitled';
+
+    // Calculate dynamic width for mobile based on title length
+    const dynamicMobileWidth = useMemo(() => {
+      return calculateMobileNodeWidth(
+        titleText,
+        isMobile ?? false,
+        MIN_NODE_WIDTH,
+        MOBILE_NODE_MAX_WIDTH,
+        MOBILE_NODE_TITLE_PADDING
+      );
+    }, [titleText, isMobile]);
 
     // --- Long Press & Double Click Handlers ---
 
@@ -526,7 +540,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       ? "none"
       : "box-shadow 0.2s, transform 0.2s"; // Removed position transition to ensure edges stay attached
 
-    const defaultWidth = isMobile ? MOBILE_NODE_WIDTH : 300;
+    const defaultWidth = isMobile ? (dynamicMobileWidth ?? MOBILE_NODE_WIDTH) : 300;
     const computedStyle: React.CSSProperties = isSidebar
       ? {
           width: "100%",
@@ -905,6 +919,36 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                   </button>
                 )}
 
+                {onExpandInline && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onExpandInline(node.id);
+                    }}
+                    className="min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 rounded hover:bg-slate-700/50 transition-colors text-slate-400 hover:text-green-400 flex items-center justify-center"
+                    title="Expand Node"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onTouchStart={(e) => e.stopPropagation()}
+                  >
+                    {/* mini expand icon */}
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <polyline points="15 5 19 5 19 9" />
+                      <polyline points="9 19 5 19 5 15" />
+                      <line x1="19" y1="5" x2="14" y2="10" />
+                      <line x1="5" y1="19" x2="10" y2="14" />
+                    </svg>
+                  </button>
+                )}
+
                 {onMinimize && (
                   <button
                     onClick={(e) => {
@@ -1275,12 +1319,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                   </>
                 )}
 
-                {!isSidebar && node.scopeId && (
-                  <span className="text-[10px] bg-sky-900/50 text-sky-300 px-1 rounded ml-1 border border-sky-800">
-                    SUB
-                  </span>
-                )}
-              </div>
+                              </div>
 
               {isSidebar && (
                 <div className="flex items-center gap-2">

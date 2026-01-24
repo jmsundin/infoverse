@@ -1,5 +1,7 @@
 {
   "version": 2,
+  "installCommand": "bun install",
+  "buildCommand": "bun run build",
   "rewrites": [
     {
       "source": "/api/:match*",
@@ -7,4 +9,3 @@
     }
   ]
 }
-

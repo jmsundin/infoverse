@@ -1,5 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { MigrationProgress } from '../services/migration/types';
+import { PhysicsConfig } from '../types';
+import { DEFAULT_PHYSICS_CONFIG } from '../constants';
+import { Slider } from './PhysicsSettingsPanel';
 
 interface ProfilePageProps {
   user: {
@@ -21,6 +24,11 @@ interface ProfilePageProps {
   onOpenStorage?: () => void;
   onStartMigration?: () => void;
   migrationProgress?: MigrationProgress | null;
+  // Physics props
+  physicsConfig: PhysicsConfig;
+  onPhysicsConfigChange: (config: Partial<PhysicsConfig>) => void;
+  isSimulating?: boolean;
+  onStopSimulation?: () => void;
 }
 
 export const ProfilePage: React.FC<ProfilePageProps> = ({
@@ -35,8 +43,12 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   onOpenStorage,
   onStartMigration,
   migrationProgress = null,
+  physicsConfig,
+  onPhysicsConfigChange,
+  isSimulating = false,
+  onStopSimulation,
 }) => {
-  const [activeTab, setActiveTab] = useState<'settings' | 'billing' | 'storage'>('settings');
+  const [activeTab, setActiveTab] = useState<'settings' | 'billing' | 'storage' | 'physics'>('settings');
   const [username, setUsername] = useState(user.username);
   const [email, setEmail] = useState(user.email || '');
   const [password, setPassword] = useState('');
@@ -163,6 +175,20 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     }
   };
 
+  const handleResetPhysics = useCallback(() => {
+    onPhysicsConfigChange(DEFAULT_PHYSICS_CONFIG);
+  }, [onPhysicsConfigChange]);
+
+  const handleTogglePhysics = useCallback(() => {
+    const newEnabled = !physicsConfig.physicsEnabled;
+    if (!newEnabled && onStopSimulation) {
+      onStopSimulation();
+    }
+    onPhysicsConfigChange({ physicsEnabled: newEnabled });
+  }, [physicsConfig.physicsEnabled, onPhysicsConfigChange, onStopSimulation]);
+
+  const isPhysicsEnabled = physicsConfig.physicsEnabled !== false;
+
   return (
     <div className="fixed inset-0 bg-slate-900/90 z-[60] flex items-center justify-center p-4">
       <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
@@ -201,6 +227,19 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
             }`}
           >
             Storage
+          </button>
+          <button
+            onClick={() => setActiveTab('physics')}
+            className={`flex-1 py-3 text-sm font-medium transition-colors ${
+              activeTab === 'physics'
+                ? 'bg-slate-700 text-sky-400 border-b-2 border-sky-400'
+                : 'text-slate-400 hover:bg-slate-750 hover:text-white'
+            }`}
+          >
+            Physics
+            {isSimulating && (
+              <span className="ml-2 inline-block w-2 h-2 bg-sky-500 rounded-full animate-pulse" />
+            )}
           </button>
         </div>
 
@@ -461,6 +500,105 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
                     Last migration: {new Date(migrationProgress.lastMigrationTimestamp).toLocaleString()}
                   </p>
                 )}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'physics' && (
+            <div className="space-y-6">
+              <div className="bg-slate-900 rounded-lg p-6 border border-slate-700">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-lg font-bold text-white">Physics Simulation</h3>
+                    {isSimulating && (
+                      <span className="w-2 h-2 bg-sky-500 rounded-full animate-pulse" />
+                    )}
+                  </div>
+                  <button
+                    onClick={handleTogglePhysics}
+                    className={`relative w-11 h-6 rounded-full transition-colors ${
+                      isPhysicsEnabled ? 'bg-sky-500' : 'bg-slate-600'
+                    }`}
+                    title={isPhysicsEnabled ? 'Disable physics' : 'Enable physics'}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
+                        isPhysicsEnabled ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+                <p className="text-sm text-slate-400 mb-4">
+                  Configure how nodes interact with physics forces on the canvas.
+                </p>
+
+                <div className={`space-y-1 ${!isPhysicsEnabled ? 'opacity-50 pointer-events-none' : ''}`}>
+                  <Slider
+                    label="Spring Strength"
+                    value={physicsConfig.springConstant}
+                    min={0.01}
+                    max={0.2}
+                    step={0.01}
+                    onChange={(v) => onPhysicsConfigChange({ springConstant: v })}
+                  />
+
+                  <Slider
+                    label="Spring Length"
+                    value={physicsConfig.springLength}
+                    min={50}
+                    max={500}
+                    step={10}
+                    unit="px"
+                    onChange={(v) => onPhysicsConfigChange({ springLength: v })}
+                  />
+
+                  <Slider
+                    label="Child Follow Tightness"
+                    value={physicsConfig.childFollowTightness}
+                    min={0.05}
+                    max={1}
+                    step={0.05}
+                    onChange={(v) => onPhysicsConfigChange({ childFollowTightness: v })}
+                  />
+
+                  <Slider
+                    label="Damping"
+                    value={physicsConfig.dampingFactor}
+                    min={0.5}
+                    max={0.99}
+                    step={0.01}
+                    onChange={(v) => onPhysicsConfigChange({ dampingFactor: v })}
+                  />
+
+                  <Slider
+                    label="Gravity"
+                    value={physicsConfig.gravityConstant}
+                    min={0}
+                    max={0.2}
+                    step={0.01}
+                    onChange={(v) => onPhysicsConfigChange({ gravityConstant: v })}
+                  />
+
+                  <Slider
+                    label="Subtree Repulsion"
+                    value={Math.abs(physicsConfig.subtreeRepulsionConstant)}
+                    min={0}
+                    max={5000}
+                    step={100}
+                    onChange={(v) => onPhysicsConfigChange({ subtreeRepulsionConstant: -v })}
+                  />
+                </div>
+
+                <div className="mt-4 pt-4 border-t border-slate-700">
+                  <button
+                    onClick={handleResetPhysics}
+                    className="w-full px-4 py-2 text-sm font-medium text-slate-400
+                      bg-slate-700/50 hover:bg-slate-700 hover:text-white
+                      rounded-lg transition-colors"
+                  >
+                    Reset to Defaults
+                  </button>
+                </div>
               </div>
             </div>
           )}
