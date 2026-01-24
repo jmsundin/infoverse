@@ -19,6 +19,7 @@ export interface EmbeddedEdge {
   id: string;
   target: string;
   label: string;
+  scopeId?: string;
 }
 
 // Persisted fields (stored in markdown frontmatter)

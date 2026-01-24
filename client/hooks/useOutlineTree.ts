@@ -165,8 +165,13 @@ export const useOutlineTree = (
     // Get ancestors if there's a selected node
     const ancestors = selectedNode ? getAncestors(selectedNode.id) : [];
 
-    // Always build full tree from root nodes in current scope
-    const rootNodes = childrenByParent.get(currentScopeId ?? null) || [];
+    // Get nodes in current scope
+    let rootNodes = childrenByParent.get(currentScopeId ?? null) || [];
+
+    // Fall back to global index (all root-level nodes) if current scope is empty
+    if (rootNodes.length === 0 && currentScopeId !== null) {
+      rootNodes = childrenByParent.get(null) || [];
+    }
 
     // Apply search filtering to root nodes
     let filteredRootNodes = isFiltering

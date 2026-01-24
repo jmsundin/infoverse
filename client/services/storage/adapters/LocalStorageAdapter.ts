@@ -254,6 +254,7 @@ export class LocalStorageAdapter implements LocalStorageAdapterInterface {
                 source: result.node.id,
                 target: edge.target,
                 label: edge.label,
+                scopeId: edge.scopeId,
               });
             }
           }
@@ -288,6 +289,7 @@ export class LocalStorageAdapter implements LocalStorageAdapterInterface {
               source: result.node.id,
               target: edge.target,
               label: edge.label,
+              scopeId: edge.scopeId,
             });
           }
         }
@@ -440,6 +442,7 @@ export class LocalStorageAdapter implements LocalStorageAdapterInterface {
             id: edge.id,
             target: edge.target,
             label: edge.label,
+            scopeId: edge.scopeId,
           }));
         }
 

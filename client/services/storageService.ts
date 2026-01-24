@@ -215,6 +215,7 @@ export const loadGraphFromDirectory = async (
                 source: node.id,
                 target: edge.target,
                 label: edge.label,
+                scopeId: edge.scopeId,
               });
             }
           }
