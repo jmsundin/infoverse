@@ -67,6 +67,7 @@ export const ChatModeContainer: React.FC<ChatModeContainerProps> = ({
     scrollContainerRef,
   } = useChatMode({
     nodes,
+    edges,
     initialNodeId: entryNodeId,
     onCreateNode: handleCreateNode,
   });

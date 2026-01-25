@@ -1,16 +1,16 @@
 import { useState, useCallback, useRef, useMemo } from 'react';
-import { GraphNode, NodeType } from '../types';
+import { GraphNode, GraphEdge, NodeType } from '../types';
 
 export interface ChatModeState {
   focusedNodeId: string | null;
   panelStack: string[];           // Ancestry chain [grandparent, parent, focused]
-  childBubbles: Map<string, string[]>; // parentId -> minimized childIds
   expandedBubbleId: string | null;     // Bubble showing title preview
   isAnimating: boolean;
 }
 
 export interface UseChatModeProps {
   nodes: GraphNode[];
+  edges: GraphEdge[];
   initialNodeId: string | null;
   onCreateNode: (parentId: string, type: NodeType, selectedText?: string) => string;
 }
@@ -47,6 +47,7 @@ function buildPanelStack(nodeId: string, nodes: GraphNode[]): string[] {
 
 export function useChatMode({
   nodes,
+  edges,
   initialNodeId,
   onCreateNode,
 }: UseChatModeProps): UseChatModeReturn {
@@ -68,7 +69,6 @@ export function useChatMode({
     return id ? buildPanelStack(id, nodes) : [];
   });
 
-  const [childBubbles, setChildBubbles] = useState<Map<string, string[]>>(new Map());
   const [expandedBubbleId, setExpandedBubbleId] = useState<string | null>(null);
   const [isAnimating, setIsAnimating] = useState(false);
 
@@ -115,17 +115,6 @@ export function useChatMode({
     // Build new panel stack from this node's ancestry
     const newStack = buildPanelStack(nodeId, nodes);
 
-    // Clear any child bubbles for nodes no longer in stack
-    setChildBubbles(prev => {
-      const newBubbles = new Map<string, string[]>();
-      // Only keep bubbles for the focused node
-      const existingBubbles = prev.get(nodeId);
-      if (existingBubbles) {
-        newBubbles.set(nodeId, existingBubbles);
-      }
-      return newBubbles;
-    });
-
     setPanelStack(newStack);
     setFocusedNodeId(nodeId);
     setExpandedBubbleId(null);
@@ -136,27 +125,6 @@ export function useChatMode({
 
   // Create a child panel from selected text
   const createChildPanel = useCallback((parentId: string, type: NodeType, selectedText?: string) => {
-    // Find if there's already a child panel visible (node in stack whose parent is parentId)
-    const existingChildInStack = panelStack.find(id => {
-      const node = nodes.find(n => n.id === id);
-      return node?.parentId === parentId;
-    });
-
-    // If there's an existing child panel, minimize it to bubble
-    if (existingChildInStack) {
-      setChildBubbles(prev => {
-        const newBubbles = new Map(prev);
-        const existing = newBubbles.get(parentId) ?? [];
-        if (!existing.includes(existingChildInStack)) {
-          newBubbles.set(parentId, [...existing, existingChildInStack]);
-        }
-        return newBubbles;
-      });
-
-      // Remove from panel stack
-      setPanelStack(prev => prev.filter(id => id !== existingChildInStack));
-    }
-
     // Create new child node
     const newChildId = onCreateNode(parentId, type, selectedText);
 
@@ -176,7 +144,7 @@ export function useChatMode({
     setTimeout(() => animateScrollToPanel(newChildId), 100);
 
     return newChildId;
-  }, [panelStack, nodes, onCreateNode, animateScrollToPanel]);
+  }, [onCreateNode, animateScrollToPanel]);
 
   // Preview a bubble (first tap - show title)
   const previewBubble = useCallback((nodeId: string) => {
@@ -209,32 +177,6 @@ export function useChatMode({
     const parentId = node.parentId;
     if (!parentId) return;
 
-    // Remove from bubbles
-    setChildBubbles(prev => {
-      const newBubbles = new Map(prev);
-      const existing = newBubbles.get(parentId) ?? [];
-      newBubbles.set(parentId, existing.filter(id => id !== nodeId));
-      return newBubbles;
-    });
-
-    // Find if there's already a child panel visible
-    const currentChildInStack = panelStack.find(id => {
-      const n = nodes.find(node => node.id === id);
-      return n?.parentId === parentId && id !== nodeId;
-    });
-
-    // Minimize current child if any
-    if (currentChildInStack) {
-      setChildBubbles(prev => {
-        const newBubbles = new Map(prev);
-        const existing = newBubbles.get(parentId) ?? [];
-        if (!existing.includes(currentChildInStack)) {
-          newBubbles.set(parentId, [...existing, currentChildInStack]);
-        }
-        return newBubbles;
-      });
-    }
-
     // Update panel stack: keep up to parent, then add expanded node
     setPanelStack(prev => {
       const parentIndex = prev.indexOf(parentId);
@@ -247,7 +189,7 @@ export function useChatMode({
 
     // Scroll to show expanded panel
     setTimeout(() => animateScrollToPanel(nodeId), 100);
-  }, [nodes, panelStack, animateScrollToPanel]);
+  }, [nodes, animateScrollToPanel]);
 
   // Navigate to parent panel
   const navigateToParent = useCallback(() => {
@@ -267,12 +209,18 @@ export function useChatMode({
       .filter((n): n is GraphNode => n !== undefined);
   }, [panelStack, nodes]);
 
-  // Get child bubbles for the focused node
+  // Get child bubbles for the focused node (derived from edges)
   const getChildBubbles = useCallback((): Array<{ node: GraphNode; isExpanded: boolean }> => {
     if (!focusedNodeId) return [];
 
-    const bubbleIds = childBubbles.get(focusedNodeId) ?? [];
-    return bubbleIds
+    // Get child IDs from edges where this node is the source
+    const childIds = edges
+      .filter(e => e.source === focusedNodeId)
+      .map(e => e.target);
+
+    // Filter out nodes already visible in panel stack
+    return childIds
+      .filter(id => !panelStack.includes(id))
       .map(id => {
         const node = nodes.find(n => n.id === id);
         if (!node) return null;
@@ -282,16 +230,15 @@ export function useChatMode({
         };
       })
       .filter((b): b is { node: GraphNode; isExpanded: boolean } => b !== null);
-  }, [focusedNodeId, childBubbles, nodes, expandedBubbleId]);
+  }, [focusedNodeId, edges, nodes, panelStack, expandedBubbleId]);
 
   // Compose state object
   const state = useMemo((): ChatModeState => ({
     focusedNodeId,
     panelStack,
-    childBubbles,
     expandedBubbleId,
     isAnimating,
-  }), [focusedNodeId, panelStack, childBubbles, expandedBubbleId, isAnimating]);
+  }), [focusedNodeId, panelStack, expandedBubbleId, isAnimating]);
 
   return {
     state,

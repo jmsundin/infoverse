@@ -239,7 +239,13 @@ const App: React.FC = () => {
 
             // Use viewport storage when enabled, otherwise fall back to legacy persistence
             if (USE_VIEWPORT_STORAGE && viewportStorage.isInitialized) {
-              viewportStorage.updateNode(n, !semanticChanged);
+              if (!p) {
+                // New node - use addNode
+                viewportStorage.addNode(n, !semanticChanged);
+              } else {
+                // Existing node - use updateNode
+                viewportStorage.updateNode(n, !semanticChanged);
+              }
             } else {
               markNodeDirty(n, !semanticChanged);
             }
