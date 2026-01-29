@@ -190,8 +190,8 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   const isPhysicsEnabled = physicsConfig.physicsEnabled !== false;
 
   return (
-    <div className="fixed inset-0 bg-slate-900/90 z-[60] flex items-center justify-center p-4">
-      <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 bg-slate-900/90 z-[60] flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
         <div className="p-4 border-b border-slate-700 flex justify-between items-center bg-slate-900/50">
           <h2 className="text-xl font-bold text-white">Account Settings</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-white">✕</button>

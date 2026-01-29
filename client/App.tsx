@@ -1,5 +1,4 @@
 import React, {
-  useState,
   useEffect,
   useRef,
   useCallback,
@@ -7,6 +6,7 @@ import React, {
 } from "react";
 import { useAuth } from "./context/AuthContext";
 import { useStorage } from "./context/StorageContext";
+import { useSelector, useDispatch } from "./hooks/useAppStore";
 import { Canvas } from "./components/Canvas";
 import { SidePanel, WebContent } from "./components/SidePanel";
 import { GraphNodeComponent } from "./components/GraphNode";
@@ -23,23 +23,18 @@ import { Breadcrumbs } from "./components/Breadcrumbs";
 import { HeaderActions } from "./components/HeaderActions";
 import { ScopeIndicator } from "./components/ScopeIndicator";
 import { OutlineTreePanel } from "./components/OutlineTreePanel";
-import { ChatModeContainer } from "./components/ChatMode";
+import { ChatModeContainer, ChatModeSidebar } from "./components/ChatMode";
 import { MigrationProgressBar } from "./components/MigrationProgressBar";
 import { getMigrationService } from "./services/migration/MigrationService";
-import { MigrationProgress } from "./services/migration/types";
 import {
   GraphEdge,
   GraphNode,
   NodeType,
   ViewportTransform,
-  SelectionTooltipState,
-  PhysicsConfig,
 } from "./types";
 import {
   DEFAULT_NODE_HEIGHT,
   DEFAULT_NODE_WIDTH,
-  PARENT_NODE_HEIGHT,
-  PARENT_NODE_WIDTH,
 } from "./constants";
 import {
   pickDirectory,
@@ -57,21 +52,12 @@ import {
   updateUserSettings,
 } from "./services/apiStorageService";
 import {
-  getAIProvider,
-  setAIProvider as saveAIProvider,
   getLastDirName,
   setLastDirName,
   cleanupLegacyStorage,
-  getPhysicsConfig,
-  setPhysicsConfig as savePhysicsConfig,
-  getSelectionHistory,
-  setSelectionHistory as saveSelectionHistory,
 } from "./services/settingsService";
 import { importFromCloud } from "./services/cloudSyncService";
-import { useGraphState } from "./hooks/useGraphState";
-import { usePersistence } from "./hooks/usePersistence";
 import { useViewportStorage, USE_VIEWPORT_STORAGE } from "./hooks/useViewportStorage";
-import { useSidePanes } from "./hooks/useSidePanes";
 import { useExpansion } from "./hooks/useExpansion";
 import { useNavigation } from "./hooks/useNavigation";
 import { useGraphOperations } from "./hooks/useGraphOperations";
@@ -82,92 +68,162 @@ import { useViewportNodes } from "./hooks/useViewportNodes";
 import { createDefaultGraphNodes } from "./utils/graphUtils";
 import { performGreedyClustering } from "./utils/clustering";
 
-import { StorageTest } from './components/StorageTest';
-
 const App: React.FC = () => {
-  // --- Auth & Storage from Context ---
-  const { user, setUser, login, logout, isLoading: authLoading } = useAuth();
+  const dispatch = useDispatch();
+
+  // --- Read state from store ---
+  const nodes = useSelector((s) => s.nodes);
+  const edges = useSelector((s) => s.edges);
+  const currentScopeId = useSelector((s) => s.currentScopeId);
+  const selectedNodeIds = useSelector((s) => s.selectedNodeIds);
+  const viewTransform = useSelector((s) => s.viewTransform);
+  const viewMode = useSelector((s) => s.viewMode);
+  const connectingNodeId = useSelector((s) => s.connectingNodeId);
+  const selectionTooltip = useSelector((s) => s.selectionTooltip);
+  const toast = useSelector((s) => s.toast);
+  const searchExpanded = useSelector((s) => s.searchExpanded);
+  const isOutlinePanelOpen = useSelector((s) => s.isOutlinePanelOpen);
+  const canvasShiftX = useSelector((s) => s.canvasShiftX);
+  const canvasShiftY = useSelector((s) => s.canvasShiftY);
+  const windowSize = useSelector((s) => s.windowSize);
+  const autoGraphEnabled = useSelector((s) => s.autoGraphEnabled);
+  const aiProvider = useSelector((s) => s.aiProvider);
+  const physicsConfig = useSelector((s) => s.physicsConfig);
+  const selectionHistory = useSelector((s) => s.selectionHistory);
+  const showAuth = useSelector((s) => s.showAuth);
+  const authMode = useSelector((s) => s.authMode);
+  const showProfile = useSelector((s) => s.showProfile);
+  const showLimitModal = useSelector((s) => s.showLimitModal);
+  const showUpgradeModal = useSelector((s) => s.showUpgradeModal);
+  const usageNotification = useSelector((s) => s.usageNotification);
+  const cutNodeId = useSelector((s) => s.cutNodeId);
+  const migrationProgress = useSelector((s) => s.migrationProgress);
+  const dirHandle = useSelector((s) => s.dirHandle);
+  const dirName = useSelector((s) => s.dirName);
+  const user = useSelector((s) => s.user);
+  const authLoading = useSelector((s) => s.authLoading);
+  const activeSidePanes = useSelector((s) => s.activeSidePanes);
+  const sidePanelLayouts = useSelector((s) => s.sidePanelLayouts);
+
+  // --- Auth & Storage from Context (for service functions only) ---
+  const { login, logout } = useAuth();
   const { storageMode, isMigrating, initializeInMemory, restoreLastDeletedNode, getDeletionStackSize } = useStorage();
 
-  // --- Hooks for State ---
-  const {
-    nodes,
-    setNodes,
-    edges,
-    setEdges,
-    currentScopeId,
-    setCurrentScopeId,
-    selectedNodeIds,
-    setSelectedNodeIds,
-    setIsGraphLoaded,
-  } = useGraphState();
-
-  const [autoGraphEnabled, setAutoGraphEnabled] = useState<boolean>(true);
-  const [viewTransform, setViewTransform] = useState<ViewportTransform>({
-    x: 0,
-    y: 0,
-    k: 1,
-  });
-  const [connectingNodeId, setConnectingNodeId] = useState<string | null>(null);
-  const [selectionTooltip, setSelectionTooltip] =
-    useState<SelectionTooltipState | null>(null);
-  const [toast, setToast] = useState<{
-    visible: boolean;
-    message: string;
-    action?: () => void;
-  }>({ visible: false, message: "" });
-  const [dirHandle, setDirHandle] = useState<FileSystemDirectoryHandle | null>(
-    null
+  // --- Thin setter wrappers for hooks that still expect individual setters ---
+  const setNodes = useCallback(
+    (v: GraphNode[] | ((prev: GraphNode[]) => GraphNode[])) => {
+      // For functional updates, we need to resolve against current state
+      // Hooks pass functional updates, so we handle both cases
+      if (typeof v === 'function') {
+        // We need the current nodes to resolve the updater
+        // This is a bit of a hack but necessary for backward compat with hooks
+        dispatch({ type: 'NODES_SET', nodes: v(nodes) });
+      } else {
+        dispatch({ type: 'NODES_SET', nodes: v });
+      }
+    },
+    [dispatch, nodes]
   );
-  const [dirName, setDirName] = useState<string | null>(null);
-  const [showAuth, setShowAuth] = useState(false);
-  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
-  const [showProfile, setShowProfile] = useState(false);
-  const [usageNotification, setUsageNotification] = useState<{
-    message: string;
-    visible: boolean;
-  }>({ message: "", visible: false });
-  const [showLimitModal, setShowLimitModal] = useState(false);
-  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
-  const [isOutlinePanelOpen, setIsOutlinePanelOpen] = useState(false);
-  const [viewMode, setViewMode] = useState<'graph' | 'chat'>('graph');
-  const [selectionHistory, setSelectionHistory] = useState<string[]>(getSelectionHistory);
-  const [cutNodeId, setCutNodeId] = useState<string | null>(null);
-  const [aiProvider, setAiProviderState] = useState<"gemini" | "huggingface">(getAIProvider);
-  const [physicsConfig, setPhysicsConfigState] = useState<PhysicsConfig>(getPhysicsConfig);
-  const [migrationProgress, setMigrationProgress] = useState<MigrationProgress | null>(null);
 
-  // Window dimensions for viewport-based storage
-  const [windowSize, setWindowSize] = useState({ width: window.innerWidth, height: window.innerHeight });
+  const setEdges = useCallback(
+    (v: GraphEdge[] | ((prev: GraphEdge[]) => GraphEdge[])) => {
+      if (typeof v === 'function') {
+        dispatch({ type: 'EDGES_SET', edges: v(edges) });
+      } else {
+        dispatch({ type: 'EDGES_SET', edges: v });
+      }
+    },
+    [dispatch, edges]
+  );
 
-  // Track window resize for viewport calculations
-  useEffect(() => {
-    const handleResize = () => {
-      setWindowSize({ width: window.innerWidth, height: window.innerHeight });
-    };
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
+  const setCurrentScopeId = useCallback(
+    (id: string | null) => dispatch({ type: 'SCOPE_SET', scopeId: id }),
+    [dispatch]
+  );
 
-  // Wrapper to persist AI provider changes
-  const setAiProvider = useCallback((provider: "gemini" | "huggingface") => {
-    setAiProviderState(provider);
-    saveAIProvider(provider);
-  }, []);
+  const setSelectedNodeIds = useCallback(
+    (ids: Set<string> | ((prev: Set<string>) => Set<string>)) => {
+      if (typeof ids === 'function') {
+        dispatch({ type: 'SELECTION_SET', ids: ids(selectedNodeIds) });
+      } else {
+        dispatch({ type: 'SELECTION_SET', ids });
+      }
+    },
+    [dispatch, selectedNodeIds]
+  );
 
-  // Wrapper to persist physics config changes
-  const setPhysicsConfig = useCallback((config: Partial<PhysicsConfig>) => {
-    setPhysicsConfigState(prev => {
-      const updated = { ...prev, ...config };
-      savePhysicsConfig(updated);
-      return updated;
-    });
-  }, []);
+  const setViewTransform = useCallback(
+    (t: ViewportTransform) => dispatch({ type: 'VIEW_TRANSFORM_SET', transform: t }),
+    [dispatch]
+  );
 
-  // Persist selection history to local storage
-  useEffect(() => {
-    saveSelectionHistory(selectionHistory);
-  }, [selectionHistory]);
+  const setToast = useCallback(
+    (t: { visible: boolean; message: string; action?: () => void }) => {
+      if (t.visible) {
+        dispatch({ type: 'TOAST_SHOW', message: t.message, action: t.action });
+      } else {
+        dispatch({ type: 'TOAST_HIDE' });
+      }
+    },
+    [dispatch]
+  );
+
+  const setCutNodeId = useCallback(
+    (id: string | null) => dispatch({ type: 'CUT_NODE_SET', id }),
+    [dispatch]
+  );
+
+  const setAutoGraphEnabled = useCallback(
+    (enabled: boolean) => dispatch({ type: 'AUTO_GRAPH_SET', enabled }),
+    [dispatch]
+  );
+
+  const setShowLimitModal = useCallback(
+    (show: boolean) => dispatch(show ? { type: 'MODAL_LIMIT_SHOW' } : { type: 'MODAL_LIMIT_HIDE' }),
+    [dispatch]
+  );
+
+  const setUser = useCallback(
+    (v: any) => {
+      if (typeof v === 'function') {
+        dispatch({ type: 'AUTH_USER_SET', user: v(user) });
+      } else {
+        dispatch({ type: 'AUTH_USER_SET', user: v });
+      }
+    },
+    [dispatch, user]
+  );
+
+  const setIsGraphLoaded = useCallback(
+    (loaded: boolean) => dispatch({ type: 'GRAPH_LOADED_SET', loaded }),
+    [dispatch]
+  );
+
+  const setDirHandle = useCallback(
+    (h: FileSystemDirectoryHandle | null) => dispatch({ type: 'STORAGE_DIR_HANDLE_SET', handle: h }),
+    [dispatch]
+  );
+
+  const setDirName = useCallback(
+    (n: string | null) => dispatch({ type: 'STORAGE_DIR_NAME_SET', name: n }),
+    [dispatch]
+  );
+
+  const setMigrationProgress = useCallback(
+    (p: any) => dispatch({ type: 'MIGRATION_PROGRESS_SET', progress: p }),
+    [dispatch]
+  );
+
+  const setActiveSidePanes = useCallback(
+    (v: any) => {
+      if (typeof v === 'function') {
+        dispatch({ type: 'SIDE_PANES_SET', panes: v(activeSidePanes) });
+      } else {
+        dispatch({ type: 'SIDE_PANES_SET', panes: v });
+      }
+    },
+    [dispatch, activeSidePanes]
+  );
 
   const deletedNodeRef = useRef<{
     nodes: GraphNode[];
@@ -175,14 +231,10 @@ const App: React.FC = () => {
     timer: number | null;
   } | null>(null);
 
-  // --- Persistence ---
-  const { debouncedFlushSaves, markNodeDirty, markEdgesDirty } = usePersistence(
-    user,
-    dirHandle
-  );
+  // Ref to expose chat mode's focusNode for search bar navigation
+  const chatModeFocusRef = useRef<((nodeId: string) => void) | null>(null);
 
   // --- Viewport-Based Storage (Two-Phase Loading) ---
-  // When enabled, this provides lazy loading with skeleton placeholders
   const viewportStorage = useViewportStorage({
     enabled: USE_VIEWPORT_STORAGE && !!dirHandle,
     dirHandle,
@@ -204,113 +256,69 @@ const App: React.FC = () => {
   });
 
   // Sync viewportStorage state to main state continuously
-  // - Nodes need this for Phase 2 lazy loading (skeleton → loaded)
-  // - Edges need this when edges change
   useEffect(() => {
     if (USE_VIEWPORT_STORAGE && viewportStorage.isInitialized && dirHandle) {
       if (viewportStorage.nodes.length > 0) {
-        setNodes(viewportStorage.nodes);
+        dispatch({ type: 'NODES_SET', nodes: viewportStorage.nodes });
       }
       if (viewportStorage.edges.length > 0) {
-        setEdges(viewportStorage.edges);
+        dispatch({ type: 'EDGES_SET', edges: viewportStorage.edges });
       }
     }
-  }, [viewportStorage.isInitialized, viewportStorage.nodes, viewportStorage.edges, dirHandle, setNodes, setEdges]);
+  }, [viewportStorage.isInitialized, viewportStorage.nodes, viewportStorage.edges, dirHandle, dispatch]);
 
   const setNodesCallback = useCallback(
     (newNodes: GraphNode[] | ((prev: GraphNode[]) => GraphNode[])) => {
-      setNodes((prev) => {
-        const resolvedNodes =
-          typeof newNodes === "function" ? newNodes(prev) : newNodes;
-        const uniqueNodes = Array.from(
-          new Map(resolvedNodes.map((n) => [n.id, n])).values()
-        );
+      const resolvedNodes =
+        typeof newNodes === "function" ? newNodes(nodes) : newNodes;
+      const uniqueNodes = Array.from(
+        new Map(resolvedNodes.map((n) => [n.id, n])).values()
+      );
 
-        const prevById = new Map(prev.map((n) => [n.id, n]));
-        for (const n of uniqueNodes) {
-          const p = prevById.get(n.id);
-          if (!p || p !== n) {
-            const semanticChanged =
-              !p ||
-              p.content !== n.content ||
-              p.summary !== n.summary ||
-              JSON.stringify(p.aliases || []) !==
-                JSON.stringify(n.aliases || []);
+      const prevById = new Map(nodes.map((n) => [n.id, n]));
+      for (const n of uniqueNodes) {
+        const p = prevById.get(n.id);
+        if (!p || p !== n) {
+          const semanticChanged =
+            !p ||
+            p.content !== n.content ||
+            p.summary !== n.summary ||
+            JSON.stringify(p.aliases || []) !==
+              JSON.stringify(n.aliases || []);
 
-            // Use viewport storage when enabled, otherwise fall back to legacy persistence
-            if (USE_VIEWPORT_STORAGE && viewportStorage.isInitialized) {
-              if (!p) {
-                // New node - use addNode
-                viewportStorage.addNode(n, !semanticChanged);
-              } else {
-                // Existing node - use updateNode
-                viewportStorage.updateNode(n, !semanticChanged);
-              }
+          if (USE_VIEWPORT_STORAGE && viewportStorage.isInitialized) {
+            if (!p) {
+              viewportStorage.addNode(n, !semanticChanged);
             } else {
-              markNodeDirty(n, !semanticChanged);
+              viewportStorage.updateNode(n, !semanticChanged);
             }
           }
         }
+      }
 
-        // Only use legacy flush when viewport storage is not active
-        if (!USE_VIEWPORT_STORAGE || !viewportStorage.isInitialized) {
-          debouncedFlushSaves(
-            uniqueNodes,
-            edges,
-            viewTransform,
-            autoGraphEnabled,
-            currentScopeId,
-            selectedNodeIds
-          );
-        }
-        return uniqueNodes;
-      });
+      dispatch({ type: 'NODES_SET', nodes: uniqueNodes });
     },
     [
-      edges,
-      viewTransform,
-      autoGraphEnabled,
-      currentScopeId,
-      selectedNodeIds,
-      debouncedFlushSaves,
-      markNodeDirty,
-      setNodes,
+      nodes,
+      dispatch,
       viewportStorage,
     ]
   );
 
   const setEdgesCallback = useCallback(
     (newEdges: GraphEdge[] | ((prev: GraphEdge[]) => GraphEdge[])) => {
-      setEdges((prev) => {
-        const resolvedEdges =
-          typeof newEdges === "function" ? newEdges(prev) : newEdges;
+      const resolvedEdges =
+        typeof newEdges === "function" ? newEdges(edges) : newEdges;
 
-        // Use viewport storage when enabled, otherwise fall back to legacy persistence
-        if (USE_VIEWPORT_STORAGE && viewportStorage.isInitialized) {
-          viewportStorage.updateEdges(resolvedEdges);
-        } else {
-          markEdgesDirty();
-          debouncedFlushSaves(
-            nodes,
-            resolvedEdges,
-            viewTransform,
-            autoGraphEnabled,
-            currentScopeId,
-            selectedNodeIds
-          );
-        }
-        return resolvedEdges;
-      });
+      if (USE_VIEWPORT_STORAGE && viewportStorage.isInitialized) {
+        viewportStorage.updateEdges(resolvedEdges);
+      }
+
+      dispatch({ type: 'EDGES_SET', edges: resolvedEdges });
     },
     [
-      nodes,
-      viewTransform,
-      autoGraphEnabled,
-      currentScopeId,
-      selectedNodeIds,
-      debouncedFlushSaves,
-      markEdgesDirty,
-      setEdges,
+      edges,
+      dispatch,
       viewportStorage,
     ]
   );
@@ -326,7 +334,7 @@ const App: React.FC = () => {
     pinNode,
     unpinNode,
     togglePinNode,
-  } = usePhysicsSimulation(nodes, edges, setNodesCallback, { config: physicsConfig });
+  } = usePhysicsSimulation(nodes, edges, setNodesCallback as any, { config: physicsConfig });
 
   // --- Expansion ---
   const {
@@ -350,14 +358,18 @@ const App: React.FC = () => {
     );
 
   // --- Side Panels ---
-  const {
-    activeSidePanes,
-    setActiveSidePanes,
-    sidePanelLayouts,
-    handleCloseSidePane,
-    handleSidePanelLayoutChange,
-    isAnyPanelResizing,
-  } = useSidePanes();
+  const isAnyPanelResizing = useMemo(
+    () => Object.values(sidePanelLayouts).some((l) => l.isResizing),
+    [sidePanelLayouts]
+  );
+
+  const handleCloseSidePane = useCallback((id: string) => {
+    dispatch({ type: 'SIDE_PANE_REMOVE', id });
+  }, [dispatch]);
+
+  const handleSidePanelLayoutChange = useCallback((id: string, layout: any) => {
+    dispatch({ type: 'SIDE_PANEL_LAYOUT_SET', id, layout });
+  }, [dispatch]);
 
   // --- Operations ---
   const {
@@ -377,7 +389,7 @@ const App: React.FC = () => {
     currentScopeId,
     setCurrentScopeId,
     selectedNodeIds,
-    setSelectedNodeIds,
+    setSelectedNodeIds as any,
     viewTransform,
     setViewTransform,
     setToast,
@@ -402,28 +414,31 @@ const App: React.FC = () => {
       nodes,
       currentScopeId,
       setCurrentScopeId,
-      setSelectedNodeIds,
+      setSelectedNodeIds as any,
       viewTransform,
       setViewTransform,
-      setNodes,
-      setEdges,
+      setNodes as any,
+      setEdges as any,
       user,
       dirName
     );
+
+  // Wrapper for search bar navigation - also navigates in chat mode
+  const handleSearchNavigate = useCallback((nodeId: string) => {
+    handleFocusNode(nodeId);
+    if (viewMode === 'chat' && chatModeFocusRef.current) {
+      chatModeFocusRef.current(nodeId);
+    }
+  }, [viewMode, handleFocusNode]);
 
   // --- Keyboard Shortcuts ---
   const handleRestoreFromDeletionStack = useCallback(async () => {
     const entry = await restoreLastDeletedNode();
     if (entry) {
-      // Update local state with restored node and edges
-      setNodes((prev) => [...prev, entry.node]);
-      setEdges((prev) => [...prev, ...entry.edges]);
-      setToast({
-        visible: true,
-        message: "Node restored",
-      });
+      dispatch({ type: 'RESTORE_NODES', nodes: [entry.node], edges: entry.edges });
+      dispatch({ type: 'TOAST_SHOW', message: "Node restored" });
     }
-  }, [restoreLastDeletedNode, setNodes, setEdges]);
+  }, [restoreLastDeletedNode, dispatch]);
 
   useKeyboardShortcuts(
     selectedNodeIds,
@@ -447,9 +462,6 @@ const App: React.FC = () => {
   );
 
   // --- Layout Shifts ---
-  const [canvasShiftX, setCanvasShiftX] = useState(0);
-  const [canvasShiftY, setCanvasShiftY] = useState(0);
-
   useEffect(() => {
     if (typeof window === "undefined") return;
     let newLeftShift = 0,
@@ -484,83 +496,70 @@ const App: React.FC = () => {
     });
     const totalXShift = newLeftShift - newRightShift;
     const totalYShift = newTopShift - newBottomShift;
-    if (Math.abs(totalXShift - canvasShiftX) > 1) setCanvasShiftX(totalXShift);
-    if (Math.abs(totalYShift - canvasShiftY) > 1) setCanvasShiftY(totalYShift);
-  }, [sidePanelLayouts, canvasShiftX, canvasShiftY]);
+    if (Math.abs(totalXShift - canvasShiftX) > 1 || Math.abs(totalYShift - canvasShiftY) > 1) {
+      dispatch({ type: 'CANVAS_SHIFT_SET', x: totalXShift, y: totalYShift });
+    }
+  }, [sidePanelLayouts, canvasShiftX, canvasShiftY, dispatch]);
 
   // --- Storage & Sync Logic ---
   useEffect(() => {
     const initializeApp = async () => {
-      // Wait for auth check to complete
       if (authLoading) return;
 
-      // Clean up legacy localStorage on app start
       cleanupLegacyStorage();
 
       try {
-        // Check for stored directory handle first (local-first approach)
         const storedHandle = await getDirectoryHandle();
 
         if (storedHandle) {
-          // Verify permission
           const hasPermission = await verifyPermission(storedHandle, true);
 
           if (hasPermission) {
-            setDirHandle(storedHandle);
-            setDirName(storedHandle.name);
+            dispatch({ type: 'STORAGE_DIR_HANDLE_SET', handle: storedHandle });
+            dispatch({ type: 'STORAGE_DIR_NAME_SET', name: storedHandle.name });
             setLastDirName(storedHandle.name);
 
-            // Load from local directory (MASTER)
             const { nodes: loadedNodes, edges: loadedEdges, hasLegacyEdgesFile } =
               await loadGraphFromDirectory(storedHandle);
 
             if (loadedNodes.length > 0) {
-              setNodes(loadedNodes);
-              setEdges(loadedEdges);
+              dispatch({ type: 'NODES_SET', nodes: loadedNodes });
+              dispatch({ type: 'EDGES_SET', edges: loadedEdges });
 
-              // Migrate edges if needed
               if (hasLegacyEdgesFile) {
                 await migrateEdgesToNodes(storedHandle, loadedNodes, loadedEdges);
               }
             }
           } else {
-            // Permission denied - show last known directory name
             const lastDir = getLastDirName();
             if (lastDir) {
-              setDirName(`${lastDir} (click to reopen)`);
+              dispatch({ type: 'STORAGE_DIR_NAME_SET', name: `${lastDir} (click to reopen)` });
             }
           }
         }
 
-        // Handle storage based on auth state
         if (user) {
-          // Authenticated user - use cloud/local storage
           if (!storedHandle) {
-            setDirName("Cloud Storage");
+            dispatch({ type: 'STORAGE_DIR_NAME_SET', name: "Cloud Storage" });
           }
         } else {
-          // Unauthenticated user - initialize in-memory storage
           await initializeInMemory();
         }
 
-        setIsGraphLoaded(true);
+        dispatch({ type: 'GRAPH_LOADED_SET', loaded: true });
       } catch (err) {
         console.error("App initialization failed", err);
-        setIsGraphLoaded(true);
+        dispatch({ type: 'GRAPH_LOADED_SET', loaded: true });
       }
     };
 
     initializeApp();
-  }, [setNodes, setEdges, setIsGraphLoaded, authLoading, user, initializeInMemory]);
+  }, [authLoading, user, initializeInMemory, dispatch]);
 
   const handleLogout = async () => {
     try {
       await logout();
-      setDirHandle(null);
-      setDirName(null);
-      setNodes(createDefaultGraphNodes());
-      setEdges([]);
-      // Re-initialize in-memory storage for unauthenticated state
+      dispatch({ type: 'LOGOUT' });
       await initializeInMemory();
     } catch (err) {
       console.error("Logout failed", err);
@@ -571,42 +570,38 @@ const App: React.FC = () => {
     const handle = await pickDirectory();
     if (handle) {
       await storeDirectoryHandle(handle);
-      setDirHandle(handle);
-      setDirName(handle.name);
-      setLastDirName(handle.name); // Persist for next session
+      dispatch({ type: 'STORAGE_DIR_HANDLE_SET', handle });
+      dispatch({ type: 'STORAGE_DIR_NAME_SET', name: handle.name });
+      setLastDirName(handle.name);
 
       try {
-        // Load graph from directory
         const { nodes: loadedNodes, edges: loadedEdges, hasLegacyEdgesFile } =
           await loadGraphFromDirectory(handle);
 
         if (loadedNodes.length > 0) {
-          setNodes(loadedNodes);
-          setEdges(loadedEdges);
+          dispatch({ type: 'NODES_SET', nodes: loadedNodes });
+          dispatch({ type: 'EDGES_SET', edges: loadedEdges });
 
-          // Migrate edges from _edges.json to embedded in node files
           if (hasLegacyEdgesFile) {
             console.log("Migrating edges to node files...");
             await migrateEdgesToNodes(handle, loadedNodes, loadedEdges);
           }
         } else if (nodes.length > 0) {
-          // Directory is empty, save current nodes with their edges
           for (const node of nodes) {
             const outgoingEdges = getOutgoingEdges(node.id, edges);
             await saveNodeToFile(handle, node, outgoingEdges);
           }
         }
 
-        // Clean up legacy localStorage graph data
         cleanupLegacyStorage();
-        setIsGraphLoaded(true);
+        dispatch({ type: 'GRAPH_LOADED_SET', loaded: true });
       } catch (e) {
         console.error("Error loading from directory", e);
-        setIsGraphLoaded(true);
+        dispatch({ type: 'GRAPH_LOADED_SET', loaded: true });
         alert("Failed to load graph from directory.");
       }
     }
-  }, [nodes, edges, setNodes, setEdges, setIsGraphLoaded]);
+  }, [nodes, edges, dispatch]);
 
   // Handle schema migration
   const handleStartMigration = useCallback(async () => {
@@ -614,54 +609,48 @@ const App: React.FC = () => {
 
     const migrationService = getMigrationService();
 
-    // Load last migration timestamp if available
     const lastTimestamp = migrationService.getLastMigrationTimestamp();
     if (lastTimestamp) {
-      setMigrationProgress({
-        isRunning: false,
-        totalNodes: 0,
-        processedNodes: 0,
-        nodesNeedingUpdates: 0,
-        currentStatus: 'Idle',
-        lastMigrationTimestamp: lastTimestamp,
-        errors: [],
+      dispatch({
+        type: 'MIGRATION_PROGRESS_SET',
+        progress: {
+          isRunning: false,
+          totalNodes: 0,
+          processedNodes: 0,
+          nodesNeedingUpdates: 0,
+          currentStatus: 'Idle',
+          lastMigrationTimestamp: lastTimestamp,
+          errors: [],
+        },
       });
     }
 
     try {
       await migrationService.runMigration(
-        // loadNode - include edges for parentId inference during migration
         async (nodeId: string) => {
           const node = nodes.find((n) => n.id === nodeId);
           if (!node) return null;
-          // Include outgoing edges in the node for migration
           const outgoingEdges = edges.filter((e) => e.source === nodeId);
           return {
             ...node,
             edges: outgoingEdges.map((e) => ({ id: e.id, target: e.target, label: e.label })),
           };
         },
-        // saveNode
         async (node: GraphNode) => {
-          // Update in-memory state
-          setNodes((prev) => prev.map((n) => (n.id === node.id ? node : n)));
-          // Persist to filesystem
+          dispatch({ type: 'NODE_UPDATE', id: node.id, updates: node });
           if (dirHandle) {
             const outgoingEdges = getOutgoingEdges(node.id, edges);
             await saveNodeToFile(dirHandle, node, outgoingEdges);
           }
         },
-        // getAllNodeIds
         () => nodes.map((n) => n.id),
-        // onProgress
-        setMigrationProgress
+        (progress) => dispatch({ type: 'MIGRATION_PROGRESS_SET', progress })
       );
     } catch (e) {
       console.error('Migration failed:', e);
     }
-  }, [dirHandle, nodes, edges, setNodes]);
+  }, [dirHandle, nodes, edges, dispatch]);
 
-  // Cancel migration
   const handleCancelMigration = useCallback(() => {
     const migrationService = getMigrationService();
     migrationService.cancel();
@@ -673,10 +662,8 @@ const App: React.FC = () => {
 
     const cloudData = await importFromCloud();
     if (cloudData && (cloudData.nodes.length > 0 || cloudData.edges.length > 0)) {
-      setNodes(cloudData.nodes);
-      setEdges(cloudData.edges);
+      dispatch({ type: 'GRAPH_LOAD_FROM_STORAGE', nodes: cloudData.nodes, edges: cloudData.edges });
 
-      // If we have a directory handle, save imported data to filesystem
       if (dirHandle) {
         for (const node of cloudData.nodes) {
           const outgoingEdges = getOutgoingEdges(node.id, cloudData.edges);
@@ -684,35 +671,33 @@ const App: React.FC = () => {
         }
       }
 
-      setToast({ visible: true, message: "Imported from cloud successfully" });
+      dispatch({ type: 'TOAST_SHOW', message: "Imported from cloud successfully" });
     } else {
-      setToast({ visible: true, message: "No data found in cloud storage" });
+      dispatch({ type: 'TOAST_SHOW', message: "No data found in cloud storage" });
     }
-  }, [user, dirHandle, setNodes, setEdges]);
+  }, [user, dirHandle, dispatch]);
 
   const handleCloseFolder = useCallback(async () => {
     if ((user as any)?.isPaid) {
-      setDirName(null);
-      setNodes(createDefaultGraphNodes());
-      setEdges([]);
+      dispatch({ type: 'STORAGE_DIR_NAME_SET', name: null });
+      dispatch({ type: 'NODES_SET', nodes: createDefaultGraphNodes() });
+      dispatch({ type: 'EDGES_SET', edges: [] });
       return;
     }
     if (user?.storagePath) {
       try {
         await updateUserSettings("");
-        setUser((prev: any) =>
-          prev ? { ...prev, storagePath: undefined } : null
-        );
+        dispatch({ type: 'AUTH_USER_UPDATE', updates: { storagePath: undefined } });
       } catch (e) {
         console.error("Failed to clear user settings", e);
       }
     }
-    setDirHandle(null);
-    setDirName(null);
-    setNodes(createDefaultGraphNodes());
-    setEdges([]);
+    dispatch({ type: 'STORAGE_DIR_HANDLE_SET', handle: null });
+    dispatch({ type: 'STORAGE_DIR_NAME_SET', name: null });
+    dispatch({ type: 'NODES_SET', nodes: createDefaultGraphNodes() });
+    dispatch({ type: 'EDGES_SET', edges: [] });
     window.location.reload();
-  }, [user, setNodes, setEdges]);
+  }, [user, dispatch]);
 
   // --- Clustering and Filtering for Rendering ---
   const filteredNodes = useMemo(
@@ -721,7 +706,6 @@ const App: React.FC = () => {
     [nodes, currentScopeId]
   );
 
-  // Clustering has been removed - just use filtered nodes directly
   const clusteredNodes = useMemo(() => {
     return performGreedyClustering(filteredNodes, edges, viewTransform.k);
   }, [filteredNodes, edges, viewTransform.k]);
@@ -743,34 +727,42 @@ const App: React.FC = () => {
     [edges, currentScopeId, visibleNodeIds]
   );
 
-  // Edges to render - simplified without clustering
   const edgesToRender = useMemo(() => {
     return filteredEdges;
   }, [filteredEdges]);
 
   const handleMaximizeNode = useCallback(
     (id: string) => {
-      setActiveSidePanes((prev) => {
-        const existing = prev.find((p) => p.type === "node" && p.data === id);
-        if (existing) return prev.filter((p) => p.id !== existing.id);
-        return [
-          ...prev,
-          {
+      const existing = activeSidePanes.find((p) => p.type === "node" && p.data === id);
+      if (existing) {
+        dispatch({ type: 'SIDE_PANE_REMOVE', id: existing.id });
+      } else {
+        dispatch({
+          type: 'SIDE_PANE_ADD',
+          pane: {
             id: crypto.randomUUID(),
             type: "node",
             data: id,
             initialDockPosition: "right",
           },
-        ];
-      });
+        });
+      }
     },
-    [setActiveSidePanes]
+    [activeSidePanes, dispatch]
   );
 
   // Toggle between graph and chat modes
   const handleToggleViewMode = useCallback(() => {
-    setViewMode((prev) => (prev === 'graph' ? 'chat' : 'graph'));
-  }, []);
+    dispatch({ type: 'VIEW_MODE_TOGGLE' });
+  }, [dispatch]);
+
+  // Sync chat mode selection to main state
+  const handleChatModeSelectionChange = useCallback((nodeId: string | null) => {
+    if (nodeId) {
+      dispatch({ type: 'SELECTION_SET', ids: new Set([nodeId]) });
+      dispatch({ type: 'SELECTION_HISTORY_PUSH', id: nodeId });
+    }
+  }, [dispatch]);
 
   // Create node for chat mode - returns the created node
   const handleCreateNodeForChatMode = useCallback(
@@ -787,50 +779,48 @@ const App: React.FC = () => {
       };
 
       setNodesCallback((prev) => [...prev, newNode]);
-      setSelectedNodeIds(new Set([id]));
+      dispatch({ type: 'SELECTION_SET', ids: new Set([id]) });
 
       return newNode;
     },
-    [currentScopeId, setNodesCallback, setSelectedNodeIds]
+    [currentScopeId, setNodesCallback, dispatch]
   );
 
   const handleOpenLink = useCallback(
     (url: string) => {
       const isWikipedia = url.includes("wikipedia.org/wiki/");
       if (isWikipedia) {
-        setActiveSidePanes((prev) => [
-          ...prev,
-          {
+        dispatch({
+          type: 'SIDE_PANE_ADD',
+          pane: {
             id: crypto.randomUUID(),
             type: "web",
             data: url,
             initialDockPosition: "left",
             initialWidthPercent: 33,
           },
-        ]);
+        });
       } else {
-        setActiveSidePanes((prev) => {
-          const existing = prev.find(
-            (p) => p.type === "web" && p.initialDockPosition !== "left"
-          );
-          if (existing)
-            return prev.map((p) =>
-              p.id === existing.id ? { ...p, data: url } : p
-            );
-          return [
-            ...prev,
-            {
+        const existing = activeSidePanes.find(
+          (p) => p.type === "web" && p.initialDockPosition !== "left"
+        );
+        if (existing) {
+          dispatch({ type: 'SIDE_PANE_UPDATE', id: existing.id, updates: { data: url } });
+        } else {
+          dispatch({
+            type: 'SIDE_PANE_ADD',
+            pane: {
               id: crypto.randomUUID(),
               type: "web",
               data: url,
               initialDockPosition: "right",
               initialWidthPercent: 33,
             },
-          ];
-        });
+          });
+        }
       }
     },
-    [setActiveSidePanes]
+    [activeSidePanes, dispatch]
   );
 
   const handleNavigateToNodeLink = useCallback(
@@ -845,26 +835,23 @@ const App: React.FC = () => {
           n.aliases?.some((a) => normalize(a) === target)
       );
       if (!matchedNode) return;
-      setCurrentScopeId(matchedNode.scopeId ?? null);
-      setSelectedNodeIds(new Set([matchedNode.id]));
+      dispatch({ type: 'SCOPE_SET', scopeId: matchedNode.scopeId ?? null });
+      dispatch({ type: 'SELECTION_SET', ids: new Set([matchedNode.id]) });
       const k = viewTransform.k;
       const nodeCenterX =
         matchedNode.x + (matchedNode.width || DEFAULT_NODE_WIDTH) / 2;
       const nodeCenterY =
         matchedNode.y + (matchedNode.height || DEFAULT_NODE_HEIGHT) / 2;
-      setViewTransform({
-        x: window.innerWidth / 2 - nodeCenterX * k,
-        y: window.innerHeight / 2 - nodeCenterY * k,
-        k,
+      dispatch({
+        type: 'VIEW_TRANSFORM_SET',
+        transform: {
+          x: window.innerWidth / 2 - nodeCenterX * k,
+          y: window.innerHeight / 2 - nodeCenterY * k,
+          k,
+        },
       });
     },
-    [
-      nodes,
-      viewTransform.k,
-      setCurrentScopeId,
-      setSelectedNodeIds,
-      setViewTransform,
-    ]
+    [nodes, viewTransform.k, dispatch]
   );
 
   const getSidePanelContent = useCallback(
@@ -945,23 +932,48 @@ const App: React.FC = () => {
   return (
     <div className="flex w-screen h-screen overflow-hidden bg-slate-900 text-slate-200 font-sans">
       <div className="flex-1 relative min-w-0 flex flex-col">
-        <HeaderActions
-          user={user}
-          onLogin={() => {
-            setAuthMode("login");
-            setShowAuth(true);
-          }}
-          onSignup={() => {
-            setAuthMode("signup");
-            setShowAuth(true);
-          }}
-          onShowProfile={() => setShowProfile(true)}
-          onOpenStorage={handleOpenStorage}
-          dirName={dirName}
-          activeSidePanesCount={activeSidePanes.length}
-          viewMode={viewMode}
-          onToggleViewMode={handleToggleViewMode}
-        />
+        {!user && (
+          <HeaderActions
+            user={user}
+            onLogin={() => dispatch({ type: 'MODAL_AUTH_SHOW', mode: 'login' })}
+            onSignup={() => dispatch({ type: 'MODAL_AUTH_SHOW', mode: 'signup' })}
+            onShowProfile={() => dispatch({ type: 'MODAL_PROFILE_SHOW' })}
+            activeSidePanesCount={activeSidePanes.length}
+            searchExpanded={searchExpanded}
+            onSearchExpandedChange={(v: boolean) => dispatch({ type: 'SEARCH_EXPANDED_SET', expanded: v })}
+          />
+        )}
+
+        <button
+          onClick={handleToggleViewMode}
+          className={`absolute top-4 right-4 z-[60] p-2 rounded-lg border transition-all shadow-lg bg-slate-800/80 backdrop-blur text-slate-400 hover:text-white border-slate-700 ${
+            activeSidePanes.length > 0 ? "opacity-0 invisible" : "opacity-100 visible"
+          }`}
+          title={viewMode === 'chat' ? 'Switch to Graph View' : 'Switch to Chat View'}
+        >
+          {viewMode === 'chat' ? (
+            <svg className="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {/* Asymmetric graph: large root with two different-sized children */}
+              {/* Root node (large) */}
+              <circle cx="7" cy="12" r="3.5" />
+              {/* Child at 60° (medium) */}
+              <circle cx="16" cy="5" r="2.5" />
+              {/* Child at -30° (small) */}
+              <circle cx="18" cy="17" r="2" />
+              {/* Edge to 60° child */}
+              <line x1="10" y1="10" x2="14" y2="6.5" />
+              {/* Edge to -30° child */}
+              <line x1="10" y1="14" x2="16.5" y2="16" />
+            </svg>
+          ) : (
+            <svg className="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {/* Speech bubble with two lines */}
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              <line x1="7" y1="8" x2="17" y2="8" />
+              <line x1="7" y1="12" x2="13" y2="12" />
+            </svg>
+          )}
+        </button>
 
         <div className="absolute top-4 text-slate-500 text-xs font-mono opacity-50 pointer-events-none select-none">
           {isMigrating ? "Saving your work..." : dirName ||
@@ -974,8 +986,8 @@ const App: React.FC = () => {
           onNavigate={(id, type) => {
             if (type === "node" && id) handleFocusNode(id);
             else {
-              setCurrentScopeId(id);
-              setSelectedNodeIds(new Set());
+              dispatch({ type: 'SCOPE_SET', scopeId: id });
+              dispatch({ type: 'SELECTION_CLEAR' });
             }
           }}
           onCloseFolder={handleCloseFolder}
@@ -989,18 +1001,18 @@ const App: React.FC = () => {
         <SearchBar
           nodes={nodes}
           onSelect={handleSearchSelect}
-          onNavigate={handleFocusNode}
+          onNavigate={handleSearchNavigate}
           onPreview={handleOpenLink}
           isCloud={!!user}
+          isExpanded={searchExpanded}
+          onExpandedChange={(v: boolean) => dispatch({ type: 'SEARCH_EXPANDED_SET', expanded: v })}
         />
 
         {usageNotification.visible && (
           <div className="absolute bottom-4 right-4 z-50 bg-slate-800 border border-sky-500 text-sky-400 px-4 py-3 rounded shadow-lg animate-bounce">
             <p className="text-sm font-bold">{usageNotification.message}</p>
             <button
-              onClick={() =>
-                setUsageNotification((p) => ({ ...p, visible: false }))
-              }
+              onClick={() => dispatch({ type: 'USAGE_NOTIFICATION_HIDE' })}
               className="absolute top-1 right-1 text-xs text-slate-500 hover:text-white"
             >
               ✕
@@ -1027,14 +1039,14 @@ const App: React.FC = () => {
               onUpdateNode={handleUpdateNode}
               onDeleteNode={handleDeleteNode}
               expandingNodeIds={expandingNodeIds}
-              onToggleMenu={() => setIsOutlinePanelOpen(prev => !prev)}
+              onToggleMenu={() => dispatch({ type: 'OUTLINE_PANEL_TOGGLE' })}
               connectingNodeId={connectingNodeId}
-              onConnectStart={(id) => setConnectingNodeId(id)}
+              onConnectStart={(id) => dispatch({ type: 'CONNECTING_NODE_SET', id })}
               onConnectEnd={(s, t) => {
                 handleConnectEnd(s, t);
-                setConnectingNodeId(null);
+                dispatch({ type: 'CONNECTING_NODE_SET', id: null });
               }}
-              onCancelConnect={() => setConnectingNodeId(null)}
+              onCancelConnect={() => dispatch({ type: 'CONNECTING_NODE_SET', id: null })}
               onNavigateDown={handleNavigateDown}
               onNavigateUp={handleNavigateUp}
               currentScopeId={currentScopeId}
@@ -1044,34 +1056,21 @@ const App: React.FC = () => {
               selectionHistory={selectionHistory}
               onNodeSelect={(id, multi) => {
                 if (id === null) {
-                  setSelectedNodeIds(new Set());
-                  // Don't clear history - keep for focus fallback
+                  dispatch({ type: 'SELECTION_CLEAR' });
                 } else if (multi === 'remove') {
-                  // Remove this specific node from selection (for minimize)
-                  setSelectedNodeIds((prev) => {
-                    const newSet = new Set(prev);
-                    newSet.delete(id);
-                    return newSet;
-                  });
+                  dispatch({ type: 'SELECTION_REMOVE', id });
                 } else if (multi) {
-                  // Add to existing selection without clearing others
-                  setSelectedNodeIds((prev) => new Set([...prev, id]));
-                  setSelectionHistory((prev) => {
-                    const filtered = prev.filter((nid) => nid !== id);
-                    return [id, ...filtered].slice(0, 5);
-                  });
+                  dispatch({ type: 'SELECTION_ADD', id });
+                  dispatch({ type: 'SELECTION_HISTORY_PUSH', id });
                 } else {
-                  setSelectedNodeIds(new Set([id]));
-                  setSelectionHistory((prev) => {
-                    const filtered = prev.filter((nid) => nid !== id);
-                    return [id, ...filtered].slice(0, 5);
-                  });
+                  dispatch({ type: 'SELECTION_SET', ids: new Set([id]) });
+                  dispatch({ type: 'SELECTION_HISTORY_PUSH', id });
                 }
               }}
               canvasShiftX={canvasShiftX}
               canvasShiftY={canvasShiftY}
               isResizing={isAnyPanelResizing}
-              onSelectionTooltipChange={setSelectionTooltip}
+              onSelectionTooltipChange={(t) => dispatch({ type: 'SELECTION_TOOLTIP_SET', tooltip: t })}
               cutNodeId={cutNodeId}
               setCutNodeId={setCutNodeId}
               aiProvider={aiProvider}
@@ -1088,21 +1087,30 @@ const App: React.FC = () => {
             />
           </ErrorBoundary>
         ) : (
-          <ChatModeContainer
-            nodes={nodes}
-            edges={edges}
-            initialNodeId={selectionHistory[0] ?? null}
-            selectionHistory={selectionHistory}
-            onClose={handleToggleViewMode}
-            onUpdateNode={handleUpdateNode}
-            onCreateNode={handleCreateNodeForChatMode}
-            onDeleteNode={handleDeleteNode}
-            onNavigateToNode={handleNavigateToNodeLink}
-            onOpenLink={handleOpenLink}
-            onExpandNode={handleExpandNode}
-            aiProvider={aiProvider}
-            autoGraphEnabled={autoGraphEnabled}
-          />
+          <div className="flex-1 flex overflow-hidden">
+            <ChatModeSidebar
+              user={user}
+              isOutlinePanelOpen={isOutlinePanelOpen}
+              onToggleOutlinePanel={() => dispatch({ type: 'OUTLINE_PANEL_TOGGLE' })}
+              onShowProfile={() => dispatch({ type: 'MODAL_PROFILE_SHOW' })}
+            />
+            <ChatModeContainer
+              nodes={nodes}
+              edges={edges}
+              initialNodeId={selectionHistory[0] ?? null}
+              selectionHistory={selectionHistory}
+              onUpdateNode={handleUpdateNode}
+              onCreateNode={handleCreateNodeForChatMode}
+              onDeleteNode={handleDeleteNode}
+              onNavigateToNode={handleNavigateToNodeLink}
+              onOpenLink={handleOpenLink}
+              onExpandNode={handleExpandNode}
+              aiProvider={aiProvider}
+              autoGraphEnabled={autoGraphEnabled}
+              focusNodeRef={chatModeFocusRef}
+              onSelectionChange={handleChatModeSelectionChange}
+            />
+          </div>
         )}
       </div>
 
@@ -1110,7 +1118,7 @@ const App: React.FC = () => {
 
       <OutlineTreePanel
         isOpen={isOutlinePanelOpen}
-        onClose={() => setIsOutlinePanelOpen(false)}
+        onClose={() => dispatch({ type: 'OUTLINE_PANEL_SET', open: false })}
         nodes={nodes}
         viewportNodeIds={viewportNodeIds}
         hasViewportNodes={hasViewportNodes}
@@ -1123,7 +1131,7 @@ const App: React.FC = () => {
       {selectionTooltip && !connectingNodeId && viewMode === 'graph' && (
         <SelectionTooltip
           tooltip={selectionTooltip}
-          onClose={() => setSelectionTooltip(null)}
+          onClose={() => dispatch({ type: 'SELECTION_TOOLTIP_SET', tooltip: null })}
           onCreateNote={() =>
             handleCreateFromSelection(NodeType.NOTE, selectionTooltip)
           }
@@ -1136,7 +1144,7 @@ const App: React.FC = () => {
                 selectionTooltip.sourceId,
                 selectionTooltip.text
               );
-              setSelectionTooltip(null);
+              dispatch({ type: 'SELECTION_TOOLTIP_SET', tooltip: null });
               window.getSelection()?.removeAllRanges();
             }
           }}
@@ -1158,13 +1166,10 @@ const App: React.FC = () => {
             <AuthPage
               initialMode={authMode}
               onLogin={async (u) => {
-                // Use the login function from AuthContext
                 login(u);
-                setShowAuth(false);
-                // Migration of in-memory data is handled by StorageContext
-                // which watches for auth state changes
+                dispatch({ type: 'MODAL_AUTH_HIDE' });
               }}
-              onCancel={() => setShowAuth(false)}
+              onCancel={() => dispatch({ type: 'MODAL_AUTH_HIDE' })}
             />
           </ErrorBoundary>
         </div>
@@ -1175,11 +1180,9 @@ const App: React.FC = () => {
           <ProfilePage
             user={user}
             aiProvider={aiProvider}
-            onSetAiProvider={setAiProvider}
-            onClose={() => setShowProfile(false)}
-            onUpdateUser={(upd) =>
-              setUser((p: any) => (p ? { ...p, ...upd } : null))
-            }
+            onSetAiProvider={(provider) => dispatch({ type: 'AI_PROVIDER_SET', provider })}
+            onClose={() => dispatch({ type: 'MODAL_PROFILE_HIDE' })}
+            onUpdateUser={(upd) => dispatch({ type: 'AUTH_USER_UPDATE', updates: upd })}
             onLogout={handleLogout}
             storageConnected={!!dirHandle}
             storageDirName={dirName}
@@ -1187,7 +1190,7 @@ const App: React.FC = () => {
             onStartMigration={handleStartMigration}
             migrationProgress={migrationProgress}
             physicsConfig={physicsConfig}
-            onPhysicsConfigChange={setPhysicsConfig}
+            onPhysicsConfigChange={(config) => dispatch({ type: 'PHYSICS_CONFIG_SET', config })}
             isSimulating={isSimulating}
             onStopSimulation={stopSimulation}
           />
@@ -1196,20 +1199,18 @@ const App: React.FC = () => {
 
       <UpgradeModal
         isOpen={showUpgradeModal}
-        onClose={() => setShowUpgradeModal(false)}
+        onClose={() => dispatch({ type: 'MODAL_UPGRADE_HIDE' })}
       />
       <LimitModal
         isOpen={showLimitModal}
-        onClose={() => setShowLimitModal(false)}
+        onClose={() => dispatch({ type: 'MODAL_LIMIT_HIDE' })}
         onLogin={() => {
-          setShowLimitModal(false);
-          setAuthMode("login");
-          setShowAuth(true);
+          dispatch({ type: 'MODAL_LIMIT_HIDE' });
+          dispatch({ type: 'MODAL_AUTH_SHOW', mode: 'login' });
         }}
         onSignup={() => {
-          setShowLimitModal(false);
-          setAuthMode("signup");
-          setShowAuth(true);
+          dispatch({ type: 'MODAL_LIMIT_HIDE' });
+          dispatch({ type: 'MODAL_AUTH_SHOW', mode: 'signup' });
         }}
       />
       <DuplicateWarningModal
@@ -1223,7 +1224,7 @@ const App: React.FC = () => {
         message={toast.message}
         visible={toast.visible}
         onUndo={toast.action}
-        onClose={() => setToast((p) => ({ ...p, visible: false }))}
+        onClose={() => dispatch({ type: 'TOAST_HIDE' })}
       />
 
       {/* Migration Progress Bar */}
@@ -1234,24 +1235,6 @@ const App: React.FC = () => {
         />
       )}
 
-      {/* Chat Mode */}
-      {viewMode === 'chat' && (
-        <ChatModeContainer
-          nodes={nodes}
-          edges={edges}
-          initialNodeId={selectedNodeIds.size > 0 ? Array.from(selectedNodeIds)[0] : null}
-          selectionHistory={selectionHistory}
-          onClose={() => setViewMode('graph')}
-          onUpdateNode={handleUpdateNode}
-          onCreateNode={handleCreateNodeForChatMode}
-          onDeleteNode={handleDeleteNode}
-          onNavigateToNode={handleNavigateToNodeLink}
-          onOpenLink={handleOpenLink}
-          onExpandNode={handleExpandNode}
-          aiProvider={aiProvider}
-          autoGraphEnabled={autoGraphEnabled}
-        />
-      )}
     </div>
   );
 };

@@ -10,7 +10,6 @@ import { MarkdownEditor } from '../MarkdownEditor';
 import { GraphNode, NodeType, ChatMessage, SelectionTooltipState } from '../../types';
 import * as geminiService from '../../services/geminiService';
 import * as hfService from '../../services/huggingfaceService';
-import { NODE_COLORS } from '../../constants';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import {
@@ -56,7 +55,6 @@ export const ChatModePanel: React.FC<ChatModePanelProps> = ({
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  const colorTheme = NODE_COLORS[node.color || 'slate'];
   const titleText = deriveTitleFromContent(node.content || '') || node.summary || 'Untitled';
 
   // Scroll chat to bottom when messages update
@@ -67,7 +65,7 @@ export const ChatModePanel: React.FC<ChatModePanelProps> = ({
   }, [node.messages, streamingContent, node.type]);
 
   // Handle text selection for tooltip
-  const handleMouseUp = useCallback((e: React.MouseEvent) => {
+  const handleMouseUp = useCallback((_e: React.MouseEvent) => {
     if (isParentPeek) return;
 
     const selection = window.getSelection();
@@ -188,11 +186,6 @@ export const ChatModePanel: React.FC<ChatModePanelProps> = ({
 
   const displayMessages = useMemo(() => node.messages || [], [node.messages]);
 
-  const formattedNoteContent = useMemo(
-    () => formatInternalNodeLinks(node.content || ''),
-    [node.content]
-  );
-
   const markdownComponents = useMemo(
     () => ({
       ul: ({ node: _, ...props }: any) => (
@@ -259,21 +252,28 @@ export const ChatModePanel: React.FC<ChatModePanelProps> = ({
     [handleLinkClick]
   );
 
-  // Parent peek view - just show title vertically
+  // Parent peek view - minimal side tab
   if (isParentPeek) {
     return (
       <div
         ref={panelRef}
-        className={`chat-mode-panel parent-peek h-full flex-shrink-0 cursor-pointer transition-all duration-300 ${colorTheme.header} border-r border-slate-700`}
-        style={{ width: '50px' }}
+        className="chat-mode-panel parent-peek h-full flex-shrink-0 cursor-pointer transition-all duration-300 hover:bg-slate-800/50 group"
+        style={{ width: '44px' }}
         onClick={onFocus}
       >
-        <div className="h-full flex items-center justify-center">
+        <div className="h-full flex flex-col items-center pt-4 gap-3">
+          {/* Type indicator */}
+          <div
+            className={`w-2.5 h-2.5 rounded-full flex-shrink-0 transition-transform group-hover:scale-125 ${
+              node.type === NodeType.CHAT ? 'bg-emerald-400' : 'bg-sky-400'
+            }`}
+          />
+          {/* Vertical title */}
           <span
-            className={`${colorTheme.text} font-semibold text-sm whitespace-nowrap transform -rotate-90 origin-center`}
-            style={{ maxWidth: '80vh' }}
+            className="text-slate-400 group-hover:text-slate-200 font-medium text-xs whitespace-nowrap transform -rotate-90 origin-center transition-colors"
+            style={{ maxWidth: '70vh', marginTop: '40px' }}
           >
-            {titleText.substring(0, 30)}{titleText.length > 30 ? '...' : ''}
+            {titleText.substring(0, 24)}{titleText.length > 24 ? '...' : ''}
           </span>
         </div>
       </div>
@@ -281,38 +281,25 @@ export const ChatModePanel: React.FC<ChatModePanelProps> = ({
   }
 
   return (
+    <div className="flex mx-auto">
     <div
       ref={panelRef}
-      className={`chat-mode-panel h-full flex-shrink-0 flex flex-col transition-all duration-300 ${
-        isFocused ? 'ring-2 ring-sky-500/50' : ''
-      }`}
+      className={`chat-mode-panel h-full flex-shrink-0 flex flex-col transition-all duration-300 bg-slate-950`}
       style={{
-        width: typeof window !== 'undefined' && window.innerWidth < 768 ? '100vw' : '66.67vw',
+        width: typeof window !== 'undefined' && window.innerWidth < 768 ? '100vw' : '720px',
       }}
       onClick={() => !isFocused && onFocus()}
       onMouseUp={handleMouseUp}
     >
-      {/* Header */}
-      <div
-        className={`flex-shrink-0 px-6 py-4 ${colorTheme.header} border-b ${colorTheme.border} flex items-center justify-between`}
-      >
-        <div className="flex items-center gap-3 min-w-0">
-          <div
-            className={`w-3 h-3 rounded-full flex-shrink-0 ${
-              node.type === NodeType.CHAT ? 'bg-emerald-400' : 'bg-sky-400'
-            }`}
-          />
-          <h2 className={`text-xl font-semibold ${colorTheme.text} truncate`}>
-            {titleText}
-          </h2>
-        </div>
-        <div className={`text-xs ${colorTheme.text} opacity-60`}>
-          {node.type === NodeType.CHAT ? 'Chat' : 'Note'}
-        </div>
+      {/* Title header */}
+      <div className="flex-shrink-0 px-6 pt-20 pb-4">
+        <h1 className="text-2xl font-semibold text-slate-100 leading-tight">
+          {titleText}
+        </h1>
       </div>
 
       {/* Content */}
-      <div className={`flex-1 min-h-0 flex flex-col ${colorTheme.bg}`}>
+      <div className="flex-1 min-h-0 flex flex-col bg-slate-950">
         {node.type === NodeType.NOTE ? (
           <div className="w-full h-full">
             <MarkdownEditor
@@ -320,7 +307,7 @@ export const ChatModePanel: React.FC<ChatModePanelProps> = ({
               onChange={handleNoteEditorChange}
               onNavigateToNode={onNavigateToNode}
               allNodes={allNodes}
-              className={`w-full h-full ${colorTheme.text} text-base p-6 leading-relaxed`}
+              className="w-full h-full text-slate-200 text-base px-6 py-4 leading-relaxed"
               placeholder="Write a note (Markdown supported)..."
             />
           </div>
@@ -329,26 +316,29 @@ export const ChatModePanel: React.FC<ChatModePanelProps> = ({
             {/* Chat messages */}
             <div
               ref={chatContainerRef}
-              className="flex-1 overflow-y-auto space-y-4 p-6"
+              className="flex-1 overflow-y-auto px-6 py-4"
             >
               {displayMessages.length === 0 && (
-                <div className="text-slate-500 text-center italic mt-8 text-base">
-                  Start a conversation...
+                <div className="flex flex-col items-center justify-center h-full text-center">
+                  <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center mb-3">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-500">
+                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                    </svg>
+                  </div>
+                  <div className="text-slate-500 text-sm">Start a conversation</div>
                 </div>
               )}
-              {displayMessages.map((msg, idx) => (
-                <div
-                  key={idx}
-                  className={`flex flex-col ${
-                    msg.role === 'user' ? 'items-end' : 'items-start'
-                  }`}
-                >
-                  <div className="max-w-[80%] flex items-start gap-2">
+              <div className="space-y-4">
+                {displayMessages.map((msg, idx) => (
+                  <div
+                    key={idx}
+                    className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                  >
                     <div
-                      className={`rounded-lg leading-relaxed shadow-sm px-5 py-4 text-base ${
+                      className={`max-w-[85%] rounded-2xl px-4 py-3 text-[15px] leading-relaxed ${
                         msg.role === 'user'
-                          ? 'bg-sky-600 text-white rounded-tr-none'
-                          : `${colorTheme.header} ${colorTheme.text} rounded-tl-none border ${colorTheme.border}`
+                          ? 'bg-sky-600 text-white'
+                          : 'bg-slate-800 text-slate-200'
                       }`}
                     >
                       <ReactMarkdown components={markdownComponents}>
@@ -356,55 +346,59 @@ export const ChatModePanel: React.FC<ChatModePanelProps> = ({
                       </ReactMarkdown>
                     </div>
                   </div>
-                </div>
-              ))}
+                ))}
 
-              {streamingContent && (
-                <div className="flex flex-col items-start">
-                  <div className="max-w-[80%] flex items-start gap-2">
-                    <div
-                      className={`rounded-lg leading-relaxed shadow-sm px-5 py-4 text-base ${colorTheme.header} ${colorTheme.text} rounded-tl-none border ${colorTheme.border}`}
-                    >
+                {streamingContent && (
+                  <div className="flex justify-start">
+                    <div className="max-w-[85%] rounded-2xl px-4 py-3 text-[15px] leading-relaxed bg-slate-800 text-slate-200">
                       <ReactMarkdown components={markdownComponents}>
                         {formatInternalNodeLinks(streamingContent + ' ▍')}
                       </ReactMarkdown>
                     </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              {isChatting && !streamingContent && (
-                <div className="flex items-start">
-                  <div
-                    className={`${colorTheme.header} ${colorTheme.text} border ${colorTheme.border} rounded-lg rounded-tl-none px-5 py-4 animate-pulse text-base`}
-                  >
-                    Thinking...
+                {isChatting && !streamingContent && (
+                  <div className="flex justify-start">
+                    <div className="bg-slate-800 text-slate-400 rounded-2xl px-4 py-3 text-[15px]">
+                      <span className="inline-flex gap-1">
+                        <span className="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <span className="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                        <span className="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                      </span>
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
 
             {/* Chat input */}
-            <div className={`p-4 bg-black/10 border-t ${colorTheme.border} flex gap-3`}>
-              <input
-                type="text"
-                className={`flex-1 bg-black/20 border ${colorTheme.border} rounded-lg ${colorTheme.text} text-base px-4 py-3 focus:outline-none focus:border-sky-400 placeholder-slate-500`}
-                placeholder="Type a message..."
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-              />
-              <button
-                onClick={handleSendMessage}
-                disabled={isChatting}
-                className="bg-sky-600 hover:bg-sky-500 text-white rounded-lg px-6 py-3 text-base font-medium disabled:opacity-50 transition-colors"
-              >
-                Send
-              </button>
+            <div className="px-4 py-3 border-t border-slate-800/50">
+              <div className="flex items-center gap-2 bg-slate-800 rounded-xl px-3 py-1">
+                <input
+                  type="text"
+                  className="flex-1 bg-transparent text-slate-200 text-[15px] py-2.5 focus:outline-none placeholder-slate-500"
+                  placeholder="Message..."
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSendMessage()}
+                />
+                <button
+                  onClick={handleSendMessage}
+                  disabled={isChatting || !input.trim()}
+                  className="p-2 rounded-lg text-sky-400 hover:bg-slate-700 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="22" y1="2" x2="11" y2="13" />
+                    <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                  </svg>
+                </button>
+              </div>
             </div>
           </>
         )}
       </div>
+    </div>
     </div>
   );
 };

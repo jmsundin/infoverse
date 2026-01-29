@@ -5,6 +5,11 @@ import App from './App';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { AuthProvider } from './context/AuthContext';
 import { StorageProvider } from './context/StorageContext';
+import { AppStore } from './store';
+import { AppStoreProvider } from './hooks/useAppStore';
+import { AppEffects } from './AppEffects';
+
+const store = new AppStore();
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
@@ -17,7 +22,10 @@ root.render(
     <ErrorBoundary>
       <AuthProvider>
         <StorageProvider>
-          <App />
+          <AppStoreProvider store={store}>
+            <AppEffects />
+            <App />
+          </AppStoreProvider>
         </StorageProvider>
       </AuthProvider>
     </ErrorBoundary>

@@ -1,11 +1,10 @@
 import React, { useCallback } from 'react';
 import { GraphNode, NodeType } from '../../types';
-import { NODE_COLORS } from '../../constants';
 import { deriveTitleFromContent } from '../../utils/titleUtils';
 
 interface BubbleInfo {
   node: GraphNode;
-  isExpanded: boolean; // Shows title when true
+  isExpanded: boolean;
 }
 
 interface BubbleColumnProps {
@@ -20,7 +19,7 @@ export const BubbleColumn: React.FC<BubbleColumnProps> = ({
   if (bubbles.length === 0) return null;
 
   return (
-    <div className="bubble-column absolute right-4 top-1/2 -translate-y-1/2 flex flex-col gap-3 z-50">
+    <div className="bubble-column absolute right-3 top-1/2 -translate-y-1/2 flex flex-col gap-2 z-50">
       {bubbles.map(({ node, isExpanded }) => (
         <Bubble
           key={node.id}
@@ -40,7 +39,6 @@ interface BubbleProps {
 }
 
 const Bubble: React.FC<BubbleProps> = ({ node, isExpanded, onTap }) => {
-  const colorTheme = NODE_COLORS[node.color || 'slate'];
   const title = deriveTitleFromContent(node.content || '') || node.summary || 'Untitled';
   const firstLetter = title.charAt(0).toUpperCase();
   const isChatNode = node.type === NodeType.CHAT;
@@ -61,24 +59,24 @@ const Bubble: React.FC<BubbleProps> = ({ node, isExpanded, onTap }) => {
       onClick={handleClick}
     >
       <div
-        className={`flex items-center gap-2 rounded-full shadow-lg border-2 transition-all duration-200 ${colorTheme.header} ${colorTheme.border} hover:scale-105 hover:shadow-xl`}
+        className={`flex items-center gap-2 rounded-full bg-slate-800 shadow-lg transition-all duration-200 hover:bg-slate-700`}
         style={{
-          minWidth: '48px',
-          height: '48px',
-          padding: isExpanded ? '0 16px 0 0' : '0',
+          minWidth: '40px',
+          height: '40px',
+          padding: isExpanded ? '0 14px 0 0' : '0',
         }}
       >
         {/* Circle with letter/icon */}
         <div
-          className={`w-12 h-12 rounded-full flex items-center justify-center flex-shrink-0 ${
-            isChatNode ? 'bg-emerald-500/20' : 'bg-sky-500/20'
+          className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 ${
+            isChatNode ? 'bg-emerald-500/15' : 'bg-sky-500/15'
           }`}
         >
           {isChatNode ? (
             <svg
               xmlns="http://www.w3.org/2000/svg"
-              width="20"
-              height="20"
+              width="16"
+              height="16"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -90,7 +88,7 @@ const Bubble: React.FC<BubbleProps> = ({ node, isExpanded, onTap }) => {
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
             </svg>
           ) : (
-            <span className={`text-lg font-bold ${colorTheme.text}`}>
+            <span className="text-sm font-semibold text-sky-400">
               {firstLetter}
             </span>
           )}
@@ -99,20 +97,13 @@ const Bubble: React.FC<BubbleProps> = ({ node, isExpanded, onTap }) => {
         {/* Title (shown when expanded) */}
         {isExpanded && (
           <span
-            className={`bubble-title text-sm font-medium ${colorTheme.text} whitespace-nowrap overflow-hidden text-ellipsis animate-fadeIn`}
-            style={{ maxWidth: '150px' }}
+            className="bubble-title text-xs font-medium text-slate-300 whitespace-nowrap overflow-hidden text-ellipsis animate-fadeIn"
+            style={{ maxWidth: '120px' }}
           >
             {title}
           </span>
         )}
       </div>
-
-      {/* Tap hint */}
-      {isExpanded && (
-        <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-[10px] text-slate-500 whitespace-nowrap animate-fadeIn">
-          Tap to open
-        </div>
-      )}
     </div>
   );
 };

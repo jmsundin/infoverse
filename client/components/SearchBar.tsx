@@ -19,6 +19,9 @@ interface SearchBarProps {
   onNavigate: (id: string) => void;
   onPreview?: (url: string) => void;
   isCloud?: boolean;
+  // External control for mobile expanded state
+  isExpanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
 }
 
 export const SearchBar: React.FC<SearchBarProps> = ({
@@ -27,6 +30,8 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   onNavigate,
   onPreview,
   isCloud = false,
+  isExpanded = false,
+  onExpandedChange,
 }) => {
   const [query, setQuery] = useState("");
   const [wikiResults, setWikiResults] = useState<SearchResult[]>([]);
@@ -46,26 +51,57 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    const checkMobile = () => setIsMobile(window.innerWidth < 768);
+    const checkMobile = () => {
+      const mobile = window.innerWidth < 768;
+      setIsMobile(mobile);
+      if (!mobile) onExpandedChange?.(false);
+    };
     checkMobile();
     window.addEventListener("resize", checkMobile);
     return () => window.removeEventListener("resize", checkMobile);
-  }, []);
+  }, [onExpandedChange]);
 
-
-  // Close dropdown when clicking outside (but keep search bar visible)
+  // Focus input when expanded on mobile
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
+    if (isMobile && isExpanded) {
+      setTimeout(() => inputRef.current?.focus(), 50);
+    }
+  }, [isMobile, isExpanded]);
+
+  // Close dropdown when clicking outside (and collapse search bar on mobile)
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent | TouchEvent) => {
       const target = event.target as Node;
 
       if (wrapperRef.current && !wrapperRef.current.contains(target)) {
         setIsOpen(false);
+        if (isMobile) {
+          onExpandedChange?.(false);
+          setQuery("");
+        }
       }
     };
     document.addEventListener("mousedown", handleClickOutside, true);
-    return () =>
+    document.addEventListener("touchstart", handleClickOutside, true);
+    return () => {
       document.removeEventListener("mousedown", handleClickOutside, true);
-  }, []);
+      document.removeEventListener("touchstart", handleClickOutside, true);
+    };
+  }, [isMobile, onExpandedChange]);
+
+  // Collapse search bar on Escape key (mobile only)
+  useEffect(() => {
+    if (!isMobile || !isExpanded) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onExpandedChange?.(false);
+        setIsOpen(false);
+        setQuery("");
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [isMobile, isExpanded, onExpandedChange]);
 
   useEffect(() => {
     const fetchResults = async () => {
@@ -106,7 +142,6 @@ export const SearchBar: React.FC<SearchBarProps> = ({
             } else {
               setWikiResults([]);
             }
-            setIsOpen(true);
           } catch (e) {
             console.error("Suggestion fetch error", e);
             setWikiResults([]);
@@ -209,11 +244,9 @@ export const SearchBar: React.FC<SearchBarProps> = ({
         } else {
           setWikiResults([]);
         }
-        setIsOpen(true);
       } catch (error) {
         console.error("Wiki search error:", error);
         setWikiResults([]);
-        setIsOpen(true);
       }
 
       // 3. Web Search (via backend proxy, cloud users only)
@@ -238,10 +271,15 @@ export const SearchBar: React.FC<SearchBarProps> = ({
     return () => clearTimeout(timeoutId);
   }, [query, nodes, searchMode, isCloud]);
 
+  // Don't render on mobile when collapsed
+  if (isMobile && !isExpanded) {
+    return null;
+  }
+
   return (
     <div
       ref={wrapperRef}
-      className={`absolute z-[90] transition-all duration-200 pointer-events-none
+      className={`absolute z-[60] transition-all duration-200 pointer-events-none
          ${
            isMobile
              ? "top-16 left-4 right-4" // Mobile Expanded Position

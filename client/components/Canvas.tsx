@@ -1961,7 +1961,7 @@ export const Canvas: React.FC<CanvasProps> = ({
               e.stopPropagation();
               onToggleMenu && onToggleMenu();
             }}
-            className="hidden md:flex w-10 h-10 rounded-full bg-gradient-to-br from-sky-500 to-blue-600 items-center justify-center shadow-lg mb-4 hover:brightness-110 transition-all group"
+            className="flex w-10 h-10 rounded-full bg-slate-800/80 backdrop-blur border border-slate-700 items-center justify-center shadow-lg mb-4 hover:brightness-110 transition-all group"
             title="Toggle Outline View"
           >
             <svg
