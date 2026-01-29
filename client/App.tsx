@@ -1093,6 +1093,7 @@ const App: React.FC = () => {
               isOutlinePanelOpen={isOutlinePanelOpen}
               onToggleOutlinePanel={() => dispatch({ type: 'OUTLINE_PANEL_TOGGLE' })}
               onShowProfile={() => dispatch({ type: 'MODAL_PROFILE_SHOW' })}
+              onCreateNode={(type) => handleCreateNodeForChatMode(null, type)}
             />
             <ChatModeContainer
               nodes={nodes}

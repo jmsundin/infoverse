@@ -1961,7 +1961,7 @@ export const Canvas: React.FC<CanvasProps> = ({
               e.stopPropagation();
               onToggleMenu && onToggleMenu();
             }}
-            className="flex w-10 h-10 rounded-full bg-slate-800/80 backdrop-blur border border-slate-700 items-center justify-center shadow-lg mb-4 hover:brightness-110 transition-all group"
+            className="flex w-10 h-10 rounded-full bg-slate-800/80 backdrop-blur border border-slate-700 items-center justify-center shadow-lg hover:brightness-110 transition-all group"
             title="Toggle Outline View"
           >
             <svg
@@ -1983,15 +1983,12 @@ export const Canvas: React.FC<CanvasProps> = ({
               <line x1="13" y1="18" x2="20" y2="18" />
             </svg>
           </button>
-        </div>
-        <div className="flex flex-row md:flex-col gap-4 md:gap-4 border-l md:border-l-0 md:border-t border-slate-800 pl-4 md:pl-0 md:pt-4 items-center">
-          <div ref={createMenuContainerRef} className="relative md:mb-2 mr-2 md:mr-0">
+          {/* Create Node Button */}
+          <div ref={createMenuContainerRef} className="relative">
             <button
               onClick={() => setIsCreateMenuOpen((prev) => !prev)}
-              className={`w-10 h-10 rounded-full shadow-lg flex items-center justify-center transition-all group ${
-                isCreateMenuOpen
-                  ? "bg-sky-500 ring-2 ring-sky-400/50"
-                  : "bg-gradient-to-br from-sky-500 to-blue-600 hover:brightness-110"
+              className={`flex w-10 h-10 rounded-full bg-slate-800/80 backdrop-blur border items-center justify-center shadow-lg hover:brightness-110 transition-all group ${
+                isCreateMenuOpen ? "border-sky-500 ring-2 ring-sky-400/50" : "border-slate-700"
               }`}
               title="Create Node"
               aria-haspopup="menu"
@@ -2002,7 +1999,7 @@ export const Canvas: React.FC<CanvasProps> = ({
                 className={`w-5 h-5 group-hover:scale-110 transition-transform ${isCreateMenuOpen ? "rotate-45" : ""}`}
                 viewBox="0 0 24 24"
                 fill="none"
-                stroke="white"
+                stroke={isCreateMenuOpen ? "#38bdf8" : "white"}
                 strokeWidth="2"
                 strokeLinecap="round"
                 strokeLinejoin="round"
@@ -2067,6 +2064,8 @@ export const Canvas: React.FC<CanvasProps> = ({
               </div>
             )}
           </div>
+        </div>
+        <div className="flex flex-row md:flex-col gap-4 md:gap-4 border-l md:border-l-0 md:border-t border-slate-800 pl-4 md:pl-0 md:pt-4 items-center">
           <button
             onClick={handleFocusCanvas}
             className="p-2 text-slate-500 hover:text-sky-400 hover:bg-slate-800 rounded-lg md:mb-2 mr-2 md:mr-0"
