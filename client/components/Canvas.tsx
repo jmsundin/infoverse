@@ -80,11 +80,17 @@ interface CanvasProps {
   cutNodeId: string | null;
   setCutNodeId: React.Dispatch<React.SetStateAction<string | null>>;
   aiProvider?: "gemini" | "huggingface";
+  // User props
+  user?: any;
+  onShowProfile?: () => void;
+  // Outline panel (rendered after sidebar)
+  outlinePanel?: React.ReactNode;
+  isOutlinePanelOpen?: boolean;
   // Physics simulation props (passed from App.tsx)
   isSimulating?: boolean;
   startSimulation?: (trigger: SimulationTrigger, subtreeRootId?: string) => void;
   stopSimulation?: () => void;
-  physicsStartDrag?: (nodeId: string) => void;
+  physicsStartDrag?: (nodeId: string, soloMode?: boolean) => void;
   physicsUpdateDrag?: (nodeId: string, x: number, y: number) => void;
   physicsEndDrag?: () => void;
   pinNode?: (nodeId: string) => void;
@@ -380,6 +386,12 @@ export const Canvas: React.FC<CanvasProps> = ({
   cutNodeId,
   setCutNodeId,
   aiProvider,
+  // User props
+  user,
+  onShowProfile,
+  // Outline panel
+  outlinePanel,
+  isOutlinePanelOpen = false,
   // Physics simulation props
   isSimulating,
   startSimulation,
@@ -1354,6 +1366,7 @@ export const Canvas: React.FC<CanvasProps> = ({
       }
 
       const isShift = (e as React.MouseEvent).shiftKey;
+      const isAlt = (e as React.MouseEvent).altKey;  // Alt/Option: solo drag (parent only)
       const isSelected = selectedNodeIds.has(id);
       const isMobileTouch = 'touches' in e;
 
@@ -1399,7 +1412,8 @@ export const Canvas: React.FC<CanvasProps> = ({
       setDraggingId(id);
 
       // Start physics simulation for drag
-      physicsStartDrag(id);
+      // isAlt (Alt/Option key): solo mode - only move parent, children stay in place
+      physicsStartDrag(id, isAlt);
 
       const initialPositions = new Map();
       nodes.forEach((n) => {
@@ -1961,7 +1975,9 @@ export const Canvas: React.FC<CanvasProps> = ({
               e.stopPropagation();
               onToggleMenu && onToggleMenu();
             }}
-            className="flex w-10 h-10 rounded-full bg-slate-800/80 backdrop-blur border border-slate-700 items-center justify-center shadow-lg hover:brightness-110 transition-all group"
+            className={`flex w-10 h-10 rounded-full bg-slate-800/80 backdrop-blur border items-center justify-center shadow-lg hover:brightness-110 transition-all group ${
+              isOutlinePanelOpen ? 'border-sky-500 ring-2 ring-sky-400/50' : 'border-slate-700'
+            }`}
             title="Toggle Outline View"
           >
             <svg
@@ -1969,7 +1985,7 @@ export const Canvas: React.FC<CanvasProps> = ({
               className="w-5 h-5 group-hover:scale-110 transition-transform"
               viewBox="0 0 24 24"
               fill="none"
-              stroke="white"
+              stroke={isOutlinePanelOpen ? '#38bdf8' : 'white'}
               strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round"
@@ -2171,8 +2187,24 @@ export const Canvas: React.FC<CanvasProps> = ({
               </div>
             )}
           </div>
+          {/* Profile button */}
+          {user && onShowProfile && (
+            <button
+              onClick={onShowProfile}
+              className="p-2 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors"
+              title="Profile"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Outline Panel - rendered after sidebar */}
+      {outlinePanel}
 
       <div className="flex-1 relative overflow-hidden">
         {/* Fullscreen Background & Event Handler Wrapper */}

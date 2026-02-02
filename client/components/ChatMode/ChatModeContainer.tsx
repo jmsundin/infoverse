@@ -1,56 +1,57 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { GraphNode, GraphEdge, NodeType, SelectionTooltipState } from '../../types';
+import { useSelector } from '../../hooks/useAppStore';
+import {
+  selectGraphHot,
+  selectGraphCold,
+  selectPanelsSlice,
+  shallowEqual,
+} from '../../store/selectors';
 import { useChatMode } from '../../hooks/useChatMode';
 import { ChatModePanel } from './ChatModePanel';
 import { BubbleColumn } from './BubbleColumn';
 import { SelectionTooltip } from '../SelectionTooltip';
 
 interface ChatModeContainerProps {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-  initialNodeId: string | null;
-  selectionHistory: string[];
+  // Write callbacks (still passed from parent during transition)
   onUpdateNode: (id: string, updates: Partial<GraphNode>) => void;
   onCreateNode: (parentId: string | null, type: NodeType, content?: string) => GraphNode;
   onDeleteNode: (id: string) => void;
   onNavigateToNode?: (title: string) => void;
   onOpenLink?: (url: string) => void;
   onExpandNode?: (id: string, text: string) => void;
-  aiProvider?: 'gemini' | 'huggingface';
-  autoGraphEnabled?: boolean;
   focusNodeRef?: React.RefObject<((nodeId: string) => void) | null>;
   onSelectionChange?: (nodeId: string | null) => void;
 }
 
 export const ChatModeContainer: React.FC<ChatModeContainerProps> = ({
-  nodes,
-  edges,
-  initialNodeId,
-  selectionHistory,
   onUpdateNode,
   onCreateNode,
   onDeleteNode: _onDeleteNode,
   onNavigateToNode,
   onOpenLink,
   onExpandNode,
-  aiProvider = 'gemini',
-  autoGraphEnabled = false,
   focusNodeRef,
   onSelectionChange,
 }) => {
+  // --- Read state from store via selectors ---
+  const graphHot = useSelector(selectGraphHot, shallowEqual);
+  const graphCold = useSelector(selectGraphCold, shallowEqual);
+
+  // Destructure for convenience
+  const { nodes, edges } = graphHot;
+  const { selectionHistory, aiProvider, autoGraphEnabled } = graphCold;
   // Local selection tooltip state for Chat mode
   const [selectionTooltip, setSelectionTooltip] = useState<SelectionTooltipState | null>(null);
-  // Determine entry node
+
+  // Determine entry node from selection history
   const entryNodeId = useMemo(() => {
-    if (initialNodeId && nodes.find(n => n.id === initialNodeId)) {
-      return initialNodeId;
-    }
     if (selectionHistory.length > 0) {
       const recentId = selectionHistory.find(id => nodes.find(n => n.id === id));
       if (recentId) return recentId;
     }
     return nodes[0]?.id ?? null;
-  }, [initialNodeId, selectionHistory, nodes]);
+  }, [selectionHistory, nodes]);
 
   // Create node wrapper that returns the node ID
   const handleCreateNode = useCallback((parentId: string, type: NodeType, selectedText?: string) => {

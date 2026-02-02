@@ -44,6 +44,8 @@ interface SimulationState {
   lastDragX: number | null;
   lastDragY: number | null;
   dragSubtreeIds: Set<string> | null;
+  // Solo drag mode: only move parent, children stay in place (Alt/Option key)
+  dragSoloMode: boolean;
 }
 
 export class PhysicsEngine {
@@ -79,6 +81,7 @@ export class PhysicsEngine {
       lastDragX: null,
       lastDragY: null,
       dragSubtreeIds: null,
+      dragSoloMode: false,
     };
   }
 
@@ -201,6 +204,7 @@ export class PhysicsEngine {
     this.state.lastDragX = null;
     this.state.lastDragY = null;
     this.state.dragSubtreeIds = null;
+    this.state.dragSoloMode = false;
 
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
@@ -1012,8 +1016,15 @@ export class PhysicsEngine {
 
   // ==================== Drag Mode ====================
 
-  startDrag(nodeId: string): void {
+  /**
+   * Start drag mode.
+   * @param nodeId - The node being dragged
+   * @param soloMode - If true, only move the parent node (Alt/Option key held).
+   *                   Children stay in place unless they're not pinned/locked.
+   */
+  startDrag(nodeId: string, soloMode: boolean = false): void {
     this.state.draggedNodeId = nodeId;
+    this.state.dragSoloMode = soloMode;
 
     const node = this.nodes.get(nodeId);
     if (node) {
@@ -1025,6 +1036,7 @@ export class PhysicsEngine {
     }
 
     // Cache subtree for rigid movement (vis-network style)
+    // In solo mode, we still cache but won't move them
     this.state.dragSubtreeIds = this.getSubtreeNodeIds(nodeId);
 
     // Zero velocities for all subtree nodes
@@ -1036,7 +1048,7 @@ export class PhysicsEngine {
       }
     });
 
-    console.log(`[Physics:drag] START node=${nodeId} subtreeSize=${this.state.dragSubtreeIds.size}`);
+    console.log(`[Physics:drag] START node=${nodeId} subtreeSize=${this.state.dragSubtreeIds.size} soloMode=${soloMode}`);
   }
 
   updateDragPosition(nodeId: string, x: number, y: number): void {
@@ -1058,17 +1070,23 @@ export class PhysicsEngine {
     node.vx = 0;
     node.vy = 0;
 
-    // Move entire subtree rigidly (vis-network style)
-    const subtree = this.state.dragSubtreeIds ?? this.getSubtreeNodeIds(nodeId);
-    subtree.forEach(id => {
-      if (id === nodeId) return;
-      const child = this.nodes.get(id);
-      if (!child) return;
-      child.x += dx;
-      child.y += dy;
-      child.vx = 0;
-      child.vy = 0;
-    });
+    // In solo mode (Alt/Option held), don't move children at all
+    if (!this.state.dragSoloMode) {
+      // Move subtree rigidly (vis-network style)
+      // BUT skip pinned/locked children - they stay in place
+      const subtree = this.state.dragSubtreeIds ?? this.getSubtreeNodeIds(nodeId);
+      subtree.forEach(id => {
+        if (id === nodeId) return;
+        const child = this.nodes.get(id);
+        if (!child) return;
+        // Pinned/locked children don't move with parent
+        if (child.pinned) return;
+        child.x += dx;
+        child.y += dy;
+        child.vx = 0;
+        child.vy = 0;
+      });
+    }
 
     this.state.lastDragX = newX;
     this.state.lastDragY = newY;
@@ -1076,12 +1094,13 @@ export class PhysicsEngine {
 
   endDrag(): void {
     if (this.state.draggedNodeId) {
-      console.log(`[Physics:drag] END node=${this.state.draggedNodeId}`);
+      console.log(`[Physics:drag] END node=${this.state.draggedNodeId} soloMode=${this.state.dragSoloMode}`);
     }
     this.state.draggedNodeId = null;
     this.state.lastDragX = null;
     this.state.lastDragY = null;
     this.state.dragSubtreeIds = null;
+    this.state.dragSoloMode = false;
   }
 
   // ==================== Node State ====================

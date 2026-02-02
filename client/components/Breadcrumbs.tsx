@@ -15,6 +15,8 @@ interface BreadcrumbsProps {
   onImportFromCloud?: () => void;
   dirName: string | null;
   isLoggedIn?: boolean;
+  isOutlinePanelOpen?: boolean;
+  outlinePanelWidth?: number;
 }
 
 export const Breadcrumbs: React.FC<BreadcrumbsProps> = ({
@@ -25,9 +27,17 @@ export const Breadcrumbs: React.FC<BreadcrumbsProps> = ({
   onImportFromCloud,
   dirName,
   isLoggedIn,
+  isOutlinePanelOpen = false,
+  outlinePanelWidth = 280,
 }) => {
+  // Calculate left position: sidebar (64px) + outline panel width (when open) + padding (16px)
+  const leftPosition = isOutlinePanelOpen ? 64 + outlinePanelWidth + 16 : 80;
+
   return (
-    <div className="absolute top-16 left-4 md:left-20 z-40 flex items-center gap-2 text-sm pointer-events-none flex-wrap">
+    <div
+      className="absolute top-16 z-40 flex items-center gap-2 text-sm pointer-events-none flex-wrap transition-all duration-200"
+      style={{ left: `${leftPosition}px` }}
+    >
       {breadcrumbs.map((crumb, i) => (
         <React.Fragment key={i}>
           {i > 0 && <span className="text-slate-600 font-bold">&gt;</span>}

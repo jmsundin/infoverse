@@ -21,18 +21,36 @@ export function useStore(): AppStore {
   return store;
 }
 
-export function useSelector<T>(selector: (state: AppState) => T): T {
+export function useSelector<T>(
+  selector: (state: AppState) => T,
+  equalityFn?: (a: T, b: T) => boolean
+): T {
   const store = useStore();
 
   const selectorRef = useRef(selector);
   selectorRef.current = selector;
+
+  // Track previous value for equality comparison
+  const prevValueRef = useRef<T | undefined>(undefined);
 
   const subscribe = useCallback(
     (onStoreChange: () => void) => store.subscribe(onStoreChange),
     [store]
   );
 
-  const getSnapshot = useCallback(() => selectorRef.current(store.getState()), [store]);
+  const getSnapshot = useCallback(() => {
+    const newValue = selectorRef.current(store.getState());
+
+    // If equality function provided and values are equal, return previous reference
+    if (equalityFn && prevValueRef.current !== undefined) {
+      if (equalityFn(prevValueRef.current, newValue)) {
+        return prevValueRef.current;
+      }
+    }
+
+    prevValueRef.current = newValue;
+    return newValue;
+  }, [store, equalityFn]);
 
   return useSyncExternalStore(subscribe, getSnapshot);
 }

@@ -20,15 +20,18 @@ export type GraphAction =
   | { type: 'NODES_REMOVE'; ids: string[] }
   | { type: 'NODE_UPDATE'; id: string; updates: Partial<GraphNode> }
   | { type: 'NODES_MERGE'; nodes: GraphNode[] }
+  | { type: 'NODES_UPDATE'; updater: (prev: GraphNode[]) => GraphNode[] }
   | { type: 'EDGES_SET'; edges: GraphEdge[] }
   | { type: 'EDGE_ADD'; edge: GraphEdge }
   | { type: 'EDGES_ADD'; edges: GraphEdge[] }
   | { type: 'EDGES_REMOVE_BY_NODE'; nodeIds: string[] }
+  | { type: 'EDGES_UPDATE'; updater: (prev: GraphEdge[]) => GraphEdge[] }
   | { type: 'SCOPE_SET'; scopeId: string | null }
   | { type: 'SELECTION_SET'; ids: Set<string> }
   | { type: 'SELECTION_ADD'; id: string }
   | { type: 'SELECTION_REMOVE'; id: string }
   | { type: 'SELECTION_CLEAR' }
+  | { type: 'SELECTION_UPDATE'; updater: (prev: Set<string>) => Set<string> }
   | { type: 'GRAPH_LOADED_SET'; loaded: boolean };
 
 // --- Auth Actions ---
@@ -129,6 +132,8 @@ export type CompoundAction =
       type: 'FOCUS_NODE';
       nodeId: string;
       transform: ViewportTransform;
+      pushHistory?: boolean;
+      select?: boolean;
     };
 
 // --- Union ---

@@ -15,6 +15,9 @@ interface OutlineTreePanelProps {
   lastSelectedNodeId: string | null;
   currentScopeId: string | null;
   onFocusNode: (nodeId: string) => void;
+  // Controlled panel width (optional)
+  panelWidth?: number;
+  onPanelWidthChange?: (width: number) => void;
 }
 
 export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
@@ -27,9 +30,19 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
   lastSelectedNodeId,
   currentScopeId,
   onFocusNode,
+  panelWidth: controlledPanelWidth,
+  onPanelWidthChange,
 }) => {
-  // Desktop panel width
-  const [panelWidth, setPanelWidth] = useState(280);
+  // Desktop panel width (internal state, used if not controlled)
+  const [internalPanelWidth, setInternalPanelWidth] = useState(280);
+  const panelWidth = controlledPanelWidth ?? internalPanelWidth;
+  const setPanelWidth = useCallback((width: number) => {
+    if (onPanelWidthChange) {
+      onPanelWidthChange(width);
+    } else {
+      setInternalPanelWidth(width);
+    }
+  }, [onPanelWidthChange]);
   // Mobile portrait panel height
   const [panelHeight, setPanelHeight] = useState(() =>
     typeof window !== "undefined" ? window.innerHeight / 2 : 300
@@ -354,14 +367,13 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
 
   // Compute panel styles based on device/orientation/position
   const panelStyles = useMemo((): React.CSSProperties => {
-    // Desktop: left side panel
+    // Desktop: inline flex panel (no fixed positioning)
     if (!isMobile) {
       return {
-        position: "fixed",
-        top: 0,
-        left: 64, // After toolbar (16*4 = 64px)
+        position: "relative",
         height: "100%",
         width: panelWidth,
+        flexShrink: 0,
       };
     }
 
@@ -501,7 +513,7 @@ export const OutlineTreePanel: React.FC<OutlineTreePanelProps> = ({
   return (
     <div
       ref={panelRef}
-      className={`bg-slate-900 ${getBorderClass()} z-50 flex flex-col shadow-2xl ${getAnimationClass()}`}
+      className={`bg-slate-900 ${getBorderClass()} ${isMobile ? 'z-50' : 'z-10'} flex flex-col shadow-2xl ${getAnimationClass()}`}
       style={panelStyles}
     >
       {/* Header */}

@@ -39,6 +39,9 @@ export function appReducer(state: AppState, action: Action): AppState {
       return { ...state, nodes: [...merged, ...newNodes] };
     }
 
+    case 'NODES_UPDATE':
+      return { ...state, nodes: deduplicateNodes(action.updater(state.nodes)) };
+
     case 'EDGES_SET':
       return { ...state, edges: action.edges };
 
@@ -55,6 +58,9 @@ export function appReducer(state: AppState, action: Action): AppState {
           (e) => !action.nodeIds.includes(e.source) && !action.nodeIds.includes(e.target)
         ),
       };
+
+    case 'EDGES_UPDATE':
+      return { ...state, edges: action.updater(state.edges) };
 
     case 'SCOPE_SET':
       return { ...state, currentScopeId: action.scopeId };
@@ -76,6 +82,9 @@ export function appReducer(state: AppState, action: Action): AppState {
 
     case 'SELECTION_CLEAR':
       return { ...state, selectedNodeIds: new Set() };
+
+    case 'SELECTION_UPDATE':
+      return { ...state, selectedNodeIds: action.updater(state.selectedNodeIds) };
 
     case 'GRAPH_LOADED_SET':
       return { ...state, isGraphLoaded: action.loaded };
@@ -320,12 +329,18 @@ export function appReducer(state: AppState, action: Action): AppState {
     case 'FOCUS_NODE': {
       const node = state.nodes.find((n) => n.id === action.nodeId);
       if (!node) return state;
-      return {
+      const next: AppState = {
         ...state,
         currentScopeId: node.scopeId ?? null,
-        selectedNodeIds: new Set([action.nodeId]),
         viewTransform: action.transform,
       };
+      if (action.select !== false) {
+        next.selectedNodeIds = new Set([action.nodeId]);
+      }
+      if (action.pushHistory) {
+        next.selectionHistory = [action.nodeId, ...state.selectionHistory.filter(id => id !== action.nodeId)];
+      }
+      return next;
     }
 
     default:

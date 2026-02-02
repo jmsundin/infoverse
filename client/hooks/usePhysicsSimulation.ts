@@ -91,7 +91,12 @@ export function usePhysicsSimulation(
   }, []);
 
   // Drag mode controls
-  const startDrag = useCallback((nodeId: string) => {
+  /**
+   * Start drag mode.
+   * @param nodeId - The node being dragged
+   * @param soloMode - If true, only move the parent (Alt/Option held), children stay in place
+   */
+  const startDrag = useCallback((nodeId: string, soloMode: boolean = false) => {
     if (!engineRef.current) return;
     // Skip if physics is disabled
     if (config?.physicsEnabled === false) return;
@@ -100,7 +105,7 @@ export function usePhysicsSimulation(
     engineRef.current.setNodes(nodes);
     engineRef.current.setEdges(edges);
 
-    engineRef.current.startDrag(nodeId);
+    engineRef.current.startDrag(nodeId, soloMode);
     setIsSimulating(true);
     engineRef.current.start('drag-start', nodeId);
   }, [nodes, edges, config?.physicsEnabled]);
