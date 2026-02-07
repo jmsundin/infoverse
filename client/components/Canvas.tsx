@@ -1695,29 +1695,40 @@ export const Canvas: React.FC<CanvasProps> = ({
     let targetX: number | undefined;
     let targetY: number | undefined;
     let k = 1;
+    const allNodesById = new Map(allNodes.map((n) => [n.id, n]));
 
-    // 1. Focus on Selected Node
-    if (selectedNodeId) {
-      const node = nodes.find((n) => n.id === selectedNodeId);
-      if (node) {
+    // 1. Focus on explicit node candidates, in priority order:
+    // selected nodes (most recently selected first) -> last actively interacted node -> selection history.
+    const focusCandidates: string[] = [];
+    if (selectedNodeIds.size > 0) {
+      const selectedByRecency = (selectionHistory || []).filter((id) =>
+        selectedNodeIds.has(id)
+      );
+      if (selectedByRecency.length > 0) {
+        focusCandidates.push(...selectedByRecency);
+      } else {
+        focusCandidates.push(...Array.from(selectedNodeIds));
+      }
+    }
+    if (activeNodeId && !selectedNodeIds.has(activeNodeId)) {
+      focusCandidates.push(activeNodeId);
+    }
+    if (selectionHistory?.length) focusCandidates.push(...selectionHistory);
+
+    const seen = new Set<string>();
+    for (const candidateId of focusCandidates) {
+      if (!candidateId || seen.has(candidateId)) continue;
+      seen.add(candidateId);
+
+      const node = allNodesById.get(candidateId);
+      if (node && Number.isFinite(node.x) && Number.isFinite(node.y)) {
         targetX = node.x + (node.width || DEFAULT_NODE_WIDTH) / 2;
         targetY = node.y + (node.height || DEFAULT_NODE_HEIGHT) / 2;
+        break;
       }
     }
 
-    // 2. Focus on node from selection history (if no current selection)
-    if (targetX === undefined || targetY === undefined) {
-      for (const nodeId of (selectionHistory || [])) {
-        const node = nodes.find((n) => n.id === nodeId);
-        if (node) {
-          targetX = node.x + (node.width || DEFAULT_NODE_WIDTH) / 2;
-          targetY = node.y + (node.height || DEFAULT_NODE_HEIGHT) / 2;
-          break;
-        }
-      }
-    }
-
-    // 3. Focus on Center of Mass (fallback)
+    // 2. Focus on Center of Mass (fallback)
     if (targetX === undefined || targetY === undefined) {
       let minX = Infinity,
         minY = Infinity,
@@ -1760,7 +1771,7 @@ export const Canvas: React.FC<CanvasProps> = ({
     const newY = window.innerHeight / 2 - targetY * k;
 
     onViewTransformChange({ x: newX, y: newY, k });
-  }, [nodes, selectedNodeId, selectionHistory, onViewTransformChange]);
+  }, [nodes, allNodes, activeNodeId, selectedNodeId, selectedNodeIds, selectionHistory, onViewTransformChange]);
 
   // Handler for arranging children of a node using physics simulation
   const handleArrangeChildren = useCallback((nodeId: string) => {
