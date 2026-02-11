@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { Mock } from 'vitest';
 import { render, fireEvent, act, screen } from '@testing-library/react';
 import React from 'react';
 
@@ -190,11 +191,11 @@ const createTouchEventInit = (
 });
 
 describe('Canvas Touch Gestures', () => {
-  let onContextMenu: ReturnType<typeof vi.fn>;
+  let onContextMenu: Mock<(x: number, y: number) => void>;
 
   beforeEach(() => {
     vi.useFakeTimers();
-    onContextMenu = vi.fn();
+    onContextMenu = vi.fn<(x: number, y: number) => void>();
   });
 
   afterEach(() => {

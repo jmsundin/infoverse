@@ -85,7 +85,14 @@ const App: React.FC = () => {
 
   // --- Auth & Storage from Context ---
   const { logout } = useAuth();
-  const { storageMode, isMigrating, initializeInMemory, restoreLastDeletedNode, getDeletionStackSize } = useStorage();
+  const {
+    storageMode,
+    isMigrating,
+    initialize,
+    initializeInMemory,
+    restoreLastDeletedNode,
+    getDeletionStackSize,
+  } = useStorage();
 
   // --- Refs ---
   const chatModeFocusRef = useRef<((nodeId: string) => void) | null>(null);
@@ -195,10 +202,14 @@ const App: React.FC = () => {
       try {
         const storedHandle = await getDirectoryHandle();
 
+        let initializedStorage = false;
+
         if (storedHandle) {
           const hasPermission = await verifyPermission(storedHandle, true);
 
           if (hasPermission) {
+            await initialize(storedHandle, auth.user?.id, false);
+            initializedStorage = true;
             dispatch({ type: 'STORAGE_DIR_HANDLE_SET', handle: storedHandle });
             dispatch({ type: 'STORAGE_DIR_NAME_SET', name: storedHandle.name });
             setLastDirName(storedHandle.name);
@@ -223,7 +234,8 @@ const App: React.FC = () => {
         }
 
         if (auth.user) {
-          if (!storedHandle) {
+          if (!initializedStorage) {
+            await initialize(undefined, auth.user.id, false);
             dispatch({ type: 'STORAGE_DIR_NAME_SET', name: "Cloud Storage" });
           }
         } else {
@@ -238,7 +250,7 @@ const App: React.FC = () => {
     };
 
     initializeApp();
-  }, [auth.authLoading, auth.user, initializeInMemory, dispatch]);
+  }, [auth.authLoading, auth.user, initialize, initializeInMemory, dispatch]);
 
   const handleLogout = async () => {
     try {

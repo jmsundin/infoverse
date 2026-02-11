@@ -1,5 +1,6 @@
 import { GraphNode, NodeType } from "../types";
 import { DEFAULT_NODE_WIDTH, DEFAULT_NODE_HEIGHT } from "../constants";
+import { v4 as uuidv4 } from "uuid";
 
 export const getDefaultNodePosition = () => {
   if (typeof window === "undefined") {
@@ -16,7 +17,7 @@ export const createDefaultGraphNodes = (): GraphNode[] => {
   const { x, y } = getDefaultNodePosition();
   return [
     {
-      id: "1",
+      id: uuidv4(),
       type: NodeType.CHAT,
       x,
       y,

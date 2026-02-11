@@ -10,10 +10,15 @@ const generateEmbedding = async (text) => {
         
         const result = await ai.models.embedContent({
             model: "text-embedding-004",
-            content: text,
+            contents: [text],
         });
-        
-        return result.embedding.values;
+
+        const embedding =
+            (Array.isArray(result?.embeddings) ? result.embeddings[0] : null) ??
+            result?.embedding ??
+            null;
+        const values = embedding?.values;
+        return Array.isArray(values) ? values : null;
     } catch (error) {
         console.error("Embedding generation failed:", error);
         return null;
@@ -24,4 +29,3 @@ module.exports = {
     ai,
     generateEmbedding
 };
-

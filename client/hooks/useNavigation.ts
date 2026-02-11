@@ -2,6 +2,10 @@ import { useRef, useCallback, useEffect } from "react";
 import { GraphNode, GraphEdge, ViewportTransform } from "../types";
 import { fetchNodesInViewport } from "../services/apiStorageService";
 import { DEFAULT_NODE_WIDTH, DEFAULT_NODE_HEIGHT } from "../constants";
+import {
+  summarizeTransform,
+  viewportDebugLog,
+} from "../utils/viewportDebug";
 
 export const useNavigation = (
   nodes: GraphNode[],
@@ -55,12 +59,35 @@ export const useNavigation = (
       Math.round(k * 1000) / 1000,
     ].join("|");
 
-    if (lastViewportFetchKeyRef.current === fetchKey) return;
+    if (lastViewportFetchKeyRef.current === fetchKey) {
+      viewportDebugLog("navigation.viewport-fetch-skip-same-key", {
+        fetchKey,
+        transform: summarizeTransform(viewTransform),
+      });
+      return;
+    }
 
     const now = Date.now();
-    if (now - lastViewportFetchAtRef.current < 800) return;
+    if (now - lastViewportFetchAtRef.current < 800) {
+      viewportDebugLog("navigation.viewport-fetch-skip-rate-limit", {
+        fetchKey,
+        elapsedMs: now - lastViewportFetchAtRef.current,
+      });
+      return;
+    }
     lastViewportFetchAtRef.current = now;
     lastViewportFetchKeyRef.current = fetchKey;
+
+    viewportDebugLog("navigation.viewport-fetch-start", {
+      fetchKey,
+      bounds: {
+        minX: Number(bufferedMinX.toFixed(2)),
+        minY: Number(bufferedMinY.toFixed(2)),
+        maxX: Number(bufferedMaxX.toFixed(2)),
+        maxY: Number(bufferedMaxY.toFixed(2)),
+      },
+      transform: summarizeTransform(viewTransform),
+    });
 
     try {
       if (viewportFetchAbortRef.current) {
@@ -77,11 +104,21 @@ export const useNavigation = (
         controller.signal
       );
 
+      viewportDebugLog("navigation.viewport-fetch-complete", {
+        fetchKey,
+        nodeCount: newNodes?.length ?? 0,
+        edgeCount: newEdges?.length ?? 0,
+      });
+
       if (newNodes) setNodes(newNodes);
       if (newEdges) setEdges(newEdges);
     } catch (e) {
       if ((e as any)?.name !== "AbortError") {
         console.error("Viewport fetch failed", e);
+        viewportDebugLog("navigation.viewport-fetch-error", {
+          fetchKey,
+          message: (e as Error)?.message || "unknown",
+        });
       }
     }
   }, [viewTransform, user, dirName, setNodes, setEdges]);
@@ -98,9 +135,13 @@ export const useNavigation = (
   }, [viewTransform, user, dirName, fetchViewportNodes]);
 
   const handleNavigateDown = useCallback((nodeId: string) => {
+    viewportDebugLog("navigation.down", {
+      nodeId,
+      previousScopeId: currentScopeId,
+    });
     setCurrentScopeId(nodeId);
     setSelectedNodeIds(new Set());
-  }, [setCurrentScopeId, setSelectedNodeIds]);
+  }, [currentScopeId, setCurrentScopeId, setSelectedNodeIds]);
 
   const handleNavigateUp = useCallback(
     (exitingScopeId?: string) => {
@@ -114,6 +155,12 @@ export const useNavigation = (
           const nodeCenterY = exitingNode.y + (exitingNode.height || DEFAULT_NODE_HEIGHT) / 2;
           const newX = window.innerWidth / 2 - nodeCenterX * k;
           const newY = window.innerHeight / 2 - nodeCenterY * k;
+          viewportDebugLog("navigation.up-exit-node", {
+            exitingScopeId,
+            nextScopeId: exitingNode.scopeId || null,
+            selectedNodeId: exitingNode.id,
+            nextTransform: summarizeTransform({ x: newX, y: newY, k }),
+          });
           setViewTransform({ x: newX, y: newY, k });
           return;
         }
@@ -121,6 +168,11 @@ export const useNavigation = (
 
       if (currentScopeId) {
         const currentNode = nodes.find((n) => n.id === currentScopeId);
+        viewportDebugLog("navigation.up-current-scope", {
+          currentScopeId,
+          nextScopeId: currentNode?.scopeId || null,
+          selectedNodeId: currentNode?.id || null,
+        });
         setCurrentScopeId(currentNode?.scopeId || null);
         if (currentNode) setSelectedNodeIds(new Set([currentNode.id]));
       }
@@ -145,6 +197,13 @@ export const useNavigation = (
       const newX = window.innerWidth / 2 - nodeCenterX * k;
       const newY = window.innerHeight / 2 - nodeCenterY * k;
 
+      viewportDebugLog("navigation.focus-node", {
+        nodeId,
+        scopeId: node.scopeId ?? null,
+        currentScopeId,
+        nextTransform: summarizeTransform({ x: newX, y: newY, k }),
+      });
+
       setViewTransform({ x: newX, y: newY, k });
     },
     [nodes, currentScopeId, setCurrentScopeId, setSelectedNodeIds, setViewTransform]
@@ -157,4 +216,3 @@ export const useNavigation = (
     fetchViewportNodes,
   };
 };
-

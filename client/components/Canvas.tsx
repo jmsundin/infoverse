@@ -41,6 +41,11 @@ import {
   DEFAULT_LOD_CONFIG,
 } from "../utils/lodThresholds";
 import { SimulationTrigger } from "../types";
+import {
+  summarizeNodeIds,
+  summarizeTransform,
+  viewportDebugLog,
+} from "../utils/viewportDebug";
 
 interface CanvasProps {
   nodes: GraphNode[];
@@ -426,6 +431,25 @@ export const Canvas: React.FC<CanvasProps> = ({
     () => (selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null),
     [selectedNodeIds]
   );
+  const nodeIdsInScope = useMemo(() => new Set(nodes.map((node) => node.id)), [nodes]);
+  const selectedNodeIdsInScope = useMemo(
+    () => Array.from(selectedNodeIds).filter((id) => nodeIdsInScope.has(id)),
+    [selectedNodeIds, nodeIdsInScope]
+  );
+  const selectedNodeIdsInScopeKey = useMemo(
+    () => selectedNodeIdsInScope.join("|"),
+    [selectedNodeIdsInScope]
+  );
+  const preferredActiveNodeId = useMemo(() => {
+    if (selectedNodeIdsInScope.length === 0) return null;
+    if (selectionHistory?.length) {
+      const fromHistory = selectionHistory.find((id) =>
+        selectedNodeIdsInScope.includes(id)
+      );
+      if (fromHistory) return fromHistory;
+    }
+    return selectedNodeIdsInScope[0];
+  }, [selectedNodeIdsInScope, selectionHistory]);
 
   const [containerSize, setContainerSize] = useState({
     width: window.innerWidth,
@@ -494,6 +518,47 @@ export const Canvas: React.FC<CanvasProps> = ({
   useEffect(() => {
     connectingNodeIdRef.current = connectingNodeId;
   }, [connectingNodeId]);
+  useEffect(() => {
+    setActiveNodeId((prev) => {
+      if (prev === preferredActiveNodeId) return prev;
+      viewportDebugLog("canvas.active-node-sync", {
+        previousActiveNodeId: prev,
+        nextActiveNodeId: preferredActiveNodeId,
+        selectedNodeIds: summarizeNodeIds(selectedNodeIds),
+        selectedNodeIdsInScope: summarizeNodeIds(selectedNodeIdsInScope),
+        scopeId: currentScopeId,
+      });
+      return preferredActiveNodeId;
+    });
+  }, [preferredActiveNodeId, selectedNodeIds, currentScopeId]);
+
+  const activeNodeIsInScope = useMemo(
+    () => (activeNodeId ? nodeIdsInScope.has(activeNodeId) : false),
+    [activeNodeId, nodeIdsInScope]
+  );
+
+  useEffect(() => {
+    if (!activeNodeId) return;
+    const isSelected = selectedNodeIds.has(activeNodeId);
+    const isVisibleInScope = activeNodeIsInScope;
+    if (isSelected && isVisibleInScope) return;
+
+    viewportDebugLog("canvas.active-node-mismatch", {
+      activeNodeId,
+      isSelected,
+      isVisibleInScope,
+      selectedNodeIds: summarizeNodeIds(selectedNodeIds),
+      selectedNodeIdsInScope: summarizeNodeIds(selectedNodeIdsInScope),
+      scopeId: currentScopeId,
+    });
+  }, [
+    activeNodeId,
+    activeNodeIsInScope,
+    selectedNodeIds,
+    selectedNodeIdsInScopeKey,
+    currentScopeId,
+  ]);
+
   useEffect(() => {
     if (!isLayoutMenuOpen) return;
 
@@ -816,6 +881,12 @@ export const Canvas: React.FC<CanvasProps> = ({
         isDraggingRef.current = true;
         const t = event.transform;
 
+        viewportDebugLog("canvas.zoom", {
+          transform: summarizeTransform(t),
+          scopeId: currentScopeId,
+          sourceEvent: event.sourceEvent?.type || "unknown",
+        });
+
         // Semantic Zoom Shift
         // If we hit the semantic shift threshold, we pop up to the parent scope
         if (
@@ -828,7 +899,7 @@ export const Canvas: React.FC<CanvasProps> = ({
           return;
         }
 
-        onViewTransformChange(t);
+        onViewTransformChange({ x: t.x, y: t.y, k: t.k });
       })
       .filter((event) => {
         if (event.shiftKey) return false;
@@ -1370,6 +1441,17 @@ export const Canvas: React.FC<CanvasProps> = ({
       const isSelected = selectedNodeIds.has(id);
       const isMobileTouch = 'touches' in e;
 
+      viewportDebugLog("canvas.node-mousedown", {
+        nodeId: id,
+        isShift,
+        isAlt,
+        isSelectedBefore: isSelected,
+        selectedNodeIds: summarizeNodeIds(selectedNodeIds),
+        activeNodeId,
+        scopeId: currentScopeId,
+        viewTransform: summarizeTransform(viewTransform),
+      });
+
       // Set this node as the active (highlighted) node
       setActiveNodeId(id);
 
@@ -1382,13 +1464,12 @@ export const Canvas: React.FC<CanvasProps> = ({
         // Skip synthetic mousedown after touch (ghost click prevention)
       } else if (isShift) {
         // Toggle selection
-        onNodeSelect(id, true);
+        onNodeSelect(id, isSelected ? "remove" : true);
         // If we are deselecting (was selected, now toggled off), do not start drag
         if (isSelected) return;
       } else {
-        // No Shift - always add to selection (keeps other nodes expanded)
-        // Nodes are only minimized via the minimize button, not by clicking other nodes
-        onNodeSelect(id, true);
+        // Normal click should single-select. Use Shift for additive selection.
+        onNodeSelect(id, false);
       }
 
       // Calculate the effective selection for dragging purposes
@@ -1430,7 +1511,17 @@ export const Canvas: React.FC<CanvasProps> = ({
         initialPositions,
       };
     },
-    [nodes, connectingNodeId, onConnectEnd, onNodeSelect, selectedNodeIds, physicsStartDrag]
+    [
+      nodes,
+      connectingNodeId,
+      onConnectEnd,
+      onNodeSelect,
+      selectedNodeIds,
+      physicsStartDrag,
+      activeNodeId,
+      currentScopeId,
+      viewTransform,
+    ]
   );
 
   const handleBackgroundMouseDown = useCallback((e: React.MouseEvent) => {
@@ -1466,13 +1557,30 @@ export const Canvas: React.FC<CanvasProps> = ({
         target === containerRef.current ||
         target.closest(".canvas-background")
       ) {
+        viewportDebugLog("canvas.background-click-clear-active", {
+          previousActiveNodeId: activeNodeId,
+          selectedNodeIds: summarizeNodeIds(selectedNodeIds),
+          selectedNodeIdsInScope: summarizeNodeIds(selectedNodeIdsInScope),
+          scopeId: currentScopeId,
+          viewTransform: summarizeTransform(viewTransform),
+        });
         // Clear active node (deselect) but keep nodes expanded
         // Node minimization is handled by the minimize button in the node tooltip
         setActiveNodeId(null);
         onSelectionTooltipChange?.(null);
       }
     },
-    [connectingNodeId, onCancelConnect, contextMenu, onSelectionTooltipChange]
+    [
+      connectingNodeId,
+      onCancelConnect,
+      contextMenu,
+      onSelectionTooltipChange,
+      activeNodeId,
+      selectedNodeIds,
+      selectedNodeIdsInScope,
+      currentScopeId,
+      viewTransform,
+    ]
   );
 
   const openContextMenuAtClientPoint = useCallback(
@@ -1557,11 +1665,11 @@ export const Canvas: React.FC<CanvasProps> = ({
       if (e.touches.length !== 1) return;
       const touch = e.touches[0];
       longPressContextMenuOpenedRef.current = false;
+      cancelLongPressContextMenu();
       longPressContextMenuStartPointRef.current = {
         x: touch.clientX,
         y: touch.clientY,
       };
-      cancelLongPressContextMenu();
       longPressContextMenuTimerRef.current = window.setTimeout(() => {
         const start = longPressContextMenuStartPointRef.current;
         if (!start) return;
@@ -1770,8 +1878,27 @@ export const Canvas: React.FC<CanvasProps> = ({
     const newX = window.innerWidth / 2 - targetX * k;
     const newY = window.innerHeight / 2 - targetY * k;
 
+    viewportDebugLog("canvas.focus", {
+      targetNodeId: selectedNodeId,
+      activeNodeId,
+      selectedNodeIds: summarizeNodeIds(selectedNodeIds),
+      selectedNodeIdsInScope: summarizeNodeIds(selectedNodeIdsInScope),
+      targetX: Number(targetX.toFixed(2)),
+      targetY: Number(targetY.toFixed(2)),
+      nextTransform: summarizeTransform({ x: newX, y: newY, k }),
+    });
+
     onViewTransformChange({ x: newX, y: newY, k });
-  }, [nodes, allNodes, activeNodeId, selectedNodeId, selectedNodeIds, selectionHistory, onViewTransformChange]);
+  }, [
+    nodes,
+    allNodes,
+    activeNodeId,
+    selectedNodeId,
+    selectedNodeIds,
+    selectedNodeIdsInScope,
+    selectionHistory,
+    onViewTransformChange,
+  ]);
 
   // Handler for arranging children of a node using physics simulation
   const handleArrangeChildren = useCallback((nodeId: string) => {

@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useRef, useState, useEffect } from 'react';
-import { useSelector, useDispatch } from '../../hooks/useAppStore';
+import { useSelector, useDispatch, useStore } from '../../hooks/useAppStore';
 import { useGraphActions } from '../../hooks/useGraphActions';
 import {
   selectGraphHot,
@@ -25,6 +25,11 @@ import { useViewportStorage, USE_VIEWPORT_STORAGE } from '../../hooks/useViewpor
 import { useViewportNodes } from '../../hooks/useViewportNodes';
 import { performGreedyClustering } from '../../utils/clustering';
 import { GraphNode, GraphEdge, NodeType, SimulationTrigger } from '../../types';
+import {
+  summarizeNodeIds,
+  summarizeTransform,
+  viewportDebugLog,
+} from '../../utils/viewportDebug';
 
 interface GraphModeContainerProps {
   outlinePanelWidth: number;
@@ -45,6 +50,7 @@ export const GraphModeContainer: React.FC<GraphModeContainerProps> = ({
   onOutlinePanelWidthChange,
 }) => {
   const dispatch = useDispatch();
+  const store = useStore();
 
   // --- Selectors (with shallowEqual for performance) ---
   const graphHot = useSelector(selectGraphHot, shallowEqual);
@@ -89,6 +95,31 @@ export const GraphModeContainer: React.FC<GraphModeContainerProps> = ({
     debounceMs: 200,
   });
 
+  useEffect(() => {
+    const selectedInViewport = Array.from(graphHot.selectedNodeIds).filter((id) =>
+      viewportNodeIds.has(id)
+    );
+    const selectedOutsideViewport = Array.from(graphHot.selectedNodeIds).filter(
+      (id) => !viewportNodeIds.has(id)
+    );
+
+    viewportDebugLog('graph.viewport-selection', {
+      scopeId: graphCold.currentScopeId,
+      selectedNodeIds: summarizeNodeIds(graphHot.selectedNodeIds),
+      selectedInViewport: summarizeNodeIds(selectedInViewport),
+      selectedOutsideViewport: summarizeNodeIds(selectedOutsideViewport),
+      viewportNodeCount: viewportNodeIds.size,
+      hasViewportNodes,
+      viewTransform: summarizeTransform(graphHot.viewTransform),
+    });
+  }, [
+    graphHot.selectedNodeIds,
+    graphCold.currentScopeId,
+    viewportNodeIds,
+    hasViewportNodes,
+    graphHot.viewTransform,
+  ]);
+
   // --- Sync viewport storage to main state ---
   useEffect(() => {
     if (USE_VIEWPORT_STORAGE && viewportStorage.isInitialized && storage.dirHandle) {
@@ -104,10 +135,11 @@ export const GraphModeContainer: React.FC<GraphModeContainerProps> = ({
   // --- Graph mutation callbacks (with dedupe + viewport sync) ---
   const setNodesCallback = useCallback(
     (newNodes: GraphNode[] | ((prev: GraphNode[]) => GraphNode[])) => {
-      const resolvedNodes = typeof newNodes === 'function' ? newNodes(graphHot.nodes) : newNodes;
+      const prevNodes = store.getState().nodes;
+      const resolvedNodes = typeof newNodes === 'function' ? newNodes(prevNodes) : newNodes;
       const uniqueNodes = Array.from(new Map(resolvedNodes.map((n) => [n.id, n])).values());
 
-      const prevById = new Map(graphHot.nodes.map((n) => [n.id, n]));
+      const prevById = new Map(prevNodes.map((n) => [n.id, n]));
       for (const n of uniqueNodes) {
         const p = prevById.get(n.id);
         if (!p || p !== n) {
@@ -128,12 +160,13 @@ export const GraphModeContainer: React.FC<GraphModeContainerProps> = ({
 
       dispatch({ type: 'NODES_SET', nodes: uniqueNodes });
     },
-    [graphHot.nodes, dispatch, viewportStorage]
+    [dispatch, viewportStorage, store]
   );
 
   const setEdgesCallback = useCallback(
     (newEdges: GraphEdge[] | ((prev: GraphEdge[]) => GraphEdge[])) => {
-      const resolvedEdges = typeof newEdges === 'function' ? newEdges(graphHot.edges) : newEdges;
+      const prevEdges = store.getState().edges;
+      const resolvedEdges = typeof newEdges === 'function' ? newEdges(prevEdges) : newEdges;
 
       if (USE_VIEWPORT_STORAGE && viewportStorage.isInitialized) {
         viewportStorage.updateEdges(resolvedEdges);
@@ -141,7 +174,7 @@ export const GraphModeContainer: React.FC<GraphModeContainerProps> = ({
 
       dispatch({ type: 'EDGES_SET', edges: resolvedEdges });
     },
-    [graphHot.edges, dispatch, viewportStorage]
+    [dispatch, viewportStorage, store]
   );
 
   // --- Physics simulation ---
@@ -351,6 +384,14 @@ export const GraphModeContainer: React.FC<GraphModeContainerProps> = ({
 
   const handleNodeSelect = useCallback(
     (id: string | null, multi?: boolean | 'remove') => {
+      viewportDebugLog('graph.handle-node-select', {
+        nodeId: id,
+        multi,
+        selectionBefore: summarizeNodeIds(graphHot.selectedNodeIds),
+        scopeId: graphCold.currentScopeId,
+        viewTransform: summarizeTransform(graphHot.viewTransform),
+      });
+
       if (id === null) {
         dispatch({ type: 'SELECTION_CLEAR' });
       } else if (multi === 'remove') {
@@ -363,7 +404,7 @@ export const GraphModeContainer: React.FC<GraphModeContainerProps> = ({
         dispatch({ type: 'SELECTION_HISTORY_PUSH', id });
       }
     },
-    [dispatch]
+    [dispatch, graphHot.selectedNodeIds, graphHot.viewTransform, graphCold.currentScopeId]
   );
 
   return (

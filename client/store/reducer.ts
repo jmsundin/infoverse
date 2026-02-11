@@ -7,6 +7,25 @@ function deduplicateNodes(nodes: GraphNode[]): GraphNode[] {
   return Array.from(new Map(nodes.map((n) => [n.id, n])).values());
 }
 
+function normalizeViewTransform(transform: {
+  x: number;
+  y: number;
+  k: number;
+}): { x: number; y: number; k: number } {
+  return {
+    x: Number.isFinite(transform.x) ? transform.x : 0,
+    y: Number.isFinite(transform.y) ? transform.y : 0,
+    k: Number.isFinite(transform.k) && transform.k > 0 ? transform.k : 1,
+  };
+}
+
+function isSameViewTransform(
+  a: { x: number; y: number; k: number },
+  b: { x: number; y: number; k: number }
+): boolean {
+  return a.x === b.x && a.y === b.y && a.k === b.k;
+}
+
 export function appReducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     // --- Graph ---
@@ -116,8 +135,13 @@ export function appReducer(state: AppState, action: Action): AppState {
       return { ...state, dirName: action.name };
 
     // --- UI ---
-    case 'VIEW_TRANSFORM_SET':
-      return { ...state, viewTransform: action.transform };
+    case 'VIEW_TRANSFORM_SET': {
+      const nextTransform = normalizeViewTransform(action.transform);
+      if (isSameViewTransform(state.viewTransform, nextTransform)) {
+        return state;
+      }
+      return { ...state, viewTransform: nextTransform };
+    }
 
     case 'VIEW_MODE_TOGGLE':
       return {

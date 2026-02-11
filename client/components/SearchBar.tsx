@@ -108,16 +108,30 @@ export const SearchBar: React.FC<SearchBarProps> = ({
       if (!query.trim()) {
         if (nodes.length > 0) {
           // Suggestion Mode: Pick a random node
-          const randomNode = nodes[Math.floor(Math.random() * nodes.length)];
+          const nodesWithSearchableContent = nodes.filter(
+            (node) => (node.content || "").trim().length > 0
+          );
+          const candidateNodes =
+            nodesWithSearchableContent.length > 0
+              ? nodesWithSearchableContent
+              : nodes;
+          const randomNode =
+            candidateNodes[Math.floor(Math.random() * candidateNodes.length)];
           setLocalResults([randomNode]);
           setWebResults([]); // Clear web results in suggestion mode
 
           // Fetch related from Wiki
           try {
             setLoading(true);
+            const suggestionQuery = (randomNode.content || "").trim();
+            if (!suggestionQuery) {
+              setWikiResults([]);
+              return;
+            }
+
             const response = await fetch(
               `https://api.wikimedia.org/core/v1/wikipedia/en/search/title?q=${encodeURIComponent(
-                randomNode.content
+                suggestionQuery
               )}&limit=6`
             );
             const data = await response.json();
@@ -132,7 +146,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
                 .filter(
                   (p: SearchResult) =>
                     p.title.toLowerCase() !==
-                      randomNode.content.toLowerCase() &&
+                      suggestionQuery.toLowerCase() &&
                     !nodes.some(
                       (n) => n.content.toLowerCase() === p.title.toLowerCase()
                     )

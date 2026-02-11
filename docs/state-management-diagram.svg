@@ -1,0 +1,156 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1120" viewBox="0 0 1800 1120">
+  <defs>
+    <style>
+      .title { font: 700 30px "Arial", sans-serif; fill: #0f172a; }
+      .section { font: 700 20px "Arial", sans-serif; fill: #1e293b; }
+      .label { font: 600 15px "Arial", sans-serif; fill: #0f172a; }
+      .small { font: 500 13px "Arial", sans-serif; fill: #334155; }
+      .box { stroke: #334155; stroke-width: 2; rx: 12; ry: 12; }
+      .flow { stroke: #334155; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+      .flow-soft { stroke: #64748b; stroke-width: 2; fill: none; marker-end: url(#arrowSoft); }
+      .flow-dash { stroke: #475569; stroke-width: 2.5; fill: none; stroke-dasharray: 8 6; marker-end: url(#arrow); }
+    </style>
+
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <marker id="arrowSoft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1800" height="1120" fill="#f8fafc"/>
+  <text x="40" y="52" class="title">Infoverse Frontend State Management</text>
+
+  <!-- UI section -->
+  <text x="40" y="95" class="section">1) UI Components (Read + Dispatch)</text>
+  <rect x="40" y="110" width="1720" height="150" fill="#e2e8f0" class="box"/>
+
+  <rect x="80" y="145" width="360" height="90" fill="#ffffff" class="box"/>
+  <text x="100" y="178" class="label">App.tsx</text>
+  <text x="100" y="200" class="small">orchestrates app-level handlers</text>
+
+  <rect x="500" y="145" width="360" height="90" fill="#ffffff" class="box"/>
+  <text x="520" y="178" class="label">GraphModeContainer</text>
+  <text x="520" y="200" class="small">graph interactions + viewport sync</text>
+
+  <rect x="920" y="145" width="360" height="90" fill="#ffffff" class="box"/>
+  <text x="940" y="178" class="label">ChatModeContainer</text>
+  <text x="940" y="200" class="small">chat panels + selection flows</text>
+
+  <rect x="1340" y="145" width="380" height="90" fill="#ffffff" class="box"/>
+  <text x="1360" y="178" class="label">GlobalModals / SidePanelsRenderer</text>
+  <text x="1360" y="200" class="small">modals, profile/settings, side panes</text>
+
+  <!-- Store section -->
+  <text x="40" y="310" class="section">2) AppStore (Single Source of UI Render State)</text>
+  <rect x="40" y="325" width="1080" height="350" fill="#dbeafe" class="box"/>
+
+  <rect x="75" y="370" width="280" height="130" fill="#ffffff" class="box"/>
+  <text x="95" y="403" class="label">AppStore class</text>
+  <text x="95" y="425" class="small">getState / dispatch / subscribe</text>
+  <text x="95" y="446" class="small">(custom external store)</text>
+
+  <rect x="390" y="370" width="330" height="130" fill="#ffffff" class="box"/>
+  <text x="410" y="403" class="label">Reducer</text>
+  <text x="410" y="425" class="small">pure action -> next state</text>
+  <text x="410" y="446" class="small">NODES_SET, FOCUS_NODE, MODAL_*, ...</text>
+
+  <rect x="760" y="370" width="325" height="130" fill="#ffffff" class="box"/>
+  <text x="780" y="403" class="label">AppState</text>
+  <text x="780" y="425" class="small">nodes, edges, selection, viewTransform,</text>
+  <text x="780" y="446" class="small">modals, panels, settings, auth/storage mirrors</text>
+
+  <rect x="75" y="530" width="1010" height="120" fill="#ffffff" class="box"/>
+  <text x="95" y="563" class="label">Selector Layer (useSelector + slice selectors + shallowEqual)</text>
+  <text x="95" y="585" class="small">hot slice: nodes/edges/transform | cold slice: scope/settings | ui/storage/auth/panels/modals</text>
+  <text x="95" y="606" class="small">components subscribe to slices to limit re-renders</text>
+
+  <!-- Context section -->
+  <text x="1160" y="310" class="section">3) Context-Owned Domain State</text>
+  <rect x="1160" y="325" width="600" height="260" fill="#dcfce7" class="box"/>
+
+  <rect x="1195" y="370" width="250" height="165" fill="#ffffff" class="box"/>
+  <text x="1215" y="403" class="label">AuthContext</text>
+  <text x="1215" y="425" class="small">user, isLoading</text>
+  <text x="1215" y="446" class="small">login/logout + auth check</text>
+
+  <rect x="1480" y="370" width="250" height="165" fill="#ffffff" class="box"/>
+  <text x="1500" y="403" class="label">StorageContext</text>
+  <text x="1500" y="425" class="small">storageMode, isMigrating</text>
+  <text x="1500" y="446" class="small">UnifiedStorageService owner</text>
+  <text x="1500" y="467" class="small">init/migrate/delete/restore</text>
+
+  <!-- Effects section -->
+  <text x="40" y="730" class="section">4) Side-Effect Layer (outside reducer)</text>
+  <rect x="40" y="745" width="1720" height="165" fill="#fee2e2" class="box"/>
+
+  <rect x="80" y="782" width="390" height="105" fill="#ffffff" class="box"/>
+  <text x="100" y="815" class="label">AppEffects.tsx</text>
+  <text x="100" y="837" class="small">syncs Auth/Storage context -> AppStore</text>
+  <text x="100" y="858" class="small">persists settings to localStorage</text>
+
+  <rect x="510" y="782" width="390" height="105" fill="#ffffff" class="box"/>
+  <text x="530" y="815" class="label">useAutoSave</text>
+  <text x="530" y="837" class="small">subscribes to store actions</text>
+  <text x="530" y="858" class="small">debounced file + cloud sync</text>
+
+  <rect x="940" y="782" width="390" height="105" fill="#ffffff" class="box"/>
+  <text x="960" y="815" class="label">useViewportStorage (Graph mode)</text>
+  <text x="960" y="837" class="small">two-phase load: skeleton -> full node content</text>
+  <text x="960" y="858" class="small">syncs viewport data into AppStore</text>
+
+  <rect x="1370" y="782" width="350" height="105" fill="#ffffff" class="box"/>
+  <text x="1390" y="815" class="label">settingsService</text>
+  <text x="1390" y="837" class="small">aiProvider, physicsConfig, history</text>
+  <text x="1390" y="858" class="small">localStorage read/write</text>
+
+  <!-- Persistence section -->
+  <text x="40" y="970" class="section">5) Persistence Backends</text>
+  <rect x="40" y="985" width="1720" height="105" fill="#fef9c3" class="box"/>
+
+  <rect x="120" y="1015" width="420" height="55" fill="#ffffff" class="box"/>
+  <text x="140" y="1048" class="label">Local File System (markdown nodes / edges)</text>
+
+  <rect x="690" y="1015" width="420" height="55" fill="#ffffff" class="box"/>
+  <text x="710" y="1048" class="label">Cloud API (nodes + edges sync)</text>
+
+  <rect x="1260" y="1015" width="420" height="55" fill="#ffffff" class="box"/>
+  <text x="1280" y="1048" class="label">Browser localStorage (settings + small prefs)</text>
+
+  <!-- Flows -->
+  <path d="M 260 235 L 260 355" class="flow"/>
+  <path d="M 680 235 L 680 355" class="flow"/>
+  <path d="M 1100 235 L 510 355" class="flow-soft"/>
+  <path d="M 1530 235 L 570 355" class="flow-soft"/>
+
+  <path d="M 250 530 L 250 260" class="flow-dash"/>
+  <text x="262" y="312" class="small">useSelector snapshots</text>
+
+  <path d="M 1320 455 L 750 455" class="flow"/>
+  <text x="1015" y="442" class="small">Auth sync via AppEffects dispatch</text>
+
+  <path d="M 1605 455 L 760 480" class="flow"/>
+  <text x="1218" y="500" class="small">Storage mode/migration sync</text>
+
+  <path d="M 270 745 L 270 675" class="flow"/>
+  <path d="M 700 745 L 700 675" class="flow"/>
+  <path d="M 1130 745 L 900 675" class="flow"/>
+  <path d="M 1545 745 L 1545 585" class="flow-soft"/>
+
+  <path d="M 705 887 L 330 1015" class="flow"/>
+  <path d="M 705 887 L 900 1015" class="flow"/>
+  <path d="M 1550 887 L 1470 1015" class="flow"/>
+  <path d="M 1130 887 L 330 1015" class="flow-soft"/>
+  <path d="M 1130 887 L 900 1015" class="flow-soft"/>
+
+  <!-- Legend -->
+  <rect x="1320" y="35" width="430" height="115" fill="#ffffff" class="box"/>
+  <text x="1340" y="63" class="label">Legend</text>
+  <line x1="1340" y1="85" x2="1415" y2="85" class="flow"/>
+  <text x="1428" y="90" class="small">Primary state/data flow</text>
+  <line x1="1340" y1="108" x2="1415" y2="108" class="flow-soft"/>
+  <text x="1428" y="113" class="small">Auxiliary sync flow</text>
+  <line x1="1340" y1="131" x2="1415" y2="131" class="flow-dash"/>
+  <text x="1428" y="136" class="small">Read-only subscription flow</text>
+</svg>

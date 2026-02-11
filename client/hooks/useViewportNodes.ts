@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from "react";
 import { GraphNode, ViewportTransform } from "../types";
 import { DEFAULT_NODE_WIDTH, DEFAULT_NODE_HEIGHT } from "../constants";
+import { viewportDebugLog } from "../utils/viewportDebug";
 
 interface UseViewportNodesOptions {
   nodes: GraphNode[];
@@ -92,6 +93,16 @@ export function useViewportNodes(
 
     debounceTimerRef.current = setTimeout(() => {
       setDebouncedViewportNodeIds(immediateViewportNodeIds);
+      viewportDebugLog("viewport-nodes.debounced-update", {
+        viewportNodeCount: immediateViewportNodeIds.size,
+        totalNodeCount: nodes.length,
+        bounds: {
+          x: Number(viewportBounds.vpX.toFixed(2)),
+          y: Number(viewportBounds.vpY.toFixed(2)),
+          width: Number(viewportBounds.vpW.toFixed(2)),
+          height: Number(viewportBounds.vpH.toFixed(2)),
+        },
+      });
     }, debounceMs);
 
     return () => {
@@ -99,7 +110,7 @@ export function useViewportNodes(
         clearTimeout(debounceTimerRef.current);
       }
     };
-  }, [immediateViewportNodeIds, debounceMs]);
+  }, [immediateViewportNodeIds, debounceMs, nodes.length, viewportBounds]);
 
   return {
     viewportNodeIds: debouncedViewportNodeIds,
