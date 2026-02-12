@@ -77,8 +77,8 @@ export const GlobalModals: React.FC<GlobalModalsProps> = ({
             onClose={() => dispatch({ type: 'MODAL_PROFILE_HIDE' })}
             onUpdateUser={(upd) => dispatch({ type: 'AUTH_USER_UPDATE', updates: upd })}
             onLogout={onLogout}
-            storageConnected={!!storage.dirHandle}
-            storageDirName={storage.dirName}
+            storageConnected={!!storage.dirHandle || !!auth.user?.storagePath}
+            storageDirName={storage.dirName || auth.user?.storagePath || null}
             onOpenStorage={onOpenStorage}
             onStartMigration={onStartMigration}
             migrationProgress={storage.migrationProgress}

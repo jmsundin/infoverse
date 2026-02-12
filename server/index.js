@@ -696,6 +696,65 @@ const sanitizeFilename = (name) => {
     return name.replace(/[^a-z0-9\-_]/gi, '_').replace(/_{2,}/g, '_').substring(0, 50);
 };
 
+// Find an existing markdown filename for a node by frontmatter id
+const findExistingNodeMarkdownFile = (storagePath, nodeId) => {
+    try {
+        const files = fs.readdirSync(storagePath);
+        for (const file of files) {
+            if (!file.endsWith('.md') || file.startsWith('_')) continue;
+            const fullPath = path.join(storagePath, file);
+            try {
+                const content = fs.readFileSync(fullPath, 'utf8');
+                if (
+                    content.includes(`id: ${nodeId}`) ||
+                    content.includes(`id: "${nodeId}"`) ||
+                    content.includes(`id: '${nodeId}'`)
+                ) {
+                    return file;
+                }
+            } catch {
+                // ignore unreadable files
+            }
+        }
+    } catch {
+        // ignore directory read errors
+    }
+    return null;
+};
+
+const buildNodeMarkdownContent = (node) => {
+    const metadata = { ...node };
+    delete metadata.skipEmbedding;
+
+    const frontmatter = yaml.dump(metadata);
+
+    let body = '';
+    if (Array.isArray(node.messages) && node.messages.length > 0) {
+        body = node.messages
+            .map((m) => `**${m.role}**: ${m.text}`)
+            .join('\n\n');
+    } else {
+        body = node.summary || '';
+    }
+
+    const title = (node.content || node.title || 'Untitled').toString().trim();
+    return `---\n${frontmatter}---\n\n# ${title}\n\n${body}`;
+};
+
+const saveNodeMarkdownToStoragePath = (storagePath, node) => {
+    if (!storagePath || typeof storagePath !== 'string') return;
+
+    ensureDir(storagePath);
+
+    const existingFilename = findExistingNodeMarkdownFile(storagePath, node.id);
+    const baseName = sanitizeFilename(node.title || node.content || 'untitled') || 'untitled';
+    const fallbackFilename = `${baseName}-${String(node.id).slice(0, 6)}.md`;
+    const filename = existingFilename || fallbackFilename;
+    const fullPath = path.join(storagePath, filename);
+
+    fs.writeFileSync(fullPath, buildNodeMarkdownContent(node), 'utf8');
+};
+
 app.post('/api/nodes', async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
     
@@ -786,6 +845,16 @@ app.post('/api/nodes', async (req, res) => {
         ];
         
         await db.query(query, values);
+
+        // Best-effort local markdown mirror if a server storage path is configured
+        const { storagePath } = req.user;
+        if (storagePath && typeof storagePath === 'string') {
+            try {
+                saveNodeMarkdownToStoragePath(storagePath, node);
+            } catch (localErr) {
+                console.error('Error mirroring node to local markdown:', localErr);
+            }
+        }
         
         // Return current count so client can show notifications
         let currentCount = 0;
@@ -798,6 +867,16 @@ app.post('/api/nodes', async (req, res) => {
         
     } catch (e) {
         console.error('Error saving node to cloud:', e);
+        // Fallback: local-only save if storage path is configured
+        const { storagePath } = req.user;
+        if (storagePath && typeof storagePath === 'string') {
+            try {
+                saveNodeMarkdownToStoragePath(storagePath, node);
+                return res.json({ success: true, localOnly: true });
+            } catch (localErr) {
+                console.error('Error saving node to local markdown fallback:', localErr);
+            }
+        }
         return res.status(500).json({ message: 'Error saving node' });
     }
 });
@@ -880,11 +959,34 @@ app.post('/api/nodes/batch', async (req, res) => {
             ];
 
             await db.query(query, values);
+
+            // Best-effort local markdown mirror if a server storage path is configured
+            const { storagePath } = req.user;
+            if (storagePath && typeof storagePath === 'string') {
+                try {
+                    saveNodeMarkdownToStoragePath(storagePath, node);
+                } catch (localErr) {
+                    console.error('Error mirroring batch node to local markdown:', localErr);
+                }
+            }
         }
 
         return res.json({ success: true });
     } catch (e) {
         console.error('Error saving nodes batch:', e);
+        // Fallback: local-only batch save if storage path is configured
+        const { storagePath } = req.user;
+        if (storagePath && typeof storagePath === 'string') {
+            try {
+                for (const node of nodes) {
+                    if (!node || !node.id) continue;
+                    saveNodeMarkdownToStoragePath(storagePath, node);
+                }
+                return res.json({ success: true, localOnly: true });
+            } catch (localErr) {
+                console.error('Error saving nodes batch to local markdown fallback:', localErr);
+            }
+        }
         return res.status(500).json({ message: 'Error saving nodes batch' });
     }
 });
@@ -1005,6 +1107,18 @@ app.post('/api/edges', async (req, res) => {
         return res.json({ success: true, saved: results.saved, failed: results.failed });
     } catch (e) {
         console.error('Error saving cloud edges:', e);
+        // Fallback: local-only edge save if storage path is configured
+        const { storagePath } = req.user;
+        if (storagePath && typeof storagePath === 'string') {
+            try {
+                ensureDir(storagePath);
+                const filePath = path.join(storagePath, '_edges.json');
+                await fs.promises.writeFile(filePath, JSON.stringify(edges, null, 2));
+                return res.json({ success: true, localOnly: true, saved: edges.length, failed: 0 });
+            } catch (localErr) {
+                console.error('Error saving edges to local fallback:', localErr);
+            }
+        }
         return res.status(500).json({ message: 'Error saving edges' });
     }
 });

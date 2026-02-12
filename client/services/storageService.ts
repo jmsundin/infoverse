@@ -1,6 +1,24 @@
 import { GraphNode, GraphEdge, EmbeddedEdge, NodeType } from "../types";
 import yaml from "js-yaml";
 
+type DirectoryPickerErrorCode = "UNSUPPORTED" | "INSECURE_CONTEXT" | "FAILED";
+
+interface DirectoryPickerError extends Error {
+  code: DirectoryPickerErrorCode;
+  cause?: unknown;
+}
+
+const createDirectoryPickerError = (
+  code: DirectoryPickerErrorCode,
+  message: string,
+  cause?: unknown
+): DirectoryPickerError => {
+  const error = new Error(message) as DirectoryPickerError;
+  error.code = code;
+  error.cause = cause;
+  return error;
+};
+
 // --- NEW: Tracking for debounced saves ---
 const saveTimers = new Map<string, number>();
 const edgeSaveTimer: { current: number | null } = { current: null };
@@ -20,16 +38,57 @@ const withExclusiveWebLock = async <T>(
 
 export const pickDirectory =
   async (): Promise<FileSystemDirectoryHandle | null> => {
+    if (typeof window === "undefined") {
+      throw createDirectoryPickerError(
+        "FAILED",
+        "Directory picker can only run in a browser context."
+      );
+    }
+
+    if (!window.isSecureContext) {
+      throw createDirectoryPickerError(
+        "INSECURE_CONTEXT",
+        "Directory picker requires a secure context."
+      );
+    }
+
+    if (typeof window.showDirectoryPicker !== "function") {
+      throw createDirectoryPickerError(
+        "UNSUPPORTED",
+        "Directory picker is not supported in this browser."
+      );
+    }
+
     try {
       const handle = await window.showDirectoryPicker({
         mode: "readwrite",
       });
       return handle;
-    } catch (e) {
-      console.log("Directory picker cancelled", e);
-      return null;
+    } catch (e: any) {
+      if (e?.name === "AbortError") {
+        return null;
+      }
+      throw createDirectoryPickerError(
+        "FAILED",
+        "Directory picker failed to open.",
+        e
+      );
     }
   };
+
+export const getDirectoryPickerErrorMessage = (error: unknown): string => {
+  const code = (error as { code?: string })?.code;
+
+  if (code === "UNSUPPORTED") {
+    return "This browser does not support directory access. Use Chrome or Edge on http://localhost:3000.";
+  }
+
+  if (code === "INSECURE_CONTEXT") {
+    return "Directory access requires a secure origin. Open the app on http://localhost:3000 (not a LAN IP).";
+  }
+
+  return "Unable to open the directory picker. Check browser permissions and try again.";
+};
 
 export const verifyPermission = async (
   fileHandle: FileSystemHandle,

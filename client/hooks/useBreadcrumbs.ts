@@ -30,8 +30,9 @@ export const useBreadcrumbs = (
 
     pushCrumb({ id: null, name: rootName, type: "root" });
 
+    // Multi-select has no stable "active" node; keep breadcrumbs scoped only.
     const activeId =
-      selectedNodeIds.size > 0 ? Array.from(selectedNodeIds)[0] : null;
+      selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null;
     const activeNode = activeId ? nodeMap.get(activeId) : null;
     const activeScopeId = activeNode
       ? activeNode.scopeId ?? null
@@ -79,13 +80,13 @@ export const useBreadcrumbs = (
       const nodeIdsInScope = new Set(nodesInScope.map((n) => n.id));
       if (!nodeIdsInScope.has(activeId)) return [activeNode];
 
-      const adjacency = new Map<string, Set<string>>();
-      nodesInScope.forEach((n) => adjacency.set(n.id, new Set()));
+      const outgoing = new Map<string, Set<string>>();
+      nodesInScope.forEach((n) => outgoing.set(n.id, new Set()));
       edgesInScope.forEach((edge) => {
-        const sourceNeighbors = adjacency.get(edge.source);
-        const targetNeighbors = adjacency.get(edge.target);
-        if (sourceNeighbors) sourceNeighbors.add(edge.target);
-        if (targetNeighbors) targetNeighbors.add(edge.source);
+        const sourceNeighbors = outgoing.get(edge.source);
+        if (sourceNeighbors && outgoing.has(edge.target)) {
+          sourceNeighbors.add(edge.target);
+        }
       });
 
       const inDegree = new Map<string, number>();
@@ -122,7 +123,7 @@ export const useBreadcrumbs = (
           found = true;
           break;
         }
-        const neighbors = adjacency.get(current);
+        const neighbors = outgoing.get(current);
         if (!neighbors) continue;
         neighbors.forEach((neighbor) => {
           if (visited.has(neighbor)) return;
@@ -159,4 +160,3 @@ export const useBreadcrumbs = (
 
   return breadcrumbs;
 };
-

@@ -39,6 +39,7 @@ import {
 } from "./constants";
 import {
   pickDirectory,
+  getDirectoryPickerErrorMessage,
   loadGraphFromDirectory,
   saveNodeToFile,
   verifyPermission,
@@ -50,6 +51,7 @@ import {
   storeDirectoryHandle,
 } from "./services/idbService";
 import {
+  pickServerDirectory,
   updateUserSettings,
 } from "./services/apiStorageService";
 import {
@@ -236,7 +238,14 @@ const App: React.FC = () => {
         if (auth.user) {
           if (!initializedStorage) {
             await initialize(undefined, auth.user.id, false);
-            dispatch({ type: 'STORAGE_DIR_NAME_SET', name: "Cloud Storage" });
+            if (auth.user.storagePath) {
+              const localName =
+                auth.user.storagePath.split(/[\\/]/).filter(Boolean).pop() ||
+                auth.user.storagePath;
+              dispatch({ type: 'STORAGE_DIR_NAME_SET', name: localName });
+            } else {
+              dispatch({ type: 'STORAGE_DIR_NAME_SET', name: "Cloud Storage" });
+            }
           }
         } else {
           await initializeInMemory();
@@ -263,43 +272,108 @@ const App: React.FC = () => {
   };
 
   const handleOpenStorage = useCallback(async () => {
-    const handle = await pickDirectory();
-    if (handle) {
+    let handle: FileSystemDirectoryHandle | null = null;
+    try {
+      handle = await pickDirectory();
+    } catch (e) {
+      console.error("Directory picker error", e);
+      const pickerMessage = getDirectoryPickerErrorMessage(e);
+
+      if (!auth.user) {
+        alert(pickerMessage);
+        return;
+      }
+
+      const commitServerStoragePath = async (storagePath: string) => {
+        const settingsResult = await updateUserSettings(storagePath);
+        if (settingsResult?.user) {
+          dispatch({ type: 'AUTH_USER_UPDATE', updates: settingsResult.user });
+        } else {
+          dispatch({ type: 'AUTH_USER_UPDATE', updates: { storagePath } });
+        }
+
+        const localName =
+          storagePath.split(/[\\/]/).filter(Boolean).pop() || storagePath;
+        dispatch({ type: 'STORAGE_DIR_NAME_SET', name: localName });
+        dispatch({
+          type: 'TOAST_SHOW',
+          message: "Local storage path selected. Notes will be mirrored to markdown files on the server path.",
+        });
+      };
+
+      try {
+        const result = await pickServerDirectory();
+        if (result?.path) {
+          await commitServerStoragePath(result.path);
+          return;
+        }
+
+        if (result?.cancelled) {
+          return;
+        }
+
+        const currentPath = auth.user.storagePath || "";
+        const manualPath = window.prompt(
+          "Could not open system folder picker. Enter an absolute local directory path:",
+          currentPath
+        );
+        if (!manualPath || !manualPath.trim()) {
+          alert(pickerMessage);
+          return;
+        }
+
+        await commitServerStoragePath(manualPath.trim());
+        return;
+      } catch (fallbackError) {
+        console.error("Server directory picker fallback failed", fallbackError);
+        alert(pickerMessage);
+      }
+      return;
+    }
+
+    if (!handle) return;
+
+    try {
+      const hasPermission = await verifyPermission(handle, true);
+      if (!hasPermission) {
+        alert("Write permission is required to save notes in the selected directory.");
+        return;
+      }
+
+      await initialize(handle, auth.user?.id, false);
       await storeDirectoryHandle(handle);
       dispatch({ type: 'STORAGE_DIR_HANDLE_SET', handle });
       dispatch({ type: 'STORAGE_DIR_NAME_SET', name: handle.name });
       setLastDirName(handle.name);
 
-      try {
-        const { nodes: loadedNodes, edges: loadedEdges, hasLegacyEdgesFile } =
-          await loadGraphFromDirectory(handle);
+      const { nodes: loadedNodes, edges: loadedEdges, hasLegacyEdgesFile } =
+        await loadGraphFromDirectory(handle);
 
-        if (loadedNodes.length > 0) {
-          dispatch({ type: 'NODES_SET', nodes: loadedNodes });
-          dispatch({ type: 'EDGES_SET', edges: loadedEdges });
+      if (loadedNodes.length > 0) {
+        dispatch({ type: 'NODES_SET', nodes: loadedNodes });
+        dispatch({ type: 'EDGES_SET', edges: loadedEdges });
 
-          if (hasLegacyEdgesFile) {
-            await migrateEdgesToNodes(handle, loadedNodes, loadedEdges);
-          }
-        } else {
-          const { nodes, edges } = store.getState();
-          if (nodes.length > 0) {
-            for (const node of nodes) {
-              const outgoingEdges = getOutgoingEdges(node.id, edges);
-              await saveNodeToFile(handle, node, outgoingEdges);
-            }
+        if (hasLegacyEdgesFile) {
+          await migrateEdgesToNodes(handle, loadedNodes, loadedEdges);
+        }
+      } else {
+        const { nodes, edges } = store.getState();
+        if (nodes.length > 0) {
+          for (const node of nodes) {
+            const outgoingEdges = getOutgoingEdges(node.id, edges);
+            await saveNodeToFile(handle, node, outgoingEdges);
           }
         }
-
-        cleanupLegacyStorage();
-        dispatch({ type: 'GRAPH_LOADED_SET', loaded: true });
-      } catch (e) {
-        console.error("Error loading from directory", e);
-        dispatch({ type: 'GRAPH_LOADED_SET', loaded: true });
-        alert("Failed to load graph from directory.");
       }
+
+      cleanupLegacyStorage();
+      dispatch({ type: 'GRAPH_LOADED_SET', loaded: true });
+    } catch (e) {
+      console.error("Error loading from directory", e);
+      dispatch({ type: 'GRAPH_LOADED_SET', loaded: true });
+      alert("Failed to load graph from directory.");
     }
-  }, [store, dispatch]);
+  }, [store, dispatch, initialize, auth.user]);
 
   const handleStartMigration = useCallback(async () => {
     const { dirHandle } = store.getState();
