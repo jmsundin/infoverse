@@ -15,8 +15,16 @@ import {
   syntaxHighlighting,
   defaultHighlightStyle,
 } from "@codemirror/language";
-import { languages } from "@codemirror/language-data";
-import hljs from "highlight.js";
+import hljs from "highlight.js/lib/core";
+import javascript from "highlight.js/lib/languages/javascript";
+import typescript from "highlight.js/lib/languages/typescript";
+import json from "highlight.js/lib/languages/json";
+import bash from "highlight.js/lib/languages/bash";
+import markdownHljs from "highlight.js/lib/languages/markdown";
+import python from "highlight.js/lib/languages/python";
+import sql from "highlight.js/lib/languages/sql";
+import xml from "highlight.js/lib/languages/xml";
+import css from "highlight.js/lib/languages/css";
 import { GraphNode } from "../types";
 import { NODE_COLORS } from "../constants";
 import { INTERNAL_NODE_LINK_REGEX, getNodeTitle } from "../utils/wikiLinks";
@@ -36,6 +44,17 @@ type LinkDropdownState = {
 };
 
 const INLINE_LINK_DROPDOWN_WIDTH = 320;
+
+hljs.registerLanguage("javascript", javascript);
+hljs.registerLanguage("typescript", typescript);
+hljs.registerLanguage("json", json);
+hljs.registerLanguage("bash", bash);
+hljs.registerLanguage("markdown", markdownHljs);
+hljs.registerLanguage("python", python);
+hljs.registerLanguage("sql", sql);
+hljs.registerLanguage("xml", xml);
+hljs.registerLanguage("html", xml);
+hljs.registerLanguage("css", css);
 
 const escapeHtml = (value: string) =>
   value
@@ -703,7 +722,6 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
       keymap.of([...editorKeymap, ...defaultKeymap, ...historyKeymap]),
       markdown({
         base: markdownLanguage,
-        codeLanguages: languages,
       }),
       syntaxHighlighting(defaultHighlightStyle, {
         fallback: true,

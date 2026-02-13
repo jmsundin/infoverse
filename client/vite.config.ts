@@ -23,11 +23,17 @@ export default defineConfig(({ mode }) => {
       tailwindcss(),
       VitePWA({
         registerType: "autoUpdate",
+        showMaximumFileSizeToCacheInBytesWarning: true,
         devOptions: {
           enabled: true,
         },
         workbox: {
-          maximumFileSizeToCacheInBytes: 4 * 1024 * 1024, // 4 MB
+          // Keep SW generation stable: Workbox production minification can hang
+          // on this bundle shape, while development mode avoids that terser step.
+          mode: "development",
+          // Keep precache focused on stable core assets; very large hashed JS chunks
+          // should be fetched at runtime instead of inflating/breaking SW generation.
+          maximumFileSizeToCacheInBytes: 2 * 1024 * 1024, // 2 MB
           runtimeCaching: [
             {
               urlPattern: ({ url }) => url.pathname === "/manifest.webmanifest",

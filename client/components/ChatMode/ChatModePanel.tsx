@@ -10,8 +10,7 @@ import { MarkdownEditor } from '../MarkdownEditor';
 import { GraphNode, NodeType, ChatMessage, SelectionTooltipState } from '../../types';
 import * as geminiService from '../../services/geminiService';
 import * as hfService from '../../services/huggingfaceService';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { CodeBlock } from '../CodeBlock';
 import {
   INTERNAL_NODE_LINK_PREFIX,
   extractInternalNodeTitle,
@@ -226,19 +225,16 @@ export const ChatModePanel: React.FC<ChatModePanelProps> = ({
       code: ({ inline, className, children, ...props }: any) => {
         const match = /language-(\w+)/.exec(className || '');
         return !inline && match ? (
-          <SyntaxHighlighter
-            style={vscDarkPlus}
+          <CodeBlock
+            code={String(children).replace(/\n$/, '')}
             language={match[1]}
-            PreTag="div"
             customStyle={{
               margin: '0.75rem 0',
               borderRadius: '0.5rem',
               fontSize: '0.875rem',
             }}
             {...props}
-          >
-            {String(children).replace(/\n$/, '')}
-          </SyntaxHighlighter>
+          />
         ) : (
           <code
             className="bg-slate-700/50 px-1.5 py-0.5 rounded text-sm font-mono"

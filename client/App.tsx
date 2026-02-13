@@ -27,7 +27,6 @@ import { ChatModeContainer, ChatModeSidebar } from "./components/ChatMode";
 import { GraphModeContainer } from "./components/GraphMode";
 import { GlobalModals } from "./components/GlobalModals";
 import { SidePanelsRenderer } from "./components/SidePanelsRenderer";
-import { getMigrationService } from "./services/migration/MigrationService";
 import {
   GraphEdge,
   GraphNode,
@@ -379,6 +378,7 @@ const App: React.FC = () => {
     const { dirHandle } = store.getState();
     if (!dirHandle) return;
 
+    const { getMigrationService } = await import("./services/migration/MigrationService");
     const migrationService = getMigrationService();
     const lastTimestamp = migrationService.getLastMigrationTimestamp();
     if (lastTimestamp) {

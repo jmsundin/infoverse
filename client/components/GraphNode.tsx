@@ -22,9 +22,8 @@ import * as geminiService from "../services/geminiService";
 import * as hfService from "../services/huggingfaceService";
 import { NODE_HEADER_HEIGHT, NODE_COLORS, MOBILE_NODE_WIDTH, MIN_NODE_WIDTH, MOBILE_NODE_MAX_WIDTH, MOBILE_NODE_TITLE_PADDING } from "../constants";
 import { calculateMobileNodeWidth } from "../utils/textMeasurement";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { SidePanelContext } from "./SidePanel";
+import { CodeBlock } from "./CodeBlock";
 import { fetchWikipediaUrl } from "../services/wikidataService";
 import {
   INTERNAL_NODE_LINK_PREFIX,
@@ -513,14 +512,12 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
           const { children, className, node, ...rest } = props;
           const match = /language-(\w+)/.exec(className || "");
           return match ? (
-            <SyntaxHighlighter
-              {...rest}
-              children={String(children).replace(/\n$/, "")}
-              style={vscDarkPlus}
+            <CodeBlock
+              code={String(children).replace(/\n$/, "")}
               language={match[1]}
-              PreTag="div"
               className="rounded-lg my-2 text-xs !bg-[#1e1e1e] border border-slate-700 overflow-x-auto shadow-sm"
               wrapLongLines={true}
+              {...rest}
             />
           ) : (
             <code
@@ -538,7 +535,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
 
     const transitionStyle = isDragging
       ? "none"
-      : "box-shadow 0.2s, transform 0.2s"; // Removed position transition to ensure edges stay attached
+      : "box-shadow 0.15s"; // Keep transitions minimal to reduce visual noise
 
     const defaultWidth = isMobile ? (dynamicMobileWidth ?? MOBILE_NODE_WIDTH) : 300;
     const computedStyle: React.CSSProperties = isSidebar
@@ -571,7 +568,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         <div
           data-node-id={node.id}
           data-selected={isSelected}
-          className={`absolute graph-node flex items-center justify-center p-4 text-center animate-in fade-in zoom-in duration-300`}
+          className={`absolute graph-node flex items-center justify-center p-4 text-center`}
           style={{
             left: node.x,
             top: node.y,
@@ -588,11 +585,11 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         >
           <div
             className={`
-                text-2xl font-bold text-slate-100 drop-shadow-md bg-slate-900/60 backdrop-blur-sm 
-                px-4 py-2 rounded-xl border border-white/10 ${
-                  isSelected ? "ring-2 ring-sky-400" : ""
+                text-2xl font-semibold text-slate-100 bg-slate-900
+                px-4 py-2 rounded-lg border border-slate-600 ${
+                  isSelected ? "ring-1 ring-sky-400" : ""
                 }
-                hover:bg-slate-800/80 cursor-pointer
+                cursor-pointer
             `}
           >
             {titleText}
@@ -609,7 +606,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
           className={`${
             isSidebar
               ? "flex flex-col h-full w-full relative"
-              : "absolute flex flex-col graph-node animate-in fade-in zoom-in duration-300"
+              : "absolute flex flex-col graph-node"
           } group outline-none`}
           style={computedStyle}
           onMouseDown={(e) =>
@@ -621,24 +618,24 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         >
           {!isSidebar && (!isCompact || isSelected) && (
             <div
-              className="absolute top-[-60px] md:top-[-52px] left-0 right-0 h-10 md:h-8 flex items-center justify-end gap-2 md:gap-1 px-2 md:px-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none z-[60]"
+              className="absolute top-[-44px] right-0 h-8 flex items-center justify-end px-1 opacity-0 transition-opacity duration-150 pointer-events-none z-[60]"
               style={{ opacity: isSelected || showSettings ? 1 : undefined }}
             >
-              <div className="flex gap-2 md:gap-1 bg-slate-800/90 backdrop-blur-sm border border-slate-700 rounded-lg p-2 md:p-1 pointer-events-auto shadow-md">
+              <div className="flex items-center gap-1 bg-slate-900 border border-slate-700 rounded-md p-1 pointer-events-auto">
                 {onExpandFromWikidata && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       onExpandFromWikidata(node.id, deriveTitleFromContent(node.content));
                     }}
-                    className="min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 text-slate-400 hover:text-amber-300 hover:bg-slate-700/50 rounded transition-colors flex items-center justify-center"
+                    className="w-7 h-7 rounded transition-colors flex items-center justify-center text-slate-400 hover:text-amber-300 hover:bg-slate-700/50"
                     title="Expand from Wikidata (subtopics)"
                     onMouseDown={(e) => e.stopPropagation()}
                     onTouchStart={(e) => e.stopPropagation()}
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
+                      className="w-4 h-4"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
@@ -655,11 +652,10 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     </svg>
                   </button>
                 )}
-
                 {node.link && (
                   <button
                     onClick={(e) => handleLinkClick(e, node.link!)}
-                    className={`min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 rounded transition-colors flex items-center justify-center ${
+                    className={`w-7 h-7 rounded transition-colors flex items-center justify-center ${
                       node.link.includes("wikipedia.org")
                         ? "text-slate-400 hover:text-white hover:bg-slate-700/50"
                         : "text-slate-400 hover:text-blue-400 hover:bg-slate-700/50"
@@ -675,7 +671,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     {node.link.includes("wikipedia.org") ? (
                       <svg
                         xmlns="http://www.w3.org/2000/svg"
-                        className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
+                        className="w-4 h-4"
                         viewBox="0 0 24 24"
                         fill="none"
                         stroke="currentColor"
@@ -688,7 +684,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     ) : (
                       <svg
                         xmlns="http://www.w3.org/2000/svg"
-                        className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
+                        className="w-4 h-4"
                         viewBox="0 0 24 24"
                         fill="none"
                         stroke="currentColor"
@@ -703,21 +699,20 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     )}
                   </button>
                 )}
-
                 {onExpand && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       onExpand(node.id, deriveTitleFromContent(node.content));
                     }}
-                    className="min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 text-slate-400 hover:text-purple-400 hover:bg-slate-700/50 transition-colors rounded flex items-center justify-center"
+                    className="w-7 h-7 rounded transition-colors flex items-center justify-center text-slate-400 hover:text-purple-400 hover:bg-slate-700/50"
                     title="Expand Subgraph (AI)"
                     onMouseDown={(e) => e.stopPropagation()}
                     onTouchStart={(e) => e.stopPropagation()}
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
+                      className="w-4 h-4"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
@@ -734,21 +729,20 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     </svg>
                   </button>
                 )}
-
                 {onConnectStart && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       onConnectStart(node.id);
                     }}
-                    className="min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 text-slate-400 hover:text-green-400 hover:bg-slate-700/50 transition-colors rounded flex items-center justify-center"
+                    className="w-7 h-7 rounded transition-colors flex items-center justify-center text-slate-400 hover:text-green-400 hover:bg-slate-700/50"
                     title="Connect to another node"
                     onMouseDown={(e) => e.stopPropagation()}
                     onTouchStart={(e) => e.stopPropagation()}
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
+                      className="w-4 h-4"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
@@ -761,46 +755,16 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     </svg>
                   </button>
                 )}
-
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setShowSettings(!showSettings);
-                  }}
-                  className={`min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 rounded hover:bg-slate-700/50 transition-colors flex items-center justify-center ${
-                    showSettings
-                      ? "text-sky-400 bg-slate-700/50"
-                      : "text-slate-400 hover:text-sky-400"
-                  }`}
-                  title="Settings"
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onTouchStart={(e) => e.stopPropagation()}
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <circle cx="12" cy="12" r="3" />
-                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
-                  </svg>
-                </button>
-
                 {onTogglePin && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       onTogglePin(node.id);
                     }}
-                    className={`min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 rounded hover:bg-slate-700/50 transition-colors flex items-center justify-center ${
+                    className={`w-7 h-7 rounded transition-colors flex items-center justify-center ${
                       node.pinned
-                        ? "text-amber-400"
-                        : "text-slate-400 hover:text-amber-400"
+                        ? "text-amber-400 bg-slate-700/50"
+                        : "text-slate-400 hover:text-amber-400 hover:bg-slate-700/50"
                     }`}
                     title={node.pinned ? "Unpin Node" : "Pin Node"}
                     onMouseDown={(e) => e.stopPropagation()}
@@ -808,7 +772,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
+                      className="w-4 h-4"
                       viewBox="0 0 24 24"
                       fill={node.pinned ? "currentColor" : "none"}
                       stroke="currentColor"
@@ -821,21 +785,20 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     </svg>
                   </button>
                 )}
-
                 {onArrangeChildren && childNodes && childNodes.length > 0 && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       onArrangeChildren(node.id);
                     }}
-                    className="min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 rounded hover:bg-slate-700/50 transition-colors text-slate-400 hover:text-purple-400 flex items-center justify-center"
+                    className="w-7 h-7 rounded transition-colors flex items-center justify-center text-slate-400 hover:text-purple-400 hover:bg-slate-700/50"
                     title="Arrange Children (Physics)"
                     onMouseDown={(e) => e.stopPropagation()}
                     onTouchStart={(e) => e.stopPropagation()}
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
+                      className="w-4 h-4"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
@@ -843,7 +806,6 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                       strokeLinecap="round"
                       strokeLinejoin="round"
                     >
-                      {/* Grid/scatter icon - 4 nodes spreading out */}
                       <circle cx="12" cy="12" r="2" />
                       <circle cx="5" cy="5" r="1.5" />
                       <circle cx="19" cy="5" r="1.5" />
@@ -856,21 +818,20 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     </svg>
                   </button>
                 )}
-
                 {onCircularLayout && childNodes && childNodes.length > 0 && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       onCircularLayout(node.id);
                     }}
-                    className="min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 rounded hover:bg-slate-700/50 transition-colors text-slate-400 hover:text-cyan-400 flex items-center justify-center"
+                    className="w-7 h-7 rounded transition-colors flex items-center justify-center text-slate-400 hover:text-cyan-400 hover:bg-slate-700/50"
                     title="Arrange Children (Circular)"
                     onMouseDown={(e) => e.stopPropagation()}
                     onTouchStart={(e) => e.stopPropagation()}
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
+                      className="w-4 h-4"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
@@ -878,7 +839,6 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                       strokeLinecap="round"
                       strokeLinejoin="round"
                     >
-                      {/* Circular/orbital icon - parent in center, children in ring */}
                       <circle cx="12" cy="12" r="2.5" />
                       <circle cx="12" cy="4" r="1.5" />
                       <circle cx="18.9" cy="8" r="1.5" />
@@ -889,21 +849,20 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     </svg>
                   </button>
                 )}
-
                 {onToggleMaximize && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       onToggleMaximize(node.id);
                     }}
-                    className="min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 rounded hover:bg-slate-700/50 transition-colors text-slate-400 hover:text-sky-400 flex items-center justify-center"
+                    className="w-7 h-7 rounded transition-colors flex items-center justify-center text-slate-400 hover:text-sky-400 hover:bg-slate-700/50"
                     title="Maximize Side Pane"
                     onMouseDown={(e) => e.stopPropagation()}
                     onTouchStart={(e) => e.stopPropagation()}
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
+                      className="w-4 h-4"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
@@ -918,22 +877,20 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     </svg>
                   </button>
                 )}
-
                 {onExpandInline && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       onExpandInline(node.id);
                     }}
-                    className="min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 rounded hover:bg-slate-700/50 transition-colors text-slate-400 hover:text-green-400 flex items-center justify-center"
+                    className="w-7 h-7 rounded transition-colors flex items-center justify-center text-slate-400 hover:text-green-400 hover:bg-slate-700/50"
                     title="Expand Node"
                     onMouseDown={(e) => e.stopPropagation()}
                     onTouchStart={(e) => e.stopPropagation()}
                   >
-                    {/* mini expand icon */}
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
+                      className="w-4 h-4"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
@@ -948,21 +905,20 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     </svg>
                   </button>
                 )}
-
                 {onMinimize && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       onMinimize(node.id);
                     }}
-                    className="min-w-[44px] min-h-[44px] p-2 md:min-w-0 md:min-h-0 md:p-1.5 rounded hover:bg-slate-700/50 transition-colors text-slate-400 hover:text-orange-400 flex items-center justify-center"
+                    className="w-7 h-7 rounded transition-colors flex items-center justify-center text-slate-400 hover:text-orange-400 hover:bg-slate-700/50"
                     title="Minimize Node"
                     onMouseDown={(e) => e.stopPropagation()}
                     onTouchStart={(e) => e.stopPropagation()}
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      className="w-[18px] h-[18px] md:w-[14px] md:h-[14px]"
+                      className="w-4 h-4"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
@@ -977,6 +933,34 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     </svg>
                   </button>
                 )}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowSettings(!showSettings);
+                  }}
+                  className={`w-7 h-7 rounded hover:bg-slate-700/50 transition-colors flex items-center justify-center ${
+                    showSettings
+                      ? "text-sky-400 bg-slate-700/50"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                  title="Settings"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onTouchStart={(e) => e.stopPropagation()}
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="w-4 h-4"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                  </svg>
+                </button>
               </div>
             </div>
           )}
@@ -984,7 +968,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
           {showSettings && (
             <div
               ref={settingsRef}
-              className={`absolute z-[60] bg-slate-800 border border-slate-700 rounded-lg shadow-xl flex flex-col gap-2 min-w-[140px] px-3 py-2 
+              className={`absolute z-[60] bg-slate-900 border border-slate-700 rounded-md flex flex-col gap-2 min-w-[220px] px-3 py-2 
                 ${
                   isSidebar
                     ? "top-12 right-4 mt-2"
@@ -1232,19 +1216,8 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
           {/* Visual Container for Clipping */}
           <div
             className={`flex flex-col w-full h-full overflow-hidden 
-          ${isSidebar ? "" : "rounded-xl transition-shadow duration-200"}
-          ${
-            !isSidebar && isSelected
-              ? "ring-4 ring-sky-400 shadow-[0_0_20px_rgba(56,189,248,0.4)]"
-              : ""
-          } 
-          ${
-            !isSidebar && isDragging
-              ? "shadow-2xl scale-[1.01]"
-              : !isSidebar
-              ? "shadow-lg hover:shadow-xl"
-              : ""
-          } 
+          ${isSidebar ? "" : "rounded-lg"}
+          ${!isSidebar && isSelected ? "border-sky-400" : ""}
           ${colorTheme.bg} ${!isSidebar ? `${colorTheme.border} border` : ""}
           ${
             !isSidebar && cutNodeId === node.id
@@ -1254,7 +1227,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       `}
           >
             <div
-              className={`flex items-center justify-between ${"px-3 py-2"} ${
+              className={`flex items-center justify-between ${"px-3 py-1.5"} ${
                 colorTheme.header
               } 
             ${!isSidebar ? "border-b " + colorTheme.border : ""} 
@@ -1287,7 +1260,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     type="text"
                     autoFocus
                     className={`bg-black/30 text-white px-1 py-0.5 rounded border border-slate-500 w-full focus:outline-none focus:border-sky-400 ${
-                      isSidebar ? "text-lg" : "text-xs"
+                      isSidebar ? "text-lg" : "text-sm"
                     }`}
                     value={titleEditValue}
                     onChange={(e) => setTitleEditValue(e.target.value)}
@@ -1299,10 +1272,10 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                 ) : (
                   <>
                     <span
-                      className={`font-bold ${
+                      className={`font-semibold ${
                         colorTheme.text
-                      } truncate cursor-text hover:underline decoration-slate-500/50 underline-offset-2 ${
-                        isSidebar ? "text-lg" : "text-xs"
+                      } truncate cursor-text ${
+                        isSidebar ? "text-lg" : "text-sm"
                       }`}
                       onDoubleClick={(e) => {
                         e.stopPropagation();
@@ -1559,7 +1532,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                             className={`max-w-[95%] flex items-start gap-2 group`}
                           >
                             <div
-                              className={`rounded-lg leading-relaxed shadow-sm ${
+                              className={`rounded-lg leading-relaxed ${
                                 isSidebar
                                   ? "px-5 py-4 text-base"
                                   : "px-3 py-2 text-xs"
@@ -1591,7 +1564,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                             className={`max-w-[95%] flex items-start gap-2 group`}
                           >
                             <div
-                              className={`rounded-lg leading-relaxed shadow-sm ${
+                              className={`rounded-lg leading-relaxed ${
                                 isSidebar
                                   ? "px-5 py-4 text-base"
                                   : "px-3 py-2 text-xs"
