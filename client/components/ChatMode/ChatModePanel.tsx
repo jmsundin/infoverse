@@ -18,6 +18,7 @@ import {
 } from '../../utils/wikiLinks';
 import { cleanTitleMarkdown, updateTitleInContent, deriveTitleFromContent } from '../../utils/titleUtils';
 import { extractPrefixContent } from '../../utils/chatFormatUtils';
+import { deriveChatMessagesFromContent } from '../../utils/nodeContentUtils';
 
 interface ChatModePanelProps {
   node: GraphNode;
@@ -55,13 +56,17 @@ export const ChatModePanel: React.FC<ChatModePanelProps> = ({
   const panelRef = useRef<HTMLDivElement>(null);
 
   const titleText = deriveTitleFromContent(node.content || '') || node.summary || 'Untitled';
+  const contentMessages = useMemo(() => {
+    if (node.messages && node.messages.length > 0) return node.messages;
+    return deriveChatMessagesFromContent(node.content || '') || [];
+  }, [node.messages, node.content]);
 
   // Scroll chat to bottom when messages update
   useEffect(() => {
     if (chatContainerRef.current && node.type === NodeType.CHAT) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
-  }, [node.messages, streamingContent, node.type]);
+  }, [contentMessages, streamingContent, node.type]);
 
   // Handle text selection for tooltip
   const handleMouseUp = useCallback((_e: React.MouseEvent) => {
@@ -96,7 +101,7 @@ export const ChatModePanel: React.FC<ChatModePanelProps> = ({
       text: input,
       timestamp: Date.now(),
     };
-    const updatedMessages = [...(node.messages || []), userMsg];
+    const updatedMessages = [...contentMessages, userMsg];
     const currentInput = input;
 
     onUpdate(node.id, { messages: updatedMessages });
@@ -183,7 +188,7 @@ export const ChatModePanel: React.FC<ChatModePanelProps> = ({
     [onNavigateToNode, onOpenLink]
   );
 
-  const displayMessages = useMemo(() => node.messages || [], [node.messages]);
+  const displayMessages = useMemo(() => contentMessages, [contentMessages]);
 
   const markdownComponents = useMemo(
     () => ({

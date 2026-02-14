@@ -3,6 +3,7 @@ import { NodeType, type GraphNode } from "../../types";
 import {
   appendAliasToContent,
   deriveAliasesFromContent,
+  deriveChatMessagesFromContent,
   deriveFirstExternalLinkFromContent,
   extractHeadingTitle,
   removeAliasFromContent,
@@ -85,5 +86,32 @@ describe("nodeContentUtils", () => {
     expect(projected.title).toBe("Topic");
     expect(projected.aliases).toEqual(["Alias"]);
     expect(projected.link).toBe("https://example.com");
+  });
+
+  it("derives chat messages from markdown transcript", () => {
+    const content = `# Chat
+
+**user**: Hi
+
+**assistant**: Hello there`;
+
+    const messages = deriveChatMessagesFromContent(content);
+    expect(messages).toEqual([
+      { role: "user", text: "Hi", timestamp: 0 },
+      { role: "model", text: "Hello there", timestamp: 1 },
+    ]);
+  });
+
+  it("includes derived chat messages in projected CHAT nodes", () => {
+    const node = makeNode(`**user**: Question
+
+**assistant**: Answer`);
+    node.type = NodeType.CHAT;
+
+    const projected = withDerivedContentFields(node);
+    expect(projected.messages).toEqual([
+      { role: "user", text: "Question", timestamp: 0 },
+      { role: "model", text: "Answer", timestamp: 1 },
+    ]);
   });
 });

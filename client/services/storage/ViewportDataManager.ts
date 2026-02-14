@@ -13,6 +13,7 @@ import { CloudStorageAdapter } from './adapters/CloudStorageAdapter';
 import { InMemoryStorageAdapter } from './adapters/InMemoryStorageAdapter';
 import { YjsSyncEngine } from './crdt/YjsSyncEngine';
 import { SQLiteStorageAdapter } from './sqlite/SQLiteStorageAdapter';
+import { withDerivedContentFields } from '../../utils/nodeContentUtils';
 
 /**
  * ViewportDataManager orchestrates viewport-based data loading.
@@ -139,7 +140,8 @@ export class ViewportDataManager {
       if (this.localAdapter.isEnabled()) {
         const localNodes = await this.localAdapter.loadNodesInBounds(unfetchedBounds);
 
-        for (const node of localNodes) {
+        for (const rawNode of localNodes) {
+          const node = withDerivedContentFields(rawNode);
           // Initialize CRDT document
           this.yjsEngine.initializeFromNode(node.id, node);
           this.nodeCache.set(node.id, node);
@@ -159,7 +161,8 @@ export class ViewportDataManager {
           await this.cloudAdapter.fetchNodesInViewport(unfetchedBounds);
 
         // Merge cloud nodes with local using CRDT
-        for (const cloudNode of cloudNodes) {
+        for (const rawCloudNode of cloudNodes) {
+          const cloudNode = withDerivedContentFields(rawCloudNode);
           if (localNodeIds.has(cloudNode.id)) {
             // Node exists locally - merge using CRDT
             const localNode = this.nodeCache.get(cloudNode.id)!;
@@ -308,7 +311,8 @@ export class ViewportDataManager {
 
     // Try local
     if (this.localAdapter.isEnabled()) {
-      const node = await this.localAdapter.loadNode(nodeId);
+      const rawNode = await this.localAdapter.loadNode(nodeId);
+      const node = rawNode ? withDerivedContentFields(rawNode) : null;
       if (node) {
         this.yjsEngine.initializeFromNode(nodeId, node);
         this.nodeCache.set(nodeId, node);
@@ -318,7 +322,8 @@ export class ViewportDataManager {
 
     // Try cloud
     if (this.cloudAdapter.isEnabled()) {
-      const node = await this.cloudAdapter.loadNode(nodeId);
+      const rawNode = await this.cloudAdapter.loadNode(nodeId);
+      const node = rawNode ? withDerivedContentFields(rawNode) : null;
       if (node) {
         this.yjsEngine.initializeFromNode(nodeId, node);
         this.nodeCache.set(nodeId, node);
@@ -340,31 +345,39 @@ export class ViewportDataManager {
       return;
     }
 
+    const previous = this.nodeCache.get(node.id);
+    const normalized =
+      previous && previous.content === node.content
+        ? node
+        : withDerivedContentFields(node);
+
     // Update CRDT document
-    this.yjsEngine.applyLocalUpdate(node.id, node);
+    this.yjsEngine.applyLocalUpdate(normalized.id, normalized);
 
     // Update cache
-    this.nodeCache.set(node.id, node);
+    this.nodeCache.set(normalized.id, normalized);
 
     // Update region tracker position
-    const existing = this.nodeCache.get(node.id);
-    if (existing && (existing.x !== node.x || existing.y !== node.y)) {
+    if (
+      previous &&
+      (previous.x !== normalized.x || previous.y !== normalized.y)
+    ) {
       this.regionTracker.updateNodePosition(
-        node.id,
-        existing.x,
-        existing.y,
-        node.x,
-        node.y
+        normalized.id,
+        previous.x,
+        previous.y,
+        normalized.x,
+        normalized.y
       );
 
       // Update local adapter index
       if (this.localAdapter.isEnabled()) {
         this.localAdapter.updateNodePositionInIndex(
-          node.id,
-          node.x,
-          node.y,
-          node.width,
-          node.height
+          normalized.id,
+          normalized.x,
+          normalized.y,
+          normalized.width,
+          normalized.height
         );
       }
     }
@@ -381,8 +394,9 @@ export class ViewportDataManager {
       return;
     }
 
-    this.yjsEngine.initializeFromNode(node.id, node);
-    this.nodeCache.set(node.id, node);
+    const normalized = withDerivedContentFields(node);
+    this.yjsEngine.initializeFromNode(normalized.id, normalized);
+    this.nodeCache.set(normalized.id, normalized);
   }
 
   /**

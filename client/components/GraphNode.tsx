@@ -35,6 +35,7 @@ import { extractPrefixContent } from "../utils/chatFormatUtils";
 import {
   appendAliasToContent,
   deriveAliasesFromContent,
+  deriveChatMessagesFromContent,
   deriveFirstExternalLinkFromContent,
   extractHeadingTitle,
   removeAliasFromContent,
@@ -177,6 +178,10 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       () => deriveAliasesFromContent(node.content || ""),
       [node.content]
     );
+    const contentMessages = useMemo(() => {
+      if (node.messages && node.messages.length > 0) return node.messages;
+      return deriveChatMessagesFromContent(node.content || "") || [];
+    }, [node.messages, node.content]);
 
     // Calculate dynamic width for mobile based on title length
     const dynamicMobileWidth = useMemo(() => {
@@ -278,7 +283,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
           chatContainerRef.current.scrollHeight;
       }
     }, [
-      node.messages,
+      contentMessages,
       isChatting,
       streamingContent,
       viewMode,
@@ -359,7 +364,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         text: input,
         timestamp: Date.now(),
       };
-      const updatedMessages = [...(node.messages || []), userMsg];
+      const updatedMessages = [...contentMessages, userMsg];
       const currentInput = input;
 
       onUpdateRef.current(node.id, { messages: updatedMessages });
@@ -580,7 +585,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
 
     const resizeHandleClass =
       "absolute z-50 hover:bg-sky-400/20 transition-colors touch-none";
-    const displayMessages = node.messages || [];
+    const displayMessages = contentMessages;
 
     if (isTitleOnly) {
       return (
@@ -1031,8 +1036,8 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                 <div className="flex flex-col gap-2 pt-2 border-t border-slate-700 mt-1">
                   <button
                     onClick={async () => {
-                      if (node.messages && node.messages.length > 0) {
-                        const msgs = node.messages;
+                      if (contentMessages.length > 0) {
+                        const msgs = contentMessages;
                         const lastUserMsg =
                           [...msgs].reverse().find((m) => m.role === "user")
                             ?.text || "";

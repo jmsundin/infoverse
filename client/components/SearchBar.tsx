@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef } from "react";
 import { GraphNode } from "../types";
-import { deriveAliasesFromContent } from "../utils/nodeContentUtils";
+import {
+  deriveAliasesFromContent,
+  deriveChatMessagesFromContent,
+} from "../utils/nodeContentUtils";
 
 interface SearchResult {
   title: string;
@@ -216,7 +219,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
           const aliases = deriveAliasesFromContent(node.content || "")
             .join(" ")
             .toLowerCase();
-          const messages = (node.messages || [])
+          const messages = (deriveChatMessagesFromContent(node.content || "") || [])
             .map((m) => m.text)
             .join(" ")
             .toLowerCase();

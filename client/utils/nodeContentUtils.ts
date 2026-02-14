@@ -1,5 +1,6 @@
 import { GraphNode } from "../types";
 import { cleanTitleMarkdown } from "./titleUtils";
+import { parseChatMessages } from "./chatFormatUtils";
 
 const INTERNAL_NODE_LINK_PREFIX = "infoverse-node://";
 
@@ -45,10 +46,22 @@ export function deriveFirstExternalLinkFromContent(
   return undefined;
 }
 
+export function deriveChatMessagesFromContent(content: string): GraphNode["messages"] {
+  const parsed = parseChatMessages(content || "");
+  if (!parsed.length) return undefined;
+
+  return parsed.map((message, index) => ({
+    role: message.role === "user" ? "user" : "model",
+    text: message.text,
+    timestamp: index,
+  }));
+}
+
 export function withDerivedContentFields(node: GraphNode): GraphNode {
   const title = extractHeadingTitle(node.content || "");
   const aliases = deriveAliasesFromContent(node.content || "");
   const link = deriveFirstExternalLinkFromContent(node.content || "");
+  const messages = node.type === "CHAT" ? deriveChatMessagesFromContent(node.content || "") : undefined;
 
   const next: GraphNode = { ...node };
 
@@ -68,6 +81,12 @@ export function withDerivedContentFields(node: GraphNode): GraphNode {
     next.link = link;
   } else {
     delete next.link;
+  }
+
+  if (node.type === "CHAT" && messages && messages.length > 0) {
+    next.messages = messages;
+  } else if (node.type === "CHAT") {
+    delete next.messages;
   }
 
   return next;

@@ -1,6 +1,9 @@
 import { useMemo } from "react";
 import { GraphNode } from "../types";
-import { deriveAliasesFromContent } from "../utils/nodeContentUtils";
+import {
+  deriveAliasesFromContent,
+  deriveChatMessagesFromContent,
+} from "../utils/nodeContentUtils";
 
 export interface TreeNodeData {
   node: GraphNode;
@@ -68,7 +71,10 @@ export const useOutlineTree = (
         const aliases = deriveAliasesFromContent(node.content || "")
           .join(" ")
           .toLowerCase();
-        const messages = (node.messages || []).map(m => m.text).join(" ").toLowerCase();
+        const messages = (deriveChatMessagesFromContent(node.content || "") || [])
+          .map((m) => m.text)
+          .join(" ")
+          .toLowerCase();
         const searchableText = `${content} ${summary} ${title} ${aliases} ${messages}`;
 
         const matches = terms.every((term) => searchableText.includes(term));

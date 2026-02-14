@@ -17,6 +17,7 @@ import {
 import { SQLiteService, getSQLiteService } from './SQLiteService';
 import { SQLiteSpatialIndex, NodeLayoutRow, NodeContentRow } from './SQLiteSpatialIndex';
 import { initializeSchema } from './SQLiteSchema';
+import { withDerivedContentFields } from '../../../utils/nodeContentUtils';
 
 export interface SQLiteStorageAdapterConfig {
   saveDebounceMs?: number;
@@ -464,7 +465,7 @@ export class SQLiteStorageAdapter implements LocalStorageAdapterInterface {
   }
 
   private rowsToGraphNode(layout: NodeLayoutRow, content: NodeContentRow | null): GraphNode {
-    return {
+    return withDerivedContentFields({
       id: layout.id,
       type: (content?.type as NodeType) ?? NodeType.NOTE,
       x: layout.x,
@@ -478,7 +479,7 @@ export class SQLiteStorageAdapter implements LocalStorageAdapterInterface {
       scopeId: layout.scope_id ?? undefined,
       parentId: layout.parent_id ?? undefined,
       autoExpandDepth: content?.auto_expand_depth ?? undefined,
-    };
+    });
   }
 
   private generateFilename(node: GraphNode): string {
