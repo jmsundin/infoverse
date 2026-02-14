@@ -7,12 +7,11 @@
  * - Whole workspace: rarely (60-180s) or on focus
  */
 
-import { GraphNode, GraphEdge, EmbeddedEdge, NodeType, NodeColor } from '../../../types';
+import { GraphNode, GraphEdge } from '../../../types';
 import { SQLiteStorageAdapter } from '../sqlite/SQLiteStorageAdapter';
-import { SQLiteSpatialIndex, NodeContentRow } from '../sqlite/SQLiteSpatialIndex';
 import { ConflictResolver, ConflictInfo, ConflictResolution } from './ConflictResolver';
-import yaml from 'js-yaml';
 import xxhash from 'xxhash-wasm';
+import { parseNodeMarkdown } from '../markdown';
 
 export interface FileChange {
   filename: string;
@@ -379,47 +378,10 @@ export class MarkdownWatcher {
   ): Promise<{ node: GraphNode; edges: GraphEdge[] } | null> {
     try {
       const text = await file.text();
-      const parts = text.split(/^---$/m);
-      if (parts.length < 3) return null;
+      const parsed = parseNodeMarkdown(text);
+      if (!parsed) return null;
 
-      const metadata = yaml.load(parts[1]) as any;
-      const body = parts.slice(2).join('---').trim();
-
-      if (!metadata?.id) return null;
-
-      // Extract embedded edges
-      const embeddedEdges: EmbeddedEdge[] = metadata.edges || [];
-      const edges: GraphEdge[] = embeddedEdges.map(e => ({
-        id: e.id,
-        source: metadata.id,
-        target: e.target,
-        label: e.label,
-      }));
-
-      // Extract title from body
-      let title: string | undefined;
-      const headingMatch = body.match(/^#\s+(.+)$/m);
-      if (headingMatch) {
-        title = headingMatch[1].trim();
-      }
-
-      const node: GraphNode = {
-        id: metadata.id,
-        type: metadata.type || NodeType.NOTE,
-        x: metadata.x ?? 0,
-        y: metadata.y ?? 0,
-        width: metadata.width,
-        height: metadata.height,
-        content: body,
-        title,
-        color: metadata.color,
-        pinned: metadata.pinned,
-        scopeId: metadata.scopeId ?? metadata.parentId, // Migration
-        parentId: metadata.outlineParentId ?? (metadata.parentId !== undefined && metadata.scopeId !== undefined ? metadata.parentId : undefined),
-        autoExpandDepth: metadata.autoExpandDepth,
-      };
-
-      return { node, edges };
+      return { node: parsed.node, edges: parsed.edges };
     } catch (e) {
       console.error('[MarkdownWatcher] Failed to parse file:', e);
       return null;

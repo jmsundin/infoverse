@@ -1,5 +1,6 @@
-import { GraphNode, GraphEdge, EmbeddedEdge, NodeType } from "../types";
-import yaml from "js-yaml";
+import { GraphNode, GraphEdge, NodeType } from "../types";
+import { parseNodeMarkdown, serializeNodeMarkdown } from "./storage/markdown";
+import { formatChatContent, extractChatTitle, extractPrefixContent } from "../utils/chatFormatUtils";
 
 type DirectoryPickerErrorCode = "UNSUPPORTED" | "INSECURE_CONTEXT" | "FAILED";
 
@@ -161,12 +162,8 @@ const findExistingFileForNode = async (
         try {
           const file = await (entry as FileSystemFileHandle).getFile();
           const text = await file.text();
-          // Check if this file contains the node ID in frontmatter
-          if (
-            text.includes(`id: ${nodeId}`) ||
-            text.includes(`id: "${nodeId}"`) ||
-            text.includes(`id: '${nodeId}'`)
-          ) {
+          const parsed = parseNodeMarkdown(text);
+          if (parsed?.node.id === nodeId) {
             return entry.name;
           }
         } catch {
@@ -212,30 +209,14 @@ const getAvailableFilename = async (
 // Parse a markdown node file and extract embedded edges
 const parseMarkdownNode = async (
   fileHandle: FileSystemFileHandle
-): Promise<{ node: GraphNode; edges: EmbeddedEdge[] } | null> => {
+): Promise<{ node: GraphNode; edges: GraphEdge[] } | null> => {
   try {
     const file = await fileHandle.getFile();
     const text = await file.text();
+    const parsed = parseNodeMarkdown(text);
+    if (!parsed) return null;
 
-    const parts = text.split(/^---$/m);
-    if (parts.length < 3) return null;
-
-    const metadata = yaml.load(parts[1]) as any;
-    const content = parts.slice(2).join("---").trim();
-
-    // Extract edges from metadata (if present)
-    const embeddedEdges: EmbeddedEdge[] = metadata.edges || [];
-
-    // Remove edges from node object (they're stored separately in memory)
-    const nodeData = { ...metadata };
-    delete nodeData.edges;
-
-    const node: GraphNode = {
-      ...nodeData,
-      content: metadata.content || content || "Untitled",
-    };
-
-    return { node, edges: embeddedEdges };
+    return { node: parsed.node, edges: parsed.edges };
   } catch (e: any) {
     if (isFileSystemAccessApiError(e, ["NotFoundError", "NotReadableError"]))
       return null;
@@ -264,19 +245,9 @@ export const loadGraphFromDirectory = async (
         } else if (entry.name.endsWith(".md")) {
           const result = await parseMarkdownNode(entry as FileSystemFileHandle);
           if (result) {
-            const { node, edges: embeddedEdges } = result;
+            const { node, edges: parsedEdges } = result;
             nodesMap.set(node.id, node);
-
-            // Convert embedded edges to full GraphEdge (add source from node id)
-            for (const edge of embeddedEdges) {
-              allEdges.push({
-                id: edge.id,
-                source: node.id,
-                target: edge.target,
-                label: edge.label,
-                scopeId: edge.scopeId,
-              });
-            }
+            allEdges.push(...parsedEdges);
           }
         }
       } catch (e: any) {
@@ -369,34 +340,22 @@ export const saveNodeToFile = async (
         // This line is what creates the .crswap file
         writable = await fileHandle.createWritable();
 
-        const metadata: any = { ...node };
-        // Remove content from metadata (it goes in the body)
-        delete metadata.content;
-
-        // Convert outgoing edges to embedded format (omit source, it's implicit)
-        if (outgoingEdges.length > 0) {
-          metadata.edges = outgoingEdges.map((edge) => ({
-            id: edge.id,
-            target: edge.target,
-            label: edge.label,
-          }));
-        } else {
-          // Remove edges key if no edges
-          delete metadata.edges;
+        // For chat nodes, persist transcript text into markdown body.
+        let content = node.content || "";
+        if (node.type === NodeType.CHAT && node.messages && node.messages.length > 0) {
+          const title = extractChatTitle(content);
+          const prefix = extractPrefixContent(content);
+          const formattedMessages = formatChatContent(
+            node.messages.map((m) => ({ role: m.role, text: m.text })),
+            title
+          );
+          content = prefix ? `${prefix}\n\n${formattedMessages}` : formattedMessages;
         }
 
-        const frontmatter = yaml.dump(metadata);
-
-        let body = "";
-        if (node.messages) {
-          body = node.messages
-            .map((m) => `**${m.role}**: ${m.text}`)
-            .join("\n\n");
-        } else {
-          body = node.summary || "";
-        }
-
-        const fileContent = `---\n${frontmatter}---\n\n# ${node.content}\n\n${body}`;
+        const fileContent = serializeNodeMarkdown({
+          node: { ...node, content },
+          edges: outgoingEdges,
+        });
 
         await writable.write(fileContent);
         await writable.close(); // .crswap is deleted/renamed here

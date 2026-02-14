@@ -7,11 +7,11 @@
  * 3. Load layouts (parallel) - merge positions from layout files
  */
 
-import { GraphNode, GraphEdge, EmbeddedEdge, NodeType, NodeColor } from '../../../types';
+import { NodeType, NodeColor } from '../../../types';
 import { SQLiteStorageAdapter } from './SQLiteStorageAdapter';
 import { SQLiteSpatialIndex } from './SQLiteSpatialIndex';
 import { LayoutFile } from '../sync/LayoutMaterializer';
-import yaml from 'js-yaml';
+import { parseNodeMarkdown } from '../markdown';
 
 export interface BootstrapProgress {
   phase: 'metadata' | 'content' | 'layouts' | 'complete';
@@ -260,41 +260,22 @@ export class MarkdownBootstrap {
     try {
       const file = await fileHandle.getFile();
       const text = await file.text();
-
-      // Quick frontmatter extraction
-      const frontmatterMatch = text.match(/^---\n([\s\S]*?)\n---/);
-      if (!frontmatterMatch) return null;
-
-      const metadata = yaml.load(frontmatterMatch[1]) as any;
-      if (!metadata?.id || typeof metadata.x !== 'number' || typeof metadata.y !== 'number') {
-        return null;
-      }
-
-      // Extract title from body if not in metadata
-      let title = metadata.title;
-      if (!title) {
-        const bodyStart = text.indexOf('---', 4);
-        if (bodyStart !== -1) {
-          const body = text.slice(bodyStart + 3).trim();
-          const headingMatch = body.match(/^#\s+(.+)$/m);
-          if (headingMatch) {
-            title = headingMatch[1].trim();
-          }
-        }
-      }
+      const parsed = parseNodeMarkdown(text);
+      if (!parsed) return null;
+      const { node } = parsed;
 
       return {
-        id: metadata.id,
+        id: node.id,
         filename: fileHandle.name,
-        x: metadata.x,
-        y: metadata.y,
-        width: metadata.width || 300,
-        height: metadata.height || 200,
-        type: metadata.type || NodeType.NOTE,
-        color: metadata.color,
-        title,
-        scopeId: metadata.scopeId ?? metadata.parentId,
-        parentId: metadata.outlineParentId,
+        x: node.x,
+        y: node.y,
+        width: node.width || 300,
+        height: node.height || 200,
+        type: node.type || NodeType.NOTE,
+        color: node.color,
+        title: node.title,
+        scopeId: node.scopeId ?? undefined,
+        parentId: node.parentId ?? undefined,
       };
     } catch {
       return null;
@@ -358,30 +339,17 @@ export class MarkdownBootstrap {
       const fileHandle = await this.dirHandle.getFileHandle(metadata.filename);
       const file = await fileHandle.getFile();
       const text = await file.text();
-
-      // Parse full content
-      const parts = text.split(/^---$/m);
-      if (parts.length < 3) return;
-
-      const frontmatter = yaml.load(parts[1]) as any;
-      const body = parts.slice(2).join('---').trim();
-
-      // Extract embedded edges
-      const embeddedEdges: EmbeddedEdge[] = frontmatter.edges || [];
-      const edges: GraphEdge[] = embeddedEdges.map(e => ({
-        id: e.id,
-        source: metadata.id,
-        target: e.target,
-        label: e.label,
-      }));
+      const parsed = parseNodeMarkdown(text);
+      if (!parsed) return;
+      const { node, edges } = parsed;
 
       // Update content in SQLite
       spatialIndex.updateContent(metadata.id, {
-        content: body,
-        title: metadata.title,
-        color: metadata.color,
-        type: metadata.type,
-        auto_expand_depth: frontmatter.autoExpandDepth,
+        content: node.content,
+        title: node.title,
+        color: node.color,
+        type: node.type,
+        auto_expand_depth: node.autoExpandDepth,
       });
 
       // Update file mtime

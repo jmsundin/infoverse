@@ -1,10 +1,10 @@
-import { GraphNode, GraphEdge, EmbeddedEdge, NodeType, NodeColor } from '../../../types';
+import { GraphNode, GraphEdge, NodeType } from '../../../types';
 import { ViewportBounds, NodePositionIndex, SpatialIndexEntry, LocalStorageAdapterInterface, DeletedNodeEntry } from '../types';
 import { DeletionStackService } from '../DeletionStackService';
 import { NodeArchiveService } from '../NodeArchiveService';
-import yaml from 'js-yaml';
 import * as d3 from 'd3';
 import { formatChatContent, extractChatTitle, extractPrefixContent } from '../../../utils/chatFormatUtils';
+import { parseNodeMarkdown, serializeNodeMarkdown } from '../markdown';
 
 /**
  * LocalStorageAdapter provides viewport-based access to local file system storage.
@@ -118,47 +118,22 @@ export class LocalStorageAdapter implements LocalStorageAdapterInterface {
     try {
       const file = await fileHandle.getFile();
       const text = await file.text();
-
-      // Quick frontmatter extraction
-      const frontmatterMatch = text.match(/^---\n([\s\S]*?)\n---/);
-      if (!frontmatterMatch) return null;
-
-      const metadata = yaml.load(frontmatterMatch[1]) as any;
-      if (!metadata?.id || typeof metadata.x !== 'number' || typeof metadata.y !== 'number') {
-        return null;
-      }
-
-      // Migration: handle old field names (parentId was scope, outlineParentId becomes parentId)
-      const scopeId = metadata.scopeId ?? metadata.parentId;
-      const parentId = metadata.outlineParentId;
-
-      // Extract title from body's first heading if not in metadata
-      let title = metadata.title;
-      if (!title) {
-        const file = await fileHandle.getFile();
-        const text = await file.text();
-        const bodyStart = text.indexOf('---', 4);
-        if (bodyStart !== -1) {
-          const body = text.slice(bodyStart + 3).trim();
-          const headingMatch = body.match(/^#\s+(.+)$/m);
-          if (headingMatch) {
-            title = headingMatch[1].trim();
-          }
-        }
-      }
+      const parsed = parseNodeMarkdown(text);
+      if (!parsed) return null;
+      const { node } = parsed;
 
       return {
-        id: metadata.id,
-        x: metadata.x,
-        y: metadata.y,
-        width: metadata.width || 300,
-        height: metadata.height || 200,
+        id: node.id,
+        x: node.x,
+        y: node.y,
+        width: node.width || 300,
+        height: node.height || 200,
         filename: fileHandle.name,
         // Extended fields for skeleton rendering
-        type: metadata.type || NodeType.NOTE,
-        color: metadata.color as NodeColor | undefined,
-        title,
-        scopeId,
+        type: node.type,
+        color: node.color,
+        title: node.title,
+        scopeId: node.scopeId ?? undefined,
       };
     } catch {
       return null;
@@ -248,15 +223,7 @@ export class LocalStorageAdapter implements LocalStorageAdapterInterface {
         try {
           const result = await this.parseMarkdownNode(entry as FileSystemFileHandle);
           if (result) {
-            for (const edge of result.edges) {
-              allEdges.push({
-                id: edge.id,
-                source: result.node.id,
-                target: edge.target,
-                label: edge.label,
-                scopeId: edge.scopeId,
-              });
-            }
+            allEdges.push(...result.edges);
           }
         } catch {
           // Skip files that can't be read
@@ -283,15 +250,7 @@ export class LocalStorageAdapter implements LocalStorageAdapterInterface {
         const fileHandle = await this.dirHandle.getFileHandle(filename);
         const result = await this.parseMarkdownNode(fileHandle);
         if (result) {
-          for (const edge of result.edges) {
-            edges.push({
-              id: edge.id,
-              source: result.node.id,
-              target: edge.target,
-              label: edge.label,
-              scopeId: edge.scopeId,
-            });
-          }
+          edges.push(...result.edges);
         }
       } catch {
         // Skip files that can't be read
@@ -306,61 +265,17 @@ export class LocalStorageAdapter implements LocalStorageAdapterInterface {
    */
   private async parseMarkdownNode(
     fileHandle: FileSystemFileHandle
-  ): Promise<{ node: GraphNode; edges: EmbeddedEdge[] } | null> {
+  ): Promise<{ node: GraphNode; edges: GraphEdge[] } | null> {
     try {
       const file = await fileHandle.getFile();
       const text = await file.text();
+      const parsed = parseNodeMarkdown(text);
+      if (!parsed) return null;
 
-      const parts = text.split(/^---$/m);
-      if (parts.length < 3) return null;
-
-      const metadata = yaml.load(parts[1]) as any;
-      const body = parts.slice(2).join('---').trim();
-
-      // Extract edges from metadata
-      const embeddedEdges: EmbeddedEdge[] = metadata.edges || [];
-
-      // Build frontmatter-only node data (no content/title/summary/aliases/link/messages)
-      const nodeData: any = {
-        id: metadata.id,
-        type: metadata.type || NodeType.NOTE,
-        x: metadata.x,
-        y: metadata.y,
-        width: metadata.width,
-        height: metadata.height,
-        color: metadata.color,
-        pinned: metadata.pinned,
-        autoExpandDepth: metadata.autoExpandDepth,
+      return {
+        node: parsed.node,
+        edges: parsed.edges,
       };
-
-      // Migration: rename old field names
-      // Old parentId (scope) -> scopeId, old outlineParentId -> parentId
-      if (metadata.scopeId !== undefined) {
-        nodeData.scopeId = metadata.scopeId;
-      } else if (metadata.parentId !== undefined) {
-        nodeData.scopeId = metadata.parentId;
-      }
-      if (metadata.outlineParentId !== undefined) {
-        nodeData.parentId = metadata.outlineParentId;
-      } else if (metadata.parentId !== undefined && metadata.scopeId !== undefined) {
-        // New schema: parentId is outline parent
-        nodeData.parentId = metadata.parentId;
-      }
-
-      // Derive title from first # heading in body
-      let title: string | undefined;
-      const headingMatch = body.match(/^#\s+(.+)$/m);
-      if (headingMatch) {
-        title = headingMatch[1].trim();
-      }
-
-      const node: GraphNode = {
-        ...nodeData,
-        content: body || '',
-        title,
-      };
-
-      return { node, edges: embeddedEdges };
     } catch (e: any) {
       console.error('Error parsing file:', fileHandle.name, e);
       return null;
@@ -419,36 +334,7 @@ export class LocalStorageAdapter implements LocalStorageAdapterInterface {
         const fileHandle = await this.dirHandle!.getFileHandle(newFileName, { create: true });
         writable = await fileHandle.createWritable();
 
-        // Build frontmatter with only persisted fields
-        const metadata: any = {
-          id: node.id,
-          type: node.type,
-          x: node.x,
-          y: node.y,
-        };
-
-        // Optional frontmatter fields
-        if (node.width !== undefined) metadata.width = node.width;
-        if (node.height !== undefined) metadata.height = node.height;
-        if (node.color !== undefined) metadata.color = node.color;
-        if (node.pinned !== undefined) metadata.pinned = node.pinned;
-        if (node.scopeId !== undefined) metadata.scopeId = node.scopeId;
-        if (node.parentId !== undefined) metadata.parentId = node.parentId;
-        if (node.autoExpandDepth !== undefined) metadata.autoExpandDepth = node.autoExpandDepth;
-
-        // Convert outgoing edges to embedded format
-        if (outgoingEdges.length > 0) {
-          metadata.edges = outgoingEdges.map((edge) => ({
-            id: edge.id,
-            target: edge.target,
-            label: edge.label,
-            scopeId: edge.scopeId,
-          }));
-        }
-
-        const frontmatter = yaml.dump(metadata);
-
-        // For CHAT nodes with messages, format messages into the body
+        // For CHAT nodes with messages, compose canonical body from transcript.
         let body = node.content || '';
         if (node.type === NodeType.CHAT && node.messages && node.messages.length > 0) {
           const title = extractChatTitle(body);
@@ -459,8 +345,10 @@ export class LocalStorageAdapter implements LocalStorageAdapterInterface {
           );
           body = prefix ? `${prefix}\n\n${formattedMessages}` : formattedMessages;
         }
-
-        const fileContent = `---\n${frontmatter}---\n\n${body}`;
+        const fileContent = serializeNodeMarkdown({
+          node: { ...node, content: body },
+          edges: outgoingEdges,
+        });
 
         await writable.write(fileContent);
         await writable.close();
@@ -486,7 +374,7 @@ export class LocalStorageAdapter implements LocalStorageAdapterInterface {
           filename: newFileName,
           type: node.type,
           color: node.color,
-          title: node.title || node.content?.substring(0, 100),
+          title: parseNodeMarkdown(fileContent)?.node.title || node.title || node.content?.substring(0, 100),
           scopeId: node.scopeId,
         });
         this.rebuildQuadtree();

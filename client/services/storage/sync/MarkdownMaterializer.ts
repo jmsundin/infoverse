@@ -5,11 +5,10 @@
  * Content writes are separate from layout writes (positions go to layout files).
  */
 
-import { GraphNode, GraphEdge, EmbeddedEdge, NodeType } from '../../../types';
+import { GraphNode, GraphEdge } from '../../../types';
 import { SQLiteStorageAdapter } from '../sqlite/SQLiteStorageAdapter';
-import { SQLiteSpatialIndex, NodeContentRow } from '../sqlite/SQLiteSpatialIndex';
-import yaml from 'js-yaml';
 import xxhash from 'xxhash-wasm';
+import { serializeNodeMarkdown } from '../markdown';
 
 export interface MarkdownMaterializerConfig {
   debounceMs?: number;
@@ -169,40 +168,7 @@ export class MarkdownMaterializer {
    * Build markdown content from node
    */
   private buildMarkdown(node: GraphNode, edges: GraphEdge[]): string {
-    // Build frontmatter with only persisted fields
-    const metadata: Record<string, any> = {
-      id: node.id,
-      type: node.type,
-    };
-
-    // Note: positions are NOT in frontmatter - they go to layout files
-    // But we keep them for backwards compatibility with existing files
-    // The authoritative positions are in SQLite / layout files
-    metadata.x = node.x;
-    metadata.y = node.y;
-    if (node.width !== undefined) metadata.width = node.width;
-    if (node.height !== undefined) metadata.height = node.height;
-
-    // Other optional fields
-    if (node.color !== undefined) metadata.color = node.color;
-    if (node.pinned !== undefined) metadata.pinned = node.pinned;
-    if (node.scopeId !== undefined) metadata.scopeId = node.scopeId;
-    if (node.parentId !== undefined) metadata.parentId = node.parentId;
-    if (node.autoExpandDepth !== undefined) metadata.autoExpandDepth = node.autoExpandDepth;
-
-    // Convert edges to embedded format
-    if (edges.length > 0) {
-      metadata.edges = edges.map(e => ({
-        id: e.id,
-        target: e.target,
-        label: e.label,
-      }));
-    }
-
-    const frontmatter = yaml.dump(metadata);
-    const body = node.content || '';
-
-    return `---\n${frontmatter}---\n\n${body}`;
+    return serializeNodeMarkdown({ node, edges });
   }
 
   /**
