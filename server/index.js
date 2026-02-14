@@ -6,6 +6,7 @@ const session = require('express-session');
 const bcrypt = require('bcryptjs');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const cors = require('cors');
 const yaml = require('js-yaml');
 const { exec } = require('child_process');
@@ -23,6 +24,23 @@ process.on('unhandledRejection', (reason, promise) => {
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const DEFAULT_STORAGE_DIR_NAME = 'infoverse';
+
+const getDefaultStoragePath = (dirName = DEFAULT_STORAGE_DIR_NAME) => {
+    const trimmedDirName = typeof dirName === 'string' ? dirName.trim() : '';
+    const safeDirName = trimmedDirName && trimmedDirName !== '.' && trimmedDirName !== '..'
+        ? trimmedDirName
+        : DEFAULT_STORAGE_DIR_NAME;
+    return path.join(os.homedir(), 'Documents', safeDirName);
+};
+
+const resolveStoragePath = (storagePath) => {
+    if (typeof storagePath === 'string') {
+        const trimmed = storagePath.trim();
+        if (trimmed) return trimmed;
+    }
+    return getDefaultStoragePath();
+};
 
 // Stripe Init
 let stripe;
@@ -114,7 +132,7 @@ passport.use(new LocalStrategy(async (username, password, done) => {
         
         const isMatch = await bcrypt.compare(password, user.password);
         if (isMatch) {
-            user.storagePath = user.storage_path;
+            user.storagePath = resolveStoragePath(user.storage_path);
             user.isAdmin = user.is_admin;
             user.isPaid = user.is_paid || user.is_admin;
             return done(null, user);
@@ -136,7 +154,7 @@ passport.deserializeUser(async (id, done) => {
         const result = await db.query('SELECT * FROM users WHERE id = $1', [id]);
         const user = result.rows[0];
         if (user) {
-            user.storagePath = user.storage_path;
+            user.storagePath = resolveStoragePath(user.storage_path);
             user.isAdmin = user.is_admin;
             user.isPaid = user.is_paid || user.is_admin;
             done(null, user);
@@ -352,11 +370,11 @@ app.post('/api/auth/signup', async (req, res) => {
         // Insert user
         const result = await db.query(
             'INSERT INTO users (username, password, storage_path) VALUES ($1, $2, $3) RETURNING *',
-            [username, hashedPassword, '']
+            [username, hashedPassword, getDefaultStoragePath()]
         );
         
         const newUser = result.rows[0];
-        newUser.storagePath = newUser.storage_path;
+        newUser.storagePath = resolveStoragePath(newUser.storage_path);
         
         // Auto login after signup
         req.login(newUser, (err) => {
@@ -380,19 +398,18 @@ app.post('/api/user/settings', async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ message: 'Unauthorized' });
 
     const { storagePath } = req.body;
+    const resolvedStoragePath = resolveStoragePath(storagePath);
     
     try {
-        if (storagePath) {
-            ensureDir(storagePath);
-        }
+        ensureDir(resolvedStoragePath);
         
         const result = await db.query(
             'UPDATE users SET storage_path = $1 WHERE id = $2 RETURNING *',
-            [storagePath, req.user.id]
+            [resolvedStoragePath, req.user.id]
         );
         
         const updatedUser = result.rows[0];
-        updatedUser.storagePath = updatedUser.storage_path;
+        updatedUser.storagePath = resolveStoragePath(updatedUser.storage_path);
         
         // Update session user
         req.login(updatedUser, (err) => {
@@ -488,6 +505,7 @@ app.put('/api/user/profile', async (req, res) => {
 
         const result = await db.query(updateQuery, values);
         const updatedUser = result.rows[0];
+        updatedUser.storagePath = resolveStoragePath(updatedUser.storage_path);
 
         // Update session
         req.login(updatedUser, (err) => {
@@ -502,7 +520,7 @@ app.put('/api/user/profile', async (req, res) => {
                     email: updatedUser.email,
                     isPaid: updatedUser.is_paid || updatedUser.is_admin,
                     isAdmin: updatedUser.is_admin,
-                    storagePath: updatedUser.storage_path
+                    storagePath: updatedUser.storagePath
                 } 
             });
         });

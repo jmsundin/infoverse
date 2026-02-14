@@ -285,7 +285,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
                            value={localPath}
                            onChange={(e) => setLocalPath(e.target.value)}
                            className="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white focus:border-sky-500 focus:outline-none text-sm"
-                           placeholder="/path/to/notes"
+                           placeholder="~/Documents/infoverse"
                        />
                        <button
                            type="button"
@@ -296,7 +296,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
                        </button>
                    </div>
                    <p className="text-xs text-slate-500 mt-1">
-                       Optional: Set a path on the server to store notes locally instead of the cloud.
+                       Defaults to <code className="text-slate-400">~/Documents/infoverse</code>. Change the final folder name if you prefer a different directory.
                    </p>
                 </div>
 
@@ -607,4 +607,3 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     </div>
   );
 };
-

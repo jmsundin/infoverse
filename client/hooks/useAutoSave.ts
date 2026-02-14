@@ -16,6 +16,7 @@ import {
 const NODE_MUTATING_ACTIONS = new Set([
   'NODES_SET',
   'NODES_ADD',
+  'NODES_UPDATE',
   'NODE_UPDATE',
   'NODES_MERGE',
   'RESTORE_NODES',
@@ -25,6 +26,7 @@ const NODE_MUTATING_ACTIONS = new Set([
 // Actions that mutate edges
 const EDGE_MUTATING_ACTIONS = new Set([
   'EDGES_SET',
+  'EDGES_UPDATE',
   'EDGE_ADD',
   'EDGES_ADD',
   'RESTORE_NODES',

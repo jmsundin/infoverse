@@ -22,7 +22,8 @@ export interface EmbeddedEdge {
   scopeId?: string;
 }
 
-// Persisted fields (stored in markdown frontmatter)
+// Persisted fields (stored in markdown frontmatter).
+// See docs/markdown-node-schema-v2.md for the canonical file contract.
 export interface GraphNodeFrontmatter {
   id: string;
   type: NodeType;
@@ -38,7 +39,7 @@ export interface GraphNodeFrontmatter {
   autoExpandDepth?: number; // Number of levels to automatically expand
 }
 
-// Runtime node with derived fields
+// Runtime node with derived fields (not persisted directly in frontmatter).
 export interface GraphNode extends GraphNodeFrontmatter {
   // Content fields (body is source of truth, but these are parsed for runtime use)
   content: string; // The markdown body content

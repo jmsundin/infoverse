@@ -312,9 +312,10 @@ const App: React.FC = () => {
         }
 
         const currentPath = auth.user.storagePath || "";
+        const suggestedPath = currentPath || "~/Documents/infoverse";
         const manualPath = window.prompt(
-          "Could not open system folder picker. Enter an absolute local directory path:",
-          currentPath
+          "Could not open system folder picker. Enter an absolute local directory path (you can change the folder name):",
+          suggestedPath
         );
         if (!manualPath || !manualPath.trim()) {
           alert(pickerMessage);
@@ -663,10 +664,6 @@ const App: React.FC = () => {
               dispatch({ type: 'SELECTION_CLEAR' });
             }
           }}
-          onCloseFolder={handleCloseFolder}
-          onImportFromCloud={handleImportFromCloud}
-          dirName={storage.dirName}
-          isLoggedIn={!!auth.user}
           isOutlinePanelOpen={ui.isOutlinePanelOpen}
           outlinePanelWidth={outlinePanelWidth}
         />
