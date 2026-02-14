@@ -2,6 +2,7 @@ import { AppState } from './AppState';
 import { Action } from './actions';
 import { GraphNode } from '../types';
 import { createDefaultGraphNodes } from '../utils/graphUtils';
+import { withDerivedContentFields } from '../utils/nodeContentUtils';
 
 function deduplicateNodes(nodes: GraphNode[]): GraphNode[] {
   return Array.from(new Map(nodes.map((n) => [n.id, n])).values());
@@ -45,7 +46,11 @@ export function appReducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         nodes: state.nodes.map((n) =>
-          n.id === action.id ? { ...n, ...action.updates } : n
+          n.id === action.id
+            ? action.updates.content !== undefined || action.updates.type !== undefined
+              ? withDerivedContentFields({ ...n, ...action.updates })
+              : { ...n, ...action.updates }
+            : n
         ),
       };
 

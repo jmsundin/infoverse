@@ -28,6 +28,7 @@ import css from "highlight.js/lib/languages/css";
 import { GraphNode } from "../types";
 import { NODE_COLORS } from "../constants";
 import { INTERNAL_NODE_LINK_REGEX, getNodeTitle } from "../utils/wikiLinks";
+import { deriveAliasesFromContent } from "../utils/nodeContentUtils";
 
 interface MarkdownEditorProps {
   initialContent: string;
@@ -558,8 +559,8 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
         const title = getNodeTitle(node);
         const titleLower = title.toLowerCase();
         const summaryLower = (node.summary || node.content || "").toLowerCase();
-        const aliasHit = node.aliases?.find((alias) =>
-          alias.toLowerCase().includes(normalized)
+        const aliasHit = deriveAliasesFromContent(node.content || "").find(
+          (alias) => alias.toLowerCase().includes(normalized)
         );
 
         if (titleLower.startsWith(normalized)) {

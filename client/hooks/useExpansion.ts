@@ -11,6 +11,7 @@ import * as geminiService from "../services/geminiService";
 import * as hfService from "../services/huggingfaceService";
 import { parseTextToNodes } from "../utils/graphUtils";
 import { extractFirstNounPhrase, isShortContent, cleanTitleMarkdown, deriveTitleFromContent } from "../utils/titleUtils";
+import { upsertExternalLinkInContent } from "../utils/nodeContentUtils";
 
 export const useExpansion = (
   nodes: GraphNode[],
@@ -48,15 +49,18 @@ export const useExpansion = (
 
       const subNodes: GraphNode[] = nodesToCreate.map((n, i) => {
         const angle = startAngle + (i / Math.max(nodesToCreate.length, 1)) * 2 * Math.PI;
+        const baseContent = `# ${n.name}\n\n**assistant**: ${n.description}`;
+        const content = n.wikiLink
+          ? upsertExternalLinkInContent(baseContent, n.wikiLink, "Wikipedia")
+          : baseContent;
         return {
           id: crypto.randomUUID(),
           type: NodeType.CHAT,
           x: parentNodeX + fixedRadius * Math.cos(angle),
           y: parentNodeY + fixedRadius * Math.sin(angle),
-          content: `# ${n.name}\n\n**assistant**: ${n.description}`,
+          content,
           width: DEFAULT_NODE_WIDTH,
           height: DEFAULT_NODE_HEIGHT,
-          link: n.wikiLink,
           scopeId: currentScopeId || undefined,
           parentId: parentNodeId,
           summary: n.description,
@@ -148,15 +152,16 @@ export const useExpansion = (
 
       const createdNodes: GraphNode[] = subtopicsToCreate.map((st, i) => {
         const angle = startAngle + (i / Math.max(subtopicsToCreate.length, 1)) * 2 * Math.PI;
+        const baseContent = `# ${st.label}${st.description ? `\n\n**assistant**: ${st.description}` : ""}`;
+        const content = upsertExternalLinkInContent(baseContent, st.wikidataUrl, "Wikidata");
         return {
           id: crypto.randomUUID(),
           type: NodeType.CHAT,
           x: parentNodeX + fixedRadius * Math.cos(angle),
           y: parentNodeY + fixedRadius * Math.sin(angle),
-          content: `# ${st.label}${st.description ? `\n\n**assistant**: ${st.description}` : ""}`,
+          content,
           width: DEFAULT_NODE_WIDTH,
           height: DEFAULT_NODE_HEIGHT,
-          link: st.wikidataUrl,
           scopeId: currentScopeId || undefined,
           parentId: parentNodeId,
           summary: st.description,
@@ -635,4 +640,3 @@ export const useExpansion = (
     handleCancelExpansion,
   };
 };
-

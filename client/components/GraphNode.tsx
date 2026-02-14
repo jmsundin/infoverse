@@ -32,6 +32,14 @@ import {
 } from "../utils/wikiLinks";
 import { cleanTitleMarkdown, updateTitleInContent, deriveTitleFromContent } from "../utils/titleUtils";
 import { extractPrefixContent } from "../utils/chatFormatUtils";
+import {
+  appendAliasToContent,
+  deriveAliasesFromContent,
+  deriveFirstExternalLinkFromContent,
+  extractHeadingTitle,
+  removeAliasFromContent,
+  upsertExternalLinkInContent,
+} from "../utils/nodeContentUtils";
 
 interface GraphNodeProps {
   node: GraphNode;
@@ -160,6 +168,15 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     const isCompact = !isSidebar && !effectiveExpanded;
 
     const titleText = deriveTitleFromContent(node.content || '') || node.summary || 'Untitled';
+    const headingTitle = extractHeadingTitle(node.content || "");
+    const contentLink = useMemo(
+      () => deriveFirstExternalLinkFromContent(node.content || ""),
+      [node.content]
+    );
+    const contentAliases = useMemo(
+      () => deriveAliasesFromContent(node.content || ""),
+      [node.content]
+    );
 
     // Calculate dynamic width for mobile based on title length
     const dynamicMobileWidth = useMemo(() => {
@@ -295,28 +312,30 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       // Skip if not selected, no title, already has a non-wikidata link, or dragging
       if (
         !isSelected ||
-        !node.title ||
-        (node.link && !node.link.includes("wikidata.org")) ||
+        !headingTitle ||
+        (contentLink && !contentLink.includes("wikidata.org")) ||
         isDragging
       ) {
         return;
       }
 
       // Skip if we've already fetched for this exact title (prevents duplicate calls during panning)
-      if (wikipediaFetchedRef.current === node.title) {
+      if (wikipediaFetchedRef.current === headingTitle) {
         return;
       }
 
       let cancelled = false;
 
       const checkWiki = async () => {
-        const url = await fetchWikipediaUrl(node.title);
+        const url = await fetchWikipediaUrl(headingTitle);
         if (cancelled) return;
 
-        wikipediaFetchedRef.current = node.title;
+        wikipediaFetchedRef.current = headingTitle;
 
-        if (url && url !== node.link) {
-          onUpdate(node.id, { link: url });
+        if (url && url !== contentLink) {
+          onUpdate(node.id, {
+            content: upsertExternalLinkInContent(node.content || "", url, "Wikipedia"),
+          });
         }
       };
 
@@ -325,12 +344,12 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       return () => {
         cancelled = true;
       };
-    }, [isSelected, node.title, node.link, node.id, onUpdate, isDragging]);
+    }, [isSelected, headingTitle, contentLink, node.id, node.content, onUpdate, isDragging]);
 
     // Reset wikipedia fetch tracking when node title changes
     useEffect(() => {
       wikipediaFetchedRef.current = null;
-    }, [node.title]);
+    }, [headingTitle]);
 
     const handleSendMessage = async () => {
       if (!input.trim()) return;
@@ -652,23 +671,23 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                     </svg>
                   </button>
                 )}
-                {node.link && (
+                {contentLink && (
                   <button
-                    onClick={(e) => handleLinkClick(e, node.link!)}
+                    onClick={(e) => handleLinkClick(e, contentLink)}
                     className={`w-7 h-7 rounded transition-colors flex items-center justify-center ${
-                      node.link.includes("wikipedia.org")
+                      contentLink.includes("wikipedia.org")
                         ? "text-slate-400 hover:text-white hover:bg-slate-700/50"
                         : "text-slate-400 hover:text-blue-400 hover:bg-slate-700/50"
                     }`}
                     title={
-                      node.link.includes("wikipedia.org")
+                      contentLink.includes("wikipedia.org")
                         ? "Open Wikipedia Article"
                         : "Open Wiki Link"
                     }
                     onMouseDown={(e) => e.stopPropagation()}
                     onTouchStart={(e) => e.stopPropagation()}
                   >
-                    {node.link.includes("wikipedia.org") ? (
+                    {contentLink.includes("wikipedia.org") ? (
                       <svg
                         xmlns="http://www.w3.org/2000/svg"
                         className="w-4 h-4"
@@ -1119,7 +1138,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                   Aliases
                 </span>
                 <div className="flex flex-wrap gap-1 mb-1">
-                  {node.aliases?.map((alias) => (
+                  {contentAliases.map((alias) => (
                     <span
                       key={alias}
                       className="text-[10px] bg-slate-700 px-1.5 py-0.5 rounded flex items-center gap-1 group/alias"
@@ -1129,7 +1148,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                         onClick={(e) => {
                           e.stopPropagation();
                           onUpdate(node.id, {
-                            aliases: node.aliases?.filter((a) => a !== alias),
+                            content: removeAliasFromContent(node.content || "", alias),
                           });
                         }}
                         className="hover:text-red-400 opacity-50 group-hover/alias:opacity-100"
@@ -1148,11 +1167,9 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                       e.stopPropagation();
                       const val = e.currentTarget.value.trim();
                       if (val) {
-                        const newAliases = [...(node.aliases || [])];
-                        if (!newAliases.includes(val)) {
-                          newAliases.push(val);
-                          onUpdate(node.id, { aliases: newAliases });
-                        }
+                        onUpdate(node.id, {
+                          content: appendAliasToContent(node.content || "", val),
+                        });
                         e.currentTarget.value = "";
                       }
                     }
@@ -1338,21 +1355,21 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                       />
                     ))}
                   </div>
-                  {node.link && (
+                  {contentLink && (
                     <button
-                      onClick={(e) => handleLinkClick(e, node.link!)}
+                      onClick={(e) => handleLinkClick(e, contentLink)}
                       className={`p-1 rounded hover:bg-slate-700/50 ${
-                        node.link.includes("wikipedia.org")
+                        contentLink.includes("wikipedia.org")
                           ? "text-slate-400 hover:text-white"
                           : "text-slate-400 hover:text-sky-400"
                       }`}
                       title={
-                        node.link.includes("wikipedia.org")
+                        contentLink.includes("wikipedia.org")
                           ? "Open Wikipedia Article"
                           : "Open Wiki Link"
                       }
                     >
-                      {node.link.includes("wikipedia.org") ? (
+                      {contentLink.includes("wikipedia.org") ? (
                         <svg
                           xmlns="http://www.w3.org/2000/svg"
                           width="16"
