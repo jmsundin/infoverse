@@ -3,8 +3,8 @@ import { ViewportBounds, NodePositionIndex, SpatialIndexEntry, LocalStorageAdapt
 import { DeletionStackService } from '../DeletionStackService';
 import { NodeArchiveService } from '../NodeArchiveService';
 import * as d3 from 'd3';
-import { formatChatContent, extractChatTitle, extractPrefixContent } from '../../../utils/chatFormatUtils';
 import { parseNodeMarkdown, serializeNodeMarkdown } from '../markdown';
+import { composeChatContentFromMessages } from '../../../utils/nodeContentUtils';
 
 /**
  * LocalStorageAdapter provides viewport-based access to local file system storage.
@@ -337,13 +337,10 @@ export class LocalStorageAdapter implements LocalStorageAdapterInterface {
         // For CHAT nodes with messages, compose canonical body from transcript.
         let body = node.content || '';
         if (node.type === NodeType.CHAT && node.messages && node.messages.length > 0) {
-          const title = extractChatTitle(body);
-          const prefix = extractPrefixContent(body);
-          const formattedMessages = formatChatContent(
-            node.messages.map(m => ({ role: m.role, text: m.text })),
-            title
+          body = composeChatContentFromMessages(
+            body,
+            node.messages.map((m) => ({ role: m.role, text: m.text }))
           );
-          body = prefix ? `${prefix}\n\n${formattedMessages}` : formattedMessages;
         }
         const fileContent = serializeNodeMarkdown({
           node: { ...node, content: body },

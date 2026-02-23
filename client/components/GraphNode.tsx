@@ -34,9 +34,11 @@ import { cleanTitleMarkdown, updateTitleInContent, deriveTitleFromContent } from
 import { extractPrefixContent } from "../utils/chatFormatUtils";
 import {
   appendAliasToContent,
+  composeChatContentFromMessages,
   deriveAliasesFromContent,
   deriveChatMessagesFromContent,
   deriveFirstExternalLinkFromContent,
+  extractMarkdownBodyContent,
   extractHeadingTitle,
   removeAliasFromContent,
   upsertExternalLinkInContent,
@@ -168,20 +170,43 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       lodLevel === "TITLE" && !effectiveExpanded && !isSidebar;
     const isCompact = !isSidebar && !effectiveExpanded;
 
-    const titleText = deriveTitleFromContent(node.content || '') || node.summary || 'Untitled';
-    const headingTitle = extractHeadingTitle(node.content || "");
-    const contentLink = useMemo(
-      () => deriveFirstExternalLinkFromContent(node.content || ""),
+    const markdownBodyContent = useMemo(
+      () => extractMarkdownBodyContent(node.content || ""),
       [node.content]
+    );
+    const titleText =
+      deriveTitleFromContent(markdownBodyContent || "") ||
+      node.summary ||
+      "Untitled";
+    const headingTitle = extractHeadingTitle(markdownBodyContent || "");
+    const contentLink = useMemo(
+      () => deriveFirstExternalLinkFromContent(markdownBodyContent || ""),
+      [markdownBodyContent]
     );
     const contentAliases = useMemo(
-      () => deriveAliasesFromContent(node.content || ""),
-      [node.content]
+      () => deriveAliasesFromContent(markdownBodyContent || ""),
+      [markdownBodyContent]
     );
     const contentMessages = useMemo(() => {
-      if (node.messages && node.messages.length > 0) return node.messages;
-      return deriveChatMessagesFromContent(node.content || "") || [];
-    }, [node.messages, node.content]);
+      return (
+        deriveChatMessagesFromContent(markdownBodyContent || "") ||
+        node.messages ||
+        []
+      );
+    }, [markdownBodyContent, node.messages]);
+    const chatContextContent = useMemo(() => {
+      if (node.type !== NodeType.CHAT) return null;
+
+      const prefix = extractPrefixContent(markdownBodyContent || "");
+      if (prefix) return prefix;
+
+      if (contentMessages.length === 0) {
+        const fallback = (markdownBodyContent || "").trim();
+        return fallback || null;
+      }
+
+      return null;
+    }, [node.type, markdownBodyContent, contentMessages.length]);
 
     // Calculate dynamic width for mobile based on title length
     const dynamicMobileWidth = useMemo(() => {
@@ -339,7 +364,11 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
 
         if (url && url !== contentLink) {
           onUpdate(node.id, {
-            content: upsertExternalLinkInContent(node.content || "", url, "Wikipedia"),
+            content: upsertExternalLinkInContent(
+              markdownBodyContent || "",
+              url,
+              "Wikipedia"
+            ),
           });
         }
       };
@@ -349,7 +378,15 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       return () => {
         cancelled = true;
       };
-    }, [isSelected, headingTitle, contentLink, node.id, node.content, onUpdate, isDragging]);
+    }, [
+      isSelected,
+      headingTitle,
+      contentLink,
+      node.id,
+      markdownBodyContent,
+      onUpdate,
+      isDragging,
+    ]);
 
     // Reset wikipedia fetch tracking when node title changes
     useEffect(() => {
@@ -366,8 +403,12 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       };
       const updatedMessages = [...contentMessages, userMsg];
       const currentInput = input;
+      const chatContentAfterUser = composeChatContentFromMessages(
+        markdownBodyContent || "",
+        updatedMessages.map((m) => ({ role: m.role, text: m.text }))
+      );
 
-      onUpdateRef.current(node.id, { messages: updatedMessages });
+      onUpdateRef.current(node.id, { content: chatContentAfterUser });
       setInput("");
       setIsChatting(true);
       setStreamingContent("");
@@ -375,8 +416,8 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       const service = aiProvider === "huggingface" ? hfService : geminiService;
 
       // Extract topic and prefix content for context
-      const topic = deriveTitleFromContent(node.content || '');
-      const prefixContent = extractPrefixContent(node.content || '');
+      const topic = deriveTitleFromContent(markdownBodyContent || "");
+      const prefixContent = extractPrefixContent(markdownBodyContent || "");
 
       // Build context object with available data
       const context = (topic && topic !== 'Untitled') || prefixContent
@@ -408,22 +449,26 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
         text: modelTextToDisplay,
         timestamp: Date.now(),
       };
+      const chatContentAfterModel = composeChatContentFromMessages(
+        markdownBodyContent || "",
+        [...updatedMessages, modelMsg].map((m) => ({ role: m.role, text: m.text }))
+      );
 
       onUpdateRef.current(node.id, {
-        messages: [...updatedMessages, modelMsg],
+        content: chatContentAfterModel,
       });
       setIsChatting(false);
       setStreamingContent(null);
 
       // Generate title for chat nodes on first conversation exchange (if no heading exists)
-      const existingTitle = deriveTitleFromContent(node.content || '');
+      const existingTitle = deriveTitleFromContent(markdownBodyContent || "");
       if (node.type === NodeType.CHAT && existingTitle === 'Untitled') {
         const service =
           aiProvider === "huggingface" ? hfService : geminiService;
         const rawTitle = await service.generateTitle(currentInput, result.text);
         const cleanedTitle = cleanTitleMarkdown(rawTitle);
         // Update the content with a heading
-        const newContent = updateTitleInContent(node.content || '', cleanedTitle);
+        const newContent = updateTitleInContent(chatContentAfterModel, cleanedTitle);
         onUpdateRef.current(node.id, { content: newContent });
       }
     };
@@ -431,7 +476,10 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
     const handleTitleSubmit = () => {
       if (titleEditValue.trim() !== "") {
         // Update the # heading in the body content (bidirectional sync)
-        const newContent = updateTitleInContent(node.content || '', titleEditValue);
+        const newContent = updateTitleInContent(
+          markdownBodyContent || "",
+          titleEditValue
+        );
         onUpdate(node.id, { content: newContent });
       }
       setIsEditingTitle(false);
@@ -463,9 +511,6 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
       },
       [onNavigateToNode, onOpenLink]
     );
-    const formattedTitle = useMemo(() => formatInternalNodeLinks(node.title || ""), [node.title]);
-    const formattedContent = useMemo(() => formatInternalNodeLinks(node.content || ""), [node.content]);
-
     const stripMarkdown = (text: string): string => {
       return text
         .replace(/^#{1,6}\s+/, "") // Remove heading markers (# ## ### etc.)
@@ -480,13 +525,15 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
 
     const noteTitleLine = useMemo(() => {
       if (node.type !== NodeType.NOTE) return "";
-      const firstLine = (node.title || "").split("\n")[0] || "";
+      const firstLine =
+        (deriveTitleFromContent(markdownBodyContent || "") || "").split("\n")[0] ||
+        "";
       return stripMarkdown(firstLine);
-    }, [node.type, node.title]);
+    }, [node.type, markdownBodyContent]);
 
     const formattedNoteContent = useMemo(
-      () => formatInternalNodeLinks(node.content || ""),
-      [node.content]
+      () => formatInternalNodeLinks(markdownBodyContent || ""),
+      [markdownBodyContent]
     );
 
     const markdownComponents = useMemo(
@@ -650,7 +697,10 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      onExpandFromWikidata(node.id, deriveTitleFromContent(node.content));
+                      onExpandFromWikidata(
+                        node.id,
+                        deriveTitleFromContent(markdownBodyContent)
+                      );
                     }}
                     className="w-7 h-7 rounded transition-colors flex items-center justify-center text-slate-400 hover:text-amber-300 hover:bg-slate-700/50"
                     title="Expand from Wikidata (subtopics)"
@@ -727,7 +777,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      onExpand(node.id, deriveTitleFromContent(node.content));
+                      onExpand(node.id, deriveTitleFromContent(markdownBodyContent));
                     }}
                     className="w-7 h-7 rounded transition-colors flex items-center justify-center text-slate-400 hover:text-purple-400 hover:bg-slate-700/50"
                     title="Expand Subgraph (AI)"
@@ -1055,7 +1105,10 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                           );
                           const cleanedTitle = cleanTitleMarkdown(rawTitle);
                           // Update the content with a heading
-                          const newContent = updateTitleInContent(node.content || '', cleanedTitle);
+                          const newContent = updateTitleInContent(
+                            markdownBodyContent || "",
+                            cleanedTitle
+                          );
                           onUpdate(node.id, { content: newContent });
                         }
                       }
@@ -1153,7 +1206,10 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                         onClick={(e) => {
                           e.stopPropagation();
                           onUpdate(node.id, {
-                            content: removeAliasFromContent(node.content || "", alias),
+                            content: removeAliasFromContent(
+                              markdownBodyContent || "",
+                              alias
+                            ),
                           });
                         }}
                         className="hover:text-red-400 opacity-50 group-hover/alias:opacity-100"
@@ -1173,7 +1229,10 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                       const val = e.currentTarget.value.trim();
                       if (val) {
                         onUpdate(node.id, {
-                          content: appendAliasToContent(node.content || "", val),
+                          content: appendAliasToContent(
+                            markdownBodyContent || "",
+                            val
+                          ),
                         });
                         e.currentTarget.value = "";
                       }
@@ -1302,14 +1361,17 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                       onDoubleClick={(e) => {
                         e.stopPropagation();
                         // Derive title from content for editing
-                        setTitleEditValue(deriveTitleFromContent(node.content || ''));
+                        setTitleEditValue(
+                          deriveTitleFromContent(markdownBodyContent || "")
+                        );
                         setIsEditingTitle(true);
                       }}
                       title={"Double click to rename"}
                     >
                       {node.type === NodeType.NOTE
                         ? noteTitleLine.trim() || "Empty Note"
-                        : deriveTitleFromContent(node.content || '') || "Untitled"}
+                        : deriveTitleFromContent(markdownBodyContent || "") ||
+                          "Untitled"}
                     </span>
                   </>
                 )}
@@ -1478,7 +1540,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                       onTouchStart={(e) => e.stopPropagation()}
                     >
                       <MarkdownEditor
-                        initialContent={node.content || ""}
+                        initialContent={markdownBodyContent || ""}
                         onChange={handleNoteEditorChange}
                         onNavigateToNode={onNavigateToNode}
                         allNodes={allNodes}
@@ -1506,7 +1568,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                       onMouseDown={(e) => e.stopPropagation()}
                       onTouchStart={(e) => e.stopPropagation()}
                     >
-                      {!node.content ? (
+                      {!markdownBodyContent ? (
                         <span className="text-slate-500 italic opacity-60">
                           Empty note...
                         </span>
@@ -1534,15 +1596,35 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                       onMouseDown={(e) => e.stopPropagation()}
                       onTouchStart={(e) => e.stopPropagation()}
                     >
-                      {displayMessages.length === 0 && (
-                        <div
-                          className={`text-slate-500 text-center italic mt-4 ${
-                            isSidebar ? "text-base" : "text-xs"
-                          }`}
-                        >
-                          Ask Gemini about "{node.content}"...
-                        </div>
-                      )}
+                      {displayMessages.length === 0 &&
+                        (chatContextContent ? (
+                          <div
+                            className={`rounded-lg border ${
+                              colorTheme.border
+                            } ${colorTheme.header} ${
+                              colorTheme.text
+                            } ${
+                              isSidebar
+                                ? "px-5 py-4 text-base"
+                                : "px-3 py-2 text-xs"
+                            }`}
+                          >
+                            <ReactMarkdown
+                              className="prose prose-invert prose-sm max-w-none"
+                              components={markdownComponents}
+                            >
+                              {formatInternalNodeLinks(chatContextContent)}
+                            </ReactMarkdown>
+                          </div>
+                        ) : (
+                          <div
+                            className={`text-slate-500 text-center italic mt-4 ${
+                              isSidebar ? "text-base" : "text-xs"
+                            }`}
+                          >
+                            Start a conversation
+                          </div>
+                        ))}
                       {displayMessages.map((msg, idx) => (
                         <div
                           key={idx}
@@ -1635,7 +1717,7 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                             ? "text-base px-4 py-3"
                             : "text-xs px-2 py-1"
                         }`}
-                        placeholder="Ask Gemini..."
+                        placeholder="Message..."
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={(e) =>
@@ -1646,14 +1728,23 @@ export const GraphNodeComponent: React.FC<GraphNodeProps> = memo(
                       />
                       <button
                         onClick={handleSendMessage}
-                        disabled={isChatting}
-                        className={`bg-sky-600 hover:bg-sky-500 text-white rounded disabled:opacity-50 ${
-                          isSidebar
-                            ? "px-6 py-2 text-base"
-                            : "px-2 py-1 text-xs"
-                        }`}
+                        disabled={isChatting || !input.trim()}
+                        className="p-2 rounded-lg text-sky-400 hover:bg-slate-700 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
                       >
-                        Send
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="20"
+                          height="20"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <line x1="22" y1="2" x2="11" y2="13" />
+                          <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                        </svg>
                       </button>
                     </div>
                   </>

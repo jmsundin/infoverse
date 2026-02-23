@@ -1,6 +1,6 @@
 import { GraphNode, GraphEdge, NodeType } from "../types";
 import { parseNodeMarkdown, serializeNodeMarkdown } from "./storage/markdown";
-import { formatChatContent, extractChatTitle, extractPrefixContent } from "../utils/chatFormatUtils";
+import { composeChatContentFromMessages } from "../utils/nodeContentUtils";
 
 type DirectoryPickerErrorCode = "UNSUPPORTED" | "INSECURE_CONTEXT" | "FAILED";
 
@@ -343,13 +343,10 @@ export const saveNodeToFile = async (
         // For chat nodes, persist transcript text into markdown body.
         let content = node.content || "";
         if (node.type === NodeType.CHAT && node.messages && node.messages.length > 0) {
-          const title = extractChatTitle(content);
-          const prefix = extractPrefixContent(content);
-          const formattedMessages = formatChatContent(
-            node.messages.map((m) => ({ role: m.role, text: m.text })),
-            title
+          content = composeChatContentFromMessages(
+            content,
+            node.messages.map((m) => ({ role: m.role, text: m.text }))
           );
-          content = prefix ? `${prefix}\n\n${formattedMessages}` : formattedMessages;
         }
 
         const fileContent = serializeNodeMarkdown({

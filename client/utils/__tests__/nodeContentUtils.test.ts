@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import { NodeType, type GraphNode } from "../../types";
 import {
   appendAliasToContent,
+  composeChatContentFromMessages,
   deriveAliasesFromContent,
   deriveChatMessagesFromContent,
   deriveFirstExternalLinkFromContent,
+  extractMarkdownBodyContent,
   extractHeadingTitle,
   removeAliasFromContent,
   upsertExternalLinkInContent,
@@ -20,6 +22,30 @@ const makeNode = (content: string): GraphNode => ({
 });
 
 describe("nodeContentUtils", () => {
+  it("extracts markdown body when content includes yaml frontmatter", () => {
+    const content = `---
+id: note-1
+type: NOTE
+---
+
+# Body Title
+
+Body text`;
+
+    expect(extractMarkdownBodyContent(content)).toBe(`# Body Title
+
+Body text`);
+  });
+
+  it("does not treat a plain markdown divider as frontmatter", () => {
+    const content = `---
+Heading
+---
+Body`;
+
+    expect(extractMarkdownBodyContent(content)).toBe(content);
+  });
+
   it("derives heading title, aliases, and first external link from content", () => {
     const content = `# Heading Title
 
@@ -75,7 +101,12 @@ describe("nodeContentUtils", () => {
   });
 
   it("projects content-derived fields onto a runtime node", () => {
-    const node = makeNode(`# Topic
+    const node = makeNode(`---
+id: topic-1
+type: NOTE
+---
+
+# Topic
 
 [[Alias]]
 [Ref](https://example.com)
@@ -83,6 +114,11 @@ describe("nodeContentUtils", () => {
 
     const projected = withDerivedContentFields(node);
 
+    expect(projected.content).toBe(`# Topic
+
+[[Alias]]
+[Ref](https://example.com)
+`);
     expect(projected.title).toBe("Topic");
     expect(projected.aliases).toEqual(["Alias"]);
     expect(projected.link).toBe("https://example.com");
@@ -113,5 +149,23 @@ describe("nodeContentUtils", () => {
       { role: "user", text: "Question", timestamp: 0 },
       { role: "model", text: "Answer", timestamp: 1 },
     ]);
+  });
+
+  it("composes chat content without duplicating heading when prefix exists", () => {
+    const existing = `# Topic
+
+Context paragraph
+
+**user**: old`;
+
+    const content = composeChatContentFromMessages(existing, [
+      { role: "user", text: "Q1" },
+      { role: "model", text: "A1" },
+    ]);
+
+    expect(content.match(/^# Topic$/gm)?.length).toBe(1);
+    expect(content).toContain("Context paragraph");
+    expect(content).toContain("**user**: Q1");
+    expect(content).toContain("**model**: A1");
   });
 });

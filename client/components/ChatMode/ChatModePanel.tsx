@@ -18,7 +18,11 @@ import {
 } from '../../utils/wikiLinks';
 import { cleanTitleMarkdown, updateTitleInContent, deriveTitleFromContent } from '../../utils/titleUtils';
 import { extractPrefixContent } from '../../utils/chatFormatUtils';
-import { deriveChatMessagesFromContent } from '../../utils/nodeContentUtils';
+import {
+  composeChatContentFromMessages,
+  deriveChatMessagesFromContent,
+  extractMarkdownBodyContent,
+} from '../../utils/nodeContentUtils';
 
 interface ChatModePanelProps {
   node: GraphNode;
@@ -55,11 +59,27 @@ export const ChatModePanel: React.FC<ChatModePanelProps> = ({
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  const titleText = deriveTitleFromContent(node.content || '') || node.summary || 'Untitled';
+  const markdownBodyContent = useMemo(
+    () => extractMarkdownBodyContent(node.content || ''),
+    [node.content]
+  );
+  const titleText = deriveTitleFromContent(markdownBodyContent || '') || node.summary || 'Untitled';
   const contentMessages = useMemo(() => {
-    if (node.messages && node.messages.length > 0) return node.messages;
-    return deriveChatMessagesFromContent(node.content || '') || [];
-  }, [node.messages, node.content]);
+    return deriveChatMessagesFromContent(markdownBodyContent || '') || node.messages || [];
+  }, [markdownBodyContent, node.messages]);
+  const chatContextContent = useMemo(() => {
+    if (node.type !== NodeType.CHAT) return null;
+
+    const prefix = extractPrefixContent(markdownBodyContent || '');
+    if (prefix) return prefix;
+
+    if (contentMessages.length === 0) {
+      const fallback = (markdownBodyContent || '').trim();
+      return fallback || null;
+    }
+
+    return null;
+  }, [node.type, markdownBodyContent, contentMessages.length]);
 
   // Scroll chat to bottom when messages update
   useEffect(() => {
@@ -103,16 +123,20 @@ export const ChatModePanel: React.FC<ChatModePanelProps> = ({
     };
     const updatedMessages = [...contentMessages, userMsg];
     const currentInput = input;
+    const chatContentAfterUser = composeChatContentFromMessages(
+      markdownBodyContent || '',
+      updatedMessages.map((m) => ({ role: m.role, text: m.text }))
+    );
 
-    onUpdate(node.id, { messages: updatedMessages });
+    onUpdate(node.id, { content: chatContentAfterUser });
     setInput('');
     setIsChatting(true);
     setStreamingContent('');
 
     const service = aiProvider === 'huggingface' ? hfService : geminiService;
 
-    const topic = deriveTitleFromContent(node.content || '');
-    const prefixContent = extractPrefixContent(node.content || '');
+    const topic = deriveTitleFromContent(markdownBodyContent || '');
+    const prefixContent = extractPrefixContent(markdownBodyContent || '');
 
     const context = (topic && topic !== 'Untitled') || prefixContent
       ? {
@@ -143,20 +167,22 @@ export const ChatModePanel: React.FC<ChatModePanelProps> = ({
       text: modelTextToDisplay,
       timestamp: Date.now(),
     };
+    const chatContentAfterModel = composeChatContentFromMessages(
+      markdownBodyContent || '',
+      [...updatedMessages, modelMsg].map((m) => ({ role: m.role, text: m.text }))
+    );
 
-    onUpdate(node.id, {
-      messages: [...updatedMessages, modelMsg],
-    });
+    onUpdate(node.id, { content: chatContentAfterModel });
     setIsChatting(false);
     setStreamingContent(null);
 
     // Generate title for chat nodes on first conversation exchange
-    const existingTitle = deriveTitleFromContent(node.content || '');
+    const existingTitle = deriveTitleFromContent(markdownBodyContent || '');
     if (node.type === NodeType.CHAT && existingTitle === 'Untitled') {
       const titleService = aiProvider === 'huggingface' ? hfService : geminiService;
       const rawTitle = await titleService.generateTitle(currentInput, result.text);
       const cleanedTitle = cleanTitleMarkdown(rawTitle);
-      const newContent = updateTitleInContent(node.content || '', cleanedTitle);
+      const newContent = updateTitleInContent(chatContentAfterModel, cleanedTitle);
       onUpdate(node.id, { content: newContent });
     }
   };
@@ -304,7 +330,7 @@ export const ChatModePanel: React.FC<ChatModePanelProps> = ({
         {node.type === NodeType.NOTE ? (
           <div className="w-full h-full">
             <MarkdownEditor
-              initialContent={node.content || ''}
+              initialContent={markdownBodyContent || ''}
               onChange={handleNoteEditorChange}
               onNavigateToNode={onNavigateToNode}
               allNodes={allNodes}
@@ -319,16 +345,28 @@ export const ChatModePanel: React.FC<ChatModePanelProps> = ({
               ref={chatContainerRef}
               className="flex-1 overflow-y-auto px-6 py-4"
             >
-              {displayMessages.length === 0 && (
-                <div className="flex flex-col items-center justify-center h-full text-center">
-                  <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center mb-3">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-500">
-                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                    </svg>
+              {displayMessages.length === 0 &&
+                (chatContextContent ? (
+                  <div className="mb-4">
+                    <div className="rounded-xl px-4 py-3 text-[15px] leading-relaxed bg-slate-800/70 text-slate-200 border border-slate-700">
+                      <ReactMarkdown
+                        className="prose prose-invert prose-sm max-w-none"
+                        components={markdownComponents}
+                      >
+                        {formatInternalNodeLinks(chatContextContent)}
+                      </ReactMarkdown>
+                    </div>
                   </div>
-                  <div className="text-slate-500 text-sm">Start a conversation</div>
-                </div>
-              )}
+                ) : (
+                  <div className="flex flex-col items-center justify-center h-full text-center">
+                    <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center mb-3">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-500">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                      </svg>
+                    </div>
+                    <div className="text-slate-500 text-sm">Start a conversation</div>
+                  </div>
+                ))}
               <div className="space-y-4">
                 {displayMessages.map((msg, idx) => (
                   <div
