@@ -7,6 +7,7 @@ import * as hfService from "../services/huggingfaceService";
 import { useStorage } from "../context/StorageContext";
 import { formatChatContent, appendChatMessage, updateLastAssistantMessage } from "../utils/chatFormatUtils";
 import { ActiveSidePane } from "./useSidePanes";
+import { findDuplicateNoteByTitle, findDuplicateNoteNode } from "../utils/noteDeduplication";
 
 // --- Config-based interface for cleaner hook usage ---
 
@@ -236,6 +237,36 @@ export const useGraphOperationsWithConfig = (config: GraphOperationsConfig) => {
         initialContent = `# ${selectionTooltip.text.length > 50 ? selectionTooltip.text.substring(0, 50) + '...' : selectionTooltip.text}\n\n${selectionTooltip.text}`;
       }
 
+      const duplicateNode = findDuplicateNoteNode(state.nodes, { content: initialContent });
+      if (duplicateNode) {
+        actions.setSelectedNodeIds(new Set([duplicateNode.id]));
+        if (selectionTooltip.sourceId && selectionTooltip.sourceId !== duplicateNode.id) {
+          const labelText = selectionTooltip.text.length > 20
+            ? selectionTooltip.text.substring(0, 20) + "..."
+            : selectionTooltip.text;
+          actions.setEdges((prev) => {
+            const hasEdge = prev.some(
+              (edge) =>
+                edge.source === selectionTooltip.sourceId &&
+                edge.target === duplicateNode.id
+            );
+            if (hasEdge) return prev;
+            return [
+              ...prev,
+              {
+                id: crypto.randomUUID(),
+                source: selectionTooltip.sourceId!,
+                target: duplicateNode.id,
+                label: labelText,
+                scopeId: state.currentScopeId || undefined,
+              },
+            ];
+          });
+        }
+        actions.showToast("Skipped duplicate note.");
+        return;
+      }
+
       const newNode: GraphNode = {
         id: crypto.randomUUID(),
         type,
@@ -298,6 +329,27 @@ export const useGraphOperationsWithConfig = (config: GraphOperationsConfig) => {
 
   const handleSearchSelect = useCallback(
     (topic: string, shouldExpand: boolean, isWiki: boolean = true) => {
+      const duplicateNode = findDuplicateNoteByTitle(state.nodes, topic);
+      if (duplicateNode) {
+        actions.setSelectedNodeIds(new Set([duplicateNode.id]));
+
+        const k = 1;
+        const nodeCenterX = duplicateNode.x + (duplicateNode.width || DEFAULT_NODE_WIDTH) / 2;
+        const nodeCenterY = duplicateNode.y + (duplicateNode.height || DEFAULT_NODE_HEIGHT) / 2;
+        actions.setViewTransform({
+          x: window.innerWidth / 2 - nodeCenterX * k,
+          y: window.innerHeight / 2 - nodeCenterY * k,
+          k,
+        });
+
+        if (shouldExpand) {
+          callbacks.handleExpandNode(duplicateNode.id, topic, duplicateNode);
+        }
+
+        actions.showToast(`Skipped duplicate note "${topic}".`);
+        return;
+      }
+
       const vpW = window.innerWidth;
       const vpH = window.innerHeight;
       const centerX = -state.viewTransform.x / state.viewTransform.k + vpW / 2 / state.viewTransform.k - DEFAULT_NODE_WIDTH / 2;
@@ -376,7 +428,7 @@ export const useGraphOperationsWithConfig = (config: GraphOperationsConfig) => {
           });
       }
     },
-    [state.viewTransform, state.currentScopeId, state.aiProvider, callbacks, actions]
+    [state.nodes, state.viewTransform, state.currentScopeId, state.aiProvider, callbacks, actions]
   );
 
   return useMemo(() => ({
@@ -657,6 +709,40 @@ export const useGraphOperations = (
         initialContent = `# ${selectionTooltip.text.length > 50 ? selectionTooltip.text.substring(0, 50) + '...' : selectionTooltip.text}\n\n${selectionTooltip.text}`;
       }
 
+      const duplicateNode = findDuplicateNoteNode(nodes, { content: initialContent });
+      if (duplicateNode) {
+        setSelectedNodeIds(new Set([duplicateNode.id]));
+        if (selectionTooltip.sourceId && selectionTooltip.sourceId !== duplicateNode.id) {
+          const labelText =
+            selectionTooltip.text.length > 20
+              ? selectionTooltip.text.substring(0, 20) + "..."
+              : selectionTooltip.text;
+          setEdgesCallback((prev) => {
+            const hasEdge = prev.some(
+              (edge) =>
+                edge.source === selectionTooltip.sourceId &&
+                edge.target === duplicateNode.id
+            );
+            if (hasEdge) return prev;
+            return [
+              ...prev,
+              {
+                id: crypto.randomUUID(),
+                source: selectionTooltip.sourceId!,
+                target: duplicateNode.id,
+                label: labelText,
+                scopeId: currentScopeId || undefined,
+              },
+            ];
+          });
+        }
+        setToast({
+          visible: true,
+          message: "Skipped duplicate note.",
+        });
+        return;
+      }
+
       const newNode: GraphNode = {
         id: crypto.randomUUID(),
         type,
@@ -717,11 +803,35 @@ export const useGraphOperations = (
         }
       }
     },
-    [nodes, viewTransform, setNodesCallback, setEdgesCallback, currentScopeId, setSelectedNodeIds, aiProvider]
+    [nodes, viewTransform, setNodesCallback, setEdgesCallback, currentScopeId, setSelectedNodeIds, aiProvider, setToast]
   );
 
   const handleSearchSelect = useCallback(
     (topic: string, shouldExpand: boolean, isWiki: boolean = true) => {
+      const duplicateNode = findDuplicateNoteByTitle(nodes, topic);
+      if (duplicateNode) {
+        setSelectedNodeIds(new Set([duplicateNode.id]));
+
+        const k = 1;
+        const nodeCenterX = duplicateNode.x + (duplicateNode.width || DEFAULT_NODE_WIDTH) / 2;
+        const nodeCenterY = duplicateNode.y + (duplicateNode.height || DEFAULT_NODE_HEIGHT) / 2;
+        setViewTransform({
+          x: window.innerWidth / 2 - nodeCenterX * k,
+          y: window.innerHeight / 2 - nodeCenterY * k,
+          k,
+        });
+
+        if (shouldExpand) {
+          handleExpandNode(duplicateNode.id, topic, duplicateNode);
+        }
+
+        setToast({
+          visible: true,
+          message: `Skipped duplicate note "${topic}".`,
+        });
+        return;
+      }
+
       const vpW = window.innerWidth;
       const vpH = window.innerHeight;
       const centerX = -viewTransform.x / viewTransform.k + vpW / 2 / viewTransform.k - DEFAULT_NODE_WIDTH / 2;
@@ -803,7 +913,7 @@ export const useGraphOperations = (
           });
       }
     },
-    [viewTransform, handleExpandNode, currentScopeId, setNodesCallback, setSelectedNodeIds, setViewTransform, aiProvider, setShowLimitModal]
+    [nodes, viewTransform, handleExpandNode, currentScopeId, setNodesCallback, setSelectedNodeIds, setViewTransform, aiProvider, setShowLimitModal, setToast]
   );
 
   return {
@@ -819,4 +929,3 @@ export const useGraphOperations = (
     handleSearchSelect,
   };
 };
-

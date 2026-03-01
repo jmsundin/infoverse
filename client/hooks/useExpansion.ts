@@ -12,6 +12,10 @@ import * as hfService from "../services/huggingfaceService";
 import { parseTextToNodes } from "../utils/graphUtils";
 import { extractFirstNounPhrase, isShortContent, cleanTitleMarkdown, deriveTitleFromContent } from "../utils/titleUtils";
 import { upsertExternalLinkInContent } from "../utils/nodeContentUtils";
+import {
+  buildNoteDedupTitleIndex,
+  normalizeNoteTitle,
+} from "../utils/noteDeduplication";
 
 export const useExpansion = (
   nodes: GraphNode[],
@@ -40,20 +44,35 @@ export const useExpansion = (
       const edgesToAdd: GraphEdge[] = [];
       const parentNodeX = sourceNode.x;
       const parentNodeY = sourceNode.y;
+      const existingByTitle = buildNoteDedupTitleIndex(nodes);
+      const createdByTitle = new Map<string, GraphNode>();
 
       const fixedRadius = 500;
       const startAngle = Math.random() * Math.PI;
+      const nameToNode = new Map<string, GraphNode>();
+      const dedupedExistingTargetIds = new Set<string>();
 
-      // Filter out excluded indices (nodes that will link to existing instead)
-      const nodesToCreate = result.nodes.filter((_, i) => !excludeIndices.has(i));
+      result.nodes.forEach((n, i) => {
+        if (excludeIndices.has(i)) return;
 
-      const subNodes: GraphNode[] = nodesToCreate.map((n, i) => {
-        const angle = startAngle + (i / Math.max(nodesToCreate.length, 1)) * 2 * Math.PI;
+        const dedupTitle = normalizeNoteTitle(n.name);
+        const existingNode = dedupTitle
+          ? createdByTitle.get(dedupTitle) || existingByTitle.get(dedupTitle)
+          : null;
+
+        if (existingNode) {
+          nameToNode.set(n.name.toLowerCase(), existingNode);
+          dedupedExistingTargetIds.add(existingNode.id);
+          return;
+        }
+
+        const angle = startAngle + (nodesToAdd.length / Math.max(result.nodes.length, 1)) * 2 * Math.PI;
         const baseContent = `# ${n.name}\n\n**assistant**: ${n.description}`;
         const content = n.wikiLink
           ? upsertExternalLinkInContent(baseContent, n.wikiLink, "Wikipedia")
           : baseContent;
-        return {
+
+        const newNode: GraphNode = {
           id: crypto.randomUUID(),
           type: NodeType.CHAT,
           x: parentNodeX + fixedRadius * Math.cos(angle),
@@ -66,45 +85,30 @@ export const useExpansion = (
           summary: n.description,
           autoExpandDepth: sourceNode.autoExpandDepth,
         };
-      });
 
-      nodesToAdd.push(...subNodes);
+        nodesToAdd.push(newNode);
+        nameToNode.set(n.name.toLowerCase(), newNode);
 
-      // Create map for edge matching (case-insensitive)
-      const nameToNode = new Map<string, GraphNode>();
-      let subNodeIndex = 0;
-      result.nodes.forEach((n, i) => {
-        if (!excludeIndices.has(i)) {
-          nameToNode.set(n.name.toLowerCase(), subNodes[subNodeIndex]);
-          subNodeIndex++;
+        if (dedupTitle) {
+          createdByTitle.set(dedupTitle, newNode);
         }
       });
 
       // Connect edges (case-insensitive matching)
       result.edges.forEach((e) => {
         const targetNameLower = e.targetName.toLowerCase();
-        const targetSubNode = nameToNode.get(targetNameLower);
-        const targetExistingNode = nodes.find((n) => {
-          const nodeTitle = deriveTitleFromContent(n.content);
-          return (
-            nodeTitle.toLowerCase() === targetNameLower &&
-            (n.scopeId ?? null) === (currentScopeId ?? null)
-          );
-        });
+        const targetNode =
+          nameToNode.get(targetNameLower) ??
+          (() => {
+            const targetTitle = normalizeNoteTitle(e.targetName);
+            return targetTitle ? existingByTitle.get(targetTitle) ?? null : null;
+          })();
 
-        if (targetSubNode) {
+        if (targetNode && targetNode.id !== parentNodeId) {
           edgesToAdd.push({
             id: crypto.randomUUID(),
             source: parentNodeId,
-            target: targetSubNode.id,
-            label: e.relationship,
-            scopeId: currentScopeId || undefined,
-          });
-        } else if (targetExistingNode) {
-          edgesToAdd.push({
-            id: crypto.randomUUID(),
-            source: parentNodeId,
-            target: targetExistingNode.id,
+            target: targetNode.id,
             label: e.relationship,
             scopeId: currentScopeId || undefined,
           });
@@ -112,7 +116,7 @@ export const useExpansion = (
       });
 
       // Fallback connectivity - ensure all new nodes have at least one edge
-      subNodes.forEach((sn) => {
+      nodesToAdd.forEach((sn) => {
         const isConnected = edgesToAdd.some((e) => e.target === sn.id);
         if (!isConnected) {
           edgesToAdd.push({
@@ -124,6 +128,21 @@ export const useExpansion = (
           });
         }
       });
+
+      // If a proposed node was deduped against an existing node and no relation edge
+      // was emitted by the model, still link to the existing node.
+      for (const existingNodeId of dedupedExistingTargetIds) {
+        if (existingNodeId === parentNodeId) continue;
+        const isConnected = edgesToAdd.some((e) => e.target === existingNodeId);
+        if (isConnected) continue;
+        edgesToAdd.push({
+          id: crypto.randomUUID(),
+          source: parentNodeId,
+          target: existingNodeId,
+          label: "related",
+          scopeId: currentScopeId || undefined,
+        });
+      }
 
       console.log('[AI Expansion] Edges to add:', edgesToAdd.length, 'from', result.edges.length, 'AI edges');
 
@@ -144,17 +163,30 @@ export const useExpansion = (
       const edgesToAdd: GraphEdge[] = [];
       const parentNodeX = sourceNode.x;
       const parentNodeY = sourceNode.y;
+      const existingByTitle = buildNoteDedupTitleIndex(nodes);
+      const createdByTitle = new Map<string, GraphNode>();
 
       const fixedRadius = 500;
       const startAngle = Math.random() * Math.PI;
+      const targetNodeIds = new Set<string>();
 
-      const subtopicsToCreate = subtopics.filter((_, i) => !excludeIndices.has(i));
+      subtopics.forEach((st, i) => {
+        if (excludeIndices.has(i)) return;
 
-      const createdNodes: GraphNode[] = subtopicsToCreate.map((st, i) => {
-        const angle = startAngle + (i / Math.max(subtopicsToCreate.length, 1)) * 2 * Math.PI;
+        const dedupTitle = normalizeNoteTitle(st.label);
+        const existingNode = dedupTitle
+          ? createdByTitle.get(dedupTitle) || existingByTitle.get(dedupTitle)
+          : null;
+
+        if (existingNode) {
+          targetNodeIds.add(existingNode.id);
+          return;
+        }
+
+        const angle = startAngle + (nodesToAdd.length / Math.max(subtopics.length, 1)) * 2 * Math.PI;
         const baseContent = `# ${st.label}${st.description ? `\n\n**assistant**: ${st.description}` : ""}`;
         const content = upsertExternalLinkInContent(baseContent, st.wikidataUrl, "Wikidata");
-        return {
+        const newNode: GraphNode = {
           id: crypto.randomUUID(),
           type: NodeType.CHAT,
           x: parentNodeX + fixedRadius * Math.cos(angle),
@@ -167,15 +199,21 @@ export const useExpansion = (
           summary: st.description,
           autoExpandDepth: sourceNode.autoExpandDepth,
         };
+
+        nodesToAdd.push(newNode);
+        targetNodeIds.add(newNode.id);
+
+        if (dedupTitle) {
+          createdByTitle.set(dedupTitle, newNode);
+        }
       });
 
-      nodesToAdd.push(...createdNodes);
-
-      for (const newNode of createdNodes) {
+      for (const targetNodeId of targetNodeIds) {
+        if (targetNodeId === parentNodeId) continue;
         edgesToAdd.push({
           id: crypto.randomUUID(),
           source: parentNodeId,
-          target: newNode.id,
+          target: targetNodeId,
           label: "subtopic",
           scopeId: currentScopeId || undefined,
         });
@@ -183,7 +221,7 @@ export const useExpansion = (
 
       return { nodesToAdd, edgesToAdd };
     },
-    [currentScopeId]
+    [nodes, currentScopeId]
   );
 
   // Helper to pan/zoom to fit new nodes
@@ -353,18 +391,16 @@ export const useExpansion = (
           return false;
         }
 
-        // Filter out exact label matches first (existing behavior)
-        const existingByLowerLabel = new Map<string, GraphNode>();
-        for (const existingNode of nodes) {
-          existingByLowerLabel.set(
-            existingNode.content.trim().toLowerCase(),
-            existingNode
-          );
-        }
-
+        // Filter out exact title duplicates up front.
+        const existingByTitle = buildNoteDedupTitleIndex(nodes);
+        const existingTargetIds = new Set<string>();
         const subtopicsToCreate = subtopics.filter((st) => {
-          const lower = st.label.trim().toLowerCase();
-          return !existingByLowerLabel.has(lower);
+          const dedupTitle = normalizeNoteTitle(st.label);
+          if (!dedupTitle) return true;
+          const existingNode = existingByTitle.get(dedupTitle);
+          if (!existingNode) return true;
+          existingTargetIds.add(existingNode.id);
+          return false;
         });
 
         // Check for semantic duplicates if not skipped
@@ -396,19 +432,17 @@ export const useExpansion = (
           id
         );
 
-        // Also create edges to existing nodes that match by label
-        for (const st of subtopics) {
-          const lower = st.label.trim().toLowerCase();
-          const existingNode = existingByLowerLabel.get(lower);
-          if (existingNode) {
-            edgesToAdd.push({
-              id: crypto.randomUUID(),
-              source: id,
-              target: existingNode.id,
-              label: "subtopic",
-              scopeId: currentScopeId || undefined,
-            });
-          }
+        // Link exact matches to existing nodes so expansion still connects context.
+        for (const targetNodeId of existingTargetIds) {
+          if (targetNodeId === id) continue;
+          if (edgesToAdd.some((e) => e.target === targetNodeId)) continue;
+          edgesToAdd.push({
+            id: crypto.randomUUID(),
+            source: id,
+            target: targetNodeId,
+            label: "subtopic",
+            scopeId: currentScopeId || undefined,
+          });
         }
 
         setNodesCallback((prev) => [...prev, ...nodesToAdd]);
@@ -489,6 +523,22 @@ export const useExpansion = (
 
           const nodesToAdd: GraphNode[] = [];
           const edgesToAdd: GraphEdge[] = [];
+          const existingByTitle = buildNoteDedupTitleIndex(nodes);
+          const createdByTitle = new Map<string, GraphNode>();
+          const addEdgeIfMissing = (sourceId: string, targetId: string, label: string) => {
+            if (sourceId === targetId) return;
+            const alreadyAdded = edgesToAdd.some(
+              (edge) => edge.source === sourceId && edge.target === targetId && edge.label === label
+            );
+            if (alreadyAdded) return;
+            edgesToAdd.push({
+              id: crypto.randomUUID(),
+              source: sourceId,
+              target: targetId,
+              label,
+              scopeId: currentScopeId || undefined,
+            });
+          };
 
           // Generate titles for items that have long descriptions
           const titleService = aiProvider === "huggingface" ? hfService : geminiService;
@@ -519,18 +569,36 @@ export const useExpansion = (
             }
 
             const parent = stack[stack.length - 1];
-            const newNodeId = crypto.randomUUID();
             const angle = Math.random() * 2 * Math.PI;
             const dist = 500;
             const newNodeX = parent.x + dist * Math.cos(angle);
             const newNodeY = parent.y + dist * Math.sin(angle);
+            const title = generatedTitles[i];
+            const dedupTitle = normalizeNoteTitle(title);
+            const duplicateNode = dedupTitle
+              ? createdByTitle.get(dedupTitle) || existingByTitle.get(dedupTitle)
+              : null;
+            const edgeLabel = item.indent > parent.indent ? "sub-item" : "related";
+
+            if (duplicateNode) {
+              addEdgeIfMissing(parent.id, duplicateNode.id, edgeLabel);
+              stack.push({
+                indent: item.indent,
+                id: duplicateNode.id,
+                x: duplicateNode.x,
+                y: duplicateNode.y,
+              });
+              return;
+            }
+
+            const newNodeId = crypto.randomUUID();
 
             const newNode: GraphNode = {
               id: newNodeId,
               type: NodeType.CHAT,
               x: newNodeX,
               y: newNodeY,
-              content: `# ${generatedTitles[i]}\n\n**assistant**: ${item.description}`,
+              content: `# ${title}\n\n**assistant**: ${item.description}`,
               width: DEFAULT_NODE_WIDTH,
               height: DEFAULT_NODE_HEIGHT,
               scopeId: currentScopeId || undefined,
@@ -540,14 +608,10 @@ export const useExpansion = (
             };
 
             nodesToAdd.push(newNode);
-
-            edgesToAdd.push({
-              id: crypto.randomUUID(),
-              source: parent.id,
-              target: newNodeId,
-              label: item.indent > parent.indent ? "sub-item" : "related",
-              scopeId: currentScopeId || undefined,
-            });
+            if (dedupTitle) {
+              createdByTitle.set(dedupTitle, newNode);
+            }
+            addEdgeIfMissing(parent.id, newNodeId, edgeLabel);
 
             stack.push({
               indent: item.indent,

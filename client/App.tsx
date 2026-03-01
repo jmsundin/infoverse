@@ -63,6 +63,10 @@ import { useBreadcrumbs } from "./hooks/useBreadcrumbs";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useExpansion } from "./hooks/useExpansion";
 import { createDefaultGraphNodes } from "./utils/graphUtils";
+import {
+  findDuplicateNoteByTitle,
+  findDuplicateNoteNode,
+} from "./utils/noteDeduplication";
 
 const EMPTY_SET = new Set<string>();
 
@@ -492,6 +496,19 @@ const App: React.FC = () => {
   const handleSearchSelect = useCallback(
     (topic: string, shouldExpand: boolean, isWiki: boolean = true) => {
       const state = store.getState();
+      const duplicateNode = findDuplicateNoteByTitle(state.nodes, topic);
+      if (duplicateNode) {
+        handleFocusNode(duplicateNode.id);
+        dispatch({
+          type: 'TOAST_SHOW',
+          message: `Skipped duplicate note "${topic}".`,
+        });
+        if (shouldExpand) {
+          handleExpandNode(duplicateNode.id, topic, duplicateNode);
+        }
+        return;
+      }
+
       const { viewTransform } = state;
       const vpW = window.innerWidth;
       const vpH = window.innerHeight;
@@ -531,7 +548,7 @@ const App: React.FC = () => {
         transform: { x: vpW / 2 - nodeCenterX, y: vpH / 2 - nodeCenterY, k: 1 },
       });
     },
-    [store, actions, handleExpandNode, dispatch]
+    [store, actions, handleExpandNode, dispatch, handleFocusNode]
   );
 
   // --- Link & Navigation handlers (shared by SidePanels + ChatMode) ---
@@ -589,6 +606,20 @@ const App: React.FC = () => {
 
   const handleCreateNodeForChatMode = useCallback(
     (parentId: string | null, type: NodeType, content?: string): GraphNode => {
+      const state = store.getState();
+      const duplicateNode = findDuplicateNoteNode(state.nodes, {
+        content: content || "",
+      });
+      if (duplicateNode) {
+        dispatch({ type: 'SELECTION_SET', ids: new Set([duplicateNode.id]) });
+        dispatch({ type: 'SELECTION_HISTORY_PUSH', id: duplicateNode.id });
+        dispatch({
+          type: 'TOAST_SHOW',
+          message: "Skipped duplicate note.",
+        });
+        return duplicateNode;
+      }
+
       const id = crypto.randomUUID();
       const newNode: GraphNode = {
         id,
@@ -597,7 +628,7 @@ const App: React.FC = () => {
         y: 0,
         content: content || '',
         parentId: parentId ?? undefined,
-        scopeId: store.getState().currentScopeId ?? undefined,
+        scopeId: state.currentScopeId ?? undefined,
       };
       actions.updateNodes(prev => [...prev, newNode]);
       dispatch({ type: 'SELECTION_SET', ids: new Set([id]) });
